@@ -1,0 +1,83 @@
+/**
+ * CLI entrypoint.
+ *
+ *   agent run "<issue text>"     Start a new run.
+ *   agent resume <runId>         Continue an interrupted run from its event log.
+ *   agent status <runId>         Print the derived state of a run.
+ *
+ * Set CRASH_AFTER=<stepId> (e.g. CRASH_AFTER=locate.1) to inject a crash and
+ * demo resume. Run logs live under AGENT_RUNS_DIR (default: .agent-runs).
+ */
+
+import { MockModelProvider } from './model/provider.js';
+import { Runtime } from './runtime.js';
+import { getIssue, searchCode } from './tools/builtins.js';
+import { ToolRegistry } from './tools/registry.js';
+import type { RunState } from './types.js';
+import { issueWorkflow } from './workflow.js';
+
+const BASE_DIR = process.env.AGENT_RUNS_DIR ?? '.agent-runs';
+
+function makeRuntime(): Runtime {
+  const model = new MockModelProvider({
+    'analyze.summary': 'Login crashes because the session can be null. Keywords: login, auth, session, null.',
+    'propose.fix': 'Guard against a null session in src/auth/login.ts before reading user.token.',
+  });
+  const tools = new ToolRegistry().register(getIssue).register(searchCode);
+  return new Runtime({
+    baseDir: BASE_DIR,
+    model,
+    tools,
+    workflow: issueWorkflow,
+    crashAfter: process.env.CRASH_AFTER,
+    onEvent: (event) => {
+      if (event.type === 'RunStarted') process.stderr.write(`\u25b6 run ${event.runId}\n`);
+      else if (event.type === 'ToolCallSucceeded') process.stderr.write(`  \u00b7 tool ${event.tool} \u2192 ok\n`);
+      else if (event.type === 'StepCompleted') process.stderr.write(`  \u2713 ${event.stepId}\n`);
+      else if (event.type === 'PhaseCompleted') process.stderr.write(`\u2713 phase ${event.phase}\n`);
+    },
+  });
+}
+
+async function main(): Promise<void> {
+  const [command, arg] = process.argv.slice(2);
+  const runtime = makeRuntime();
+
+  switch (command) {
+    case 'run': {
+      const state = await runtime.run(arg ?? 'Login page crashes with a null session');
+      printResult(state);
+      break;
+    }
+    case 'resume': {
+      if (!arg) throw new Error('Usage: agent resume <runId>');
+      printResult(await runtime.resume(arg));
+      break;
+    }
+    case 'status': {
+      if (!arg) throw new Error('Usage: agent status <runId>');
+      printResult(runtime.status(arg));
+      break;
+    }
+    default:
+      process.stdout.write('Usage: agent <run|resume|status> [issue|runId]\n');
+      process.exit(1);
+  }
+}
+
+function printResult(state: RunState): void {
+  process.stdout.write(`\n=== Run ${state.runId} \u2192 ${state.status} ===\n`);
+  for (const [name, phase] of Object.entries(state.phases)) {
+    process.stdout.write(`  ${name.padEnd(10)} ${phase.status.padEnd(12)} steps=[${phase.stepsCompleted.join(',')}]\n`);
+  }
+  const summary = state.summary as { proposal?: string; files?: string[] } | undefined;
+  if (summary?.proposal) {
+    process.stdout.write(`\nProposal: ${summary.proposal}\n`);
+    if (summary.files?.length) process.stdout.write(`Files:    ${summary.files.join(', ')}\n`);
+  }
+}
+
+main().catch((err) => {
+  process.stderr.write(`\n\u2716 ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+});
