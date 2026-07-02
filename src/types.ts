@@ -20,7 +20,7 @@ export type AgentEvent =
   | { type: 'ToolCallRequested'; callId: string; tool: string; args: unknown; ts: string }
   | { type: 'ToolCallSucceeded'; callId: string; tool: string; result: unknown; ts: string }
   | { type: 'ToolCallFailed'; callId: string; tool: string; error: string; ts: string }
-  | { type: 'ModelCalled'; phase: string; step: number; prompt: string; response: string; ts: string }
+  | { type: 'ModelCalled'; callId: string; phase: string; step: number; prompt: string; response: string; promptTokens: number; completionTokens: number; costUsd: number; latencyMs: number; cached?: boolean; ts: string }
   | { type: 'StepCompleted'; phase: string; step: number; stepId: string; output: unknown; ts: string }
   | { type: 'PhaseCompleted'; phase: string; ts: string }
   | { type: 'PhaseSkipped'; phase: string; reason: string; ts: string }
@@ -48,6 +48,8 @@ export interface RunState {
   stepOutputs: Record<string, unknown>;
   /** Idempotency cache: deterministic callId -> tool result. Derived from the log. */
   toolResults: Record<string, unknown>;
+  /** Idempotency cache: deterministic callId -> model response text. Derived from the log. */
+  modelResults: Record<string, string>;
   summary?: unknown;
   error?: string;
 }

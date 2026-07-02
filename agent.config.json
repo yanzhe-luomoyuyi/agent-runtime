@@ -1,0 +1,6 @@
+{
+  "pricing": {
+    "promptUsdPerToken": 0.0000005,
+    "completionUsdPerToken": 0.0000015
+  }
+}

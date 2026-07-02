@@ -10,7 +10,7 @@
 import type { AgentEvent, PhaseState, RunState } from './types.js';
 
 export function emptyState(runId: string): RunState {
-  return { runId, status: 'running', phases: {}, stepOutputs: {}, toolResults: {} };
+  return { runId, status: 'running', phases: {}, stepOutputs: {}, toolResults: {}, modelResults: {} };
 }
 
 export function applyEvent(state: RunState, event: AgentEvent): RunState {
@@ -30,6 +30,9 @@ export function applyEvent(state: RunState, event: AgentEvent): RunState {
 
     case 'ToolCallSucceeded':
       return { ...state, toolResults: { ...state.toolResults, [event.callId]: event.result } };
+
+    case 'ModelCalled':
+      return { ...state, modelResults: { ...state.modelResults, [event.callId]: event.response } };
 
     case 'StepCompleted': {
       const phase = phaseOf(event.phase);
@@ -55,7 +58,7 @@ export function applyEvent(state: RunState, event: AgentEvent): RunState {
       return { ...state, status: 'failed', error: event.error };
 
     // Observability-only events carry no state transition:
-    // ToolCallRequested, ToolCallFailed, ModelCalled.
+    // ToolCallRequested, ToolCallFailed.
     default:
       return state;
   }

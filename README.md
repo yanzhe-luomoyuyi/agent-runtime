@@ -38,8 +38,8 @@ flowchart LR
     ST --> RT
     RT --> WF[Workflow<br/>phases + steps]
     WF -->|callTool| TR[Tool Registry]
-    WF -->|complete| MP[Model Provider]
-    RT -.onEvent.-> OBS[[observability seam]]
+    WF -->|callModel| MP[Model Provider]
+    RT -.onEvent.-> OBS[[trace: spans + tokens + cost]]
 ```
 
 - **Event log** ([src/eventlog.ts](src/eventlog.ts)) — append-only; one exclusively-created file per event (optimistic concurrency).
@@ -106,7 +106,7 @@ ls .agent-runs/<run-id>/   # 000000000000.json, 000000000001.json, ...
 
 - **D2 — Durability core** ✅ event log + reducer + resume + idempotency (this commit).
 - **D3 — Concurrency safety** ✅ optimistic-concurrency append (exclusive-create) + `ConflictError` + a `recover()` supervisor.
-- **D4 — Observability**: per phase/step/tool spans, token + cost + latency, a timeline view.
+- **D4 — Observability** ✅ per phase/step/tool/model spans + token/cost/latency totals via `agent trace`; model calls now flow through the runtime (recorded as `ModelCalled` events + idempotent on resume).
 - **D5 — Eval harness**: scenario fixtures + a scorer; catch a regression when a prompt changes.
 - **D6 — Polish**: architecture write-up, comparison benchmarks, recorded demo.
 

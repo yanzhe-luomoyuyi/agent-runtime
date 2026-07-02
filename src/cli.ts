@@ -9,26 +9,49 @@
  * demo resume. Run logs live under AGENT_RUNS_DIR (default: .agent-runs).
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+
+import { CachingModelProvider, FileResponseCache } from './model/caching.js';
 import { MockModelProvider } from './model/provider.js';
+import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { Runtime } from './runtime.js';
 import { getIssue, searchCode } from './tools/builtins.js';
 import { ToolRegistry } from './tools/registry.js';
+import { renderTimeline } from './trace.js';
 import type { RunState } from './types.js';
 import { issueWorkflow } from './workflow.js';
 
 const BASE_DIR = process.env.AGENT_RUNS_DIR ?? '.agent-runs';
 
+/** Load token pricing from agent.config.json (or $AGENT_CONFIG), falling back to defaults. */
+function loadPricing(): ModelPricing {
+  const path = process.env.AGENT_CONFIG ?? 'agent.config.json';
+  if (existsSync(path)) {
+    try {
+      const cfg = JSON.parse(readFileSync(path, 'utf8')) as { pricing?: Partial<ModelPricing> };
+      return { ...DEFAULT_PRICING, ...cfg.pricing };
+    } catch {
+      // malformed config — fall back to defaults
+    }
+  }
+  return DEFAULT_PRICING;
+}
+
 function makeRuntime(): Runtime {
-  const model = new MockModelProvider({
-    'analyze.summary': 'Login crashes because the session can be null. Keywords: login, auth, session, null.',
-    'propose.fix': 'Guard against a null session in src/auth/login.ts before reading user.token.',
-  });
+  const model = new CachingModelProvider(
+    new MockModelProvider({
+      'analyze.summary': 'Login crashes because the session can be null. Keywords: login, auth, session, null.',
+      'propose.fix': 'Guard against a null session in src/auth/login.ts before reading user.token.',
+    }),
+    new FileResponseCache(process.env.AGENT_CACHE ?? '.agent-cache.json'),
+  );
   const tools = new ToolRegistry().register(getIssue).register(searchCode);
   return new Runtime({
     baseDir: BASE_DIR,
     model,
     tools,
     workflow: issueWorkflow,
+    pricing: loadPricing(),
     crashAfter: process.env.CRASH_AFTER,
     onEvent: (event) => {
       if (event.type === 'RunStarted') process.stderr.write(`\u25b6 run ${event.runId}\n`);
@@ -68,8 +91,13 @@ async function main(): Promise<void> {
       }
       break;
     }
+    case 'trace': {
+      if (!arg) throw new Error('Usage: agent trace <runId>');
+      process.stdout.write(renderTimeline(runtime.trace(arg)) + '\n');
+      break;
+    }
     default:
-      process.stdout.write('Usage: agent <run|resume|status|recover> [issue|runId]\n');
+      process.stdout.write('Usage: agent <run|resume|status|recover|trace> [issue|runId]\n');
       process.exit(1);
   }
 }

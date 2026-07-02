@@ -11,7 +11,6 @@
  * machinery is the actual product.
  */
 
-import type { ModelProvider } from './model/provider.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { RunState } from './types.js';
 
@@ -19,10 +18,11 @@ export interface StepContext {
   runId: string;
   input: { issue: string };
   state: RunState;
-  model: ModelProvider;
   tools: ToolRegistry;
   /** Call a tool with automatic, deterministic idempotency across resumes. */
   callTool: <R = unknown>(tool: string, args: unknown) => Promise<R>;
+  /** Call the model; recorded as a ModelCalled event (tokens/cost/latency) and idempotent across resumes. */
+  callModel: (prompt: string) => Promise<string>;
   /** Read the output an earlier step produced (e.g. "analyze.1"). */
   getStepOutput: <R = unknown>(stepId: string) => R | undefined;
 }
@@ -67,7 +67,7 @@ export const issueWorkflow: WorkflowDef = {
           name: 'Summarize',
           run: async (ctx) => {
             const issue = ctx.getStepOutput<IssueRecord>('analyze.1')!;
-            const summary = await ctx.model.complete(
+            const summary = await ctx.callModel(
               `[analyze.summary] Summarize this issue and list keywords: ${issue.title} — ${issue.body}`,
             );
             return { summary, labels: issue.labels };
@@ -102,7 +102,7 @@ export const issueWorkflow: WorkflowDef = {
           run: async (ctx) => {
             const analysis = ctx.getStepOutput<{ summary: string }>('analyze.2')!;
             const located = ctx.getStepOutput<{ candidateFiles: string[] }>('locate.1')!;
-            const proposal = await ctx.model.complete(
+            const proposal = await ctx.callModel(
               `[propose.fix] Given summary "${analysis.summary}" and candidate files ` +
                 `${located.candidateFiles.join(', ')}, propose a concrete fix.`,
             );

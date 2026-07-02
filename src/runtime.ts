@@ -13,8 +13,10 @@ import { randomUUID } from 'node:crypto';
 
 import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
 import type { ModelProvider } from './model/provider.js';
+import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { applyEvent, reduce } from './reducer.js';
 import type { ToolRegistry } from './tools/registry.js';
+import { buildTrace, type Trace } from './trace.js';
 import type { AgentEvent, RunState } from './types.js';
 import type { StepContext, WorkflowDef } from './workflow.js';
 
@@ -27,6 +29,8 @@ export interface RuntimeOptions {
   crashAfter?: string;
   /** Observability seam — invoked for every appended event (D4 tracing hooks here). */
   onEvent?: (event: AgentEvent) => void;
+  /** Token cost model. Defaults to DEFAULT_PRICING; the CLI loads it from agent.config.json. */
+  pricing?: ModelPricing;
 }
 
 export class Runtime {
@@ -48,6 +52,13 @@ export class Runtime {
     const log = new EventLog(runDir(this.opts.baseDir, runId));
     if (log.length === 0) throw new Error(`Run not found: ${runId}`);
     return reduce(log.all(), runId);
+  }
+
+  /** Build an observability trace (spans + token/cost/latency totals) from a run's log. */
+  trace(runId: string): Trace {
+    const log = new EventLog(runDir(this.opts.baseDir, runId));
+    if (log.length === 0) throw new Error(`Run not found: ${runId}`);
+    return buildTrace(log.all());
   }
 
   /**
@@ -143,9 +154,34 @@ export class Runtime {
       get state() {
         return getState();
       },
-      model: this.opts.model,
       tools: this.opts.tools,
       getStepOutput: <R>(stepId: string): R | undefined => getState().stepOutputs[stepId] as R | undefined,
+      callModel: async (prompt: string): Promise<string> => {
+        const state = getState();
+        const callId = `${state.currentPhase}.${state.currentStep}:model`;
+        // Idempotency: a completed model call is replayed from the log, never re-issued.
+        if (callId in state.modelResults) return state.modelResults[callId]!;
+
+        const startedAt = Date.now();
+        const { text, promptTokens, completionTokens, cached } = await this.opts.model.complete(prompt);
+        const pricing = this.opts.pricing ?? DEFAULT_PRICING;
+        const costUsd = promptTokens * pricing.promptUsdPerToken + completionTokens * pricing.completionUsdPerToken;
+        record({
+          type: 'ModelCalled',
+          callId,
+          phase: state.currentPhase!,
+          step: state.currentStep!,
+          prompt,
+          response: text,
+          promptTokens,
+          completionTokens,
+          costUsd,
+          latencyMs: Date.now() - startedAt,
+          cached: cached ?? false,
+          ts: now(),
+        });
+        return text;
+      },
       callTool: async <R>(tool: string, args: unknown): Promise<R> => {
         const state = getState();
         const callId = `${state.currentPhase}.${state.currentStep}:${tool}`;
