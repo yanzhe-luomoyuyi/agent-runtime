@@ -75,9 +75,7 @@ describe('durable agent runtime', () => {
     await expect(crashing.run('Login page crashes with a null session')).rejects.toThrow('__CRASH__');
     expect(calls).toEqual({ getIssue: 1, searchCode: 1 });
 
-    const runId = readdirSync(dir)
-      .find((file) => file.endsWith('.jsonl'))!
-      .replace('.jsonl', '');
+    const runId = readdirSync(dir)[0]!;
 
     // Resume with a fresh runtime instance (a new process would behave the same).
     const resumed = new Runtime({ baseDir: dir, model: makeModel(), tools, workflow: issueWorkflow });
@@ -97,7 +95,7 @@ describe('durable agent runtime', () => {
     const crashDir = mkdtempSync(join(tmpdir(), 'agent-crash-'));
     const crashing = new Runtime({ baseDir: crashDir, model: makeModel(), tools: makeCountingTools().tools, workflow: issueWorkflow, crashAfter: 'analyze.2' });
     await expect(crashing.run('Login page crashes with a null session')).rejects.toThrow('__CRASH__');
-    const runId = readdirSync(crashDir).find((file) => file.endsWith('.jsonl'))!.replace('.jsonl', '');
+    const runId = readdirSync(crashDir)[0]!;
     const resumed = new Runtime({ baseDir: crashDir, model: makeModel(), tools: makeCountingTools().tools, workflow: issueWorkflow });
     const resumedState = await resumed.resume(runId);
 

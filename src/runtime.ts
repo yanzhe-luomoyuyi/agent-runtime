@@ -11,7 +11,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { EventLog, runLogPath } from './eventlog.js';
+import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
 import type { ModelProvider } from './model/provider.js';
 import { applyEvent, reduce } from './reducer.js';
 import type { ToolRegistry } from './tools/registry.js';
@@ -34,19 +34,42 @@ export class Runtime {
 
   async run(issue: string): Promise<RunState> {
     const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    const log = new EventLog(runLogPath(this.opts.baseDir, runId));
+    const log = new EventLog(runDir(this.opts.baseDir, runId));
     return this.drive(runId, log, { type: 'RunStarted', runId, input: { issue }, workflow: this.opts.workflow.name, ts: now() });
   }
 
   async resume(runId: string): Promise<RunState> {
-    const log = new EventLog(runLogPath(this.opts.baseDir, runId));
+    const log = new EventLog(runDir(this.opts.baseDir, runId));
     if (log.length === 0) throw new Error(`No run log found for ${runId}`);
     return this.drive(runId, log);
   }
 
   status(runId: string): RunState {
-    const log = new EventLog(runLogPath(this.opts.baseDir, runId));
+    const log = new EventLog(runDir(this.opts.baseDir, runId));
+    if (log.length === 0) throw new Error(`Run not found: ${runId}`);
     return reduce(log.all(), runId);
+  }
+
+  /**
+   * Find every interrupted run (status still "running") under baseDir and resume
+   * it. If another worker is concurrently driving a run, our append loses the
+   * optimistic-concurrency race (ConflictError) and we skip it rather than
+   * corrupt its log. This is the crash-recovery supervisor.
+   */
+  async recover(): Promise<Array<{ runId: string; state?: RunState; conflict?: boolean }>> {
+    const results: Array<{ runId: string; state?: RunState; conflict?: boolean }> = [];
+    for (const runId of listRunIds(this.opts.baseDir)) {
+      const log = new EventLog(runDir(this.opts.baseDir, runId));
+      if (log.length === 0) continue; // stray/empty directory — not a real run
+      if (reduce(log.all(), runId).status !== 'running') continue; // only interrupted runs
+      try {
+        results.push({ runId, state: await this.resume(runId) });
+      } catch (e) {
+        if (e instanceof ConflictError) results.push({ runId, conflict: true });
+        else throw e;
+      }
+    }
+    return results;
   }
 
   private async drive(runId: string, log: EventLog, initialEvent?: AgentEvent): Promise<RunState> {
@@ -99,6 +122,7 @@ export class Runtime {
       record({ type: 'RunCompleted', summary: buildSummary(state), ts: now() });
       return state;
     } catch (err) {
+      if (err instanceof ConflictError) throw err; // another writer owns this run — don't clobber its log
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('__CRASH__')) throw err; // leave the log resumable — no RunFailed
 

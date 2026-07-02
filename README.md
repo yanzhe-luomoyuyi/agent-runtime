@@ -19,7 +19,7 @@ event-sourcing approach instead:
 
 | Concern | Snapshot / overwrite checkpoint | This runtime (event-sourced) |
 |---|---|---|
-| Persistence | Overwrite one JSON blob | Append-only event log (JSONL), one line per event |
+| Persistence | Overwrite one JSON blob | Append-only event log, one exclusively-created file per event |
 | State | Stored directly (can be half-written) | **Derived** by folding events through a pure reducer |
 | Crash safety | Partial write can corrupt state | A crash leaves a valid, replayable **prefix** |
 | Resume | Re-run from a coarse "phase/step" marker | Replay log → continue at first incomplete step |
@@ -42,7 +42,7 @@ flowchart LR
     RT -.onEvent.-> OBS[[observability seam]]
 ```
 
-- **Event log** ([src/eventlog.ts](src/eventlog.ts)) — append-only, flushed per event.
+- **Event log** ([src/eventlog.ts](src/eventlog.ts)) — append-only; one exclusively-created file per event (optimistic concurrency).
 - **Reducer** ([src/reducer.ts](src/reducer.ts)) — pure `(state, event) => state`; the only way state is built.
 - **Runtime** ([src/runtime.ts](src/runtime.ts)) — drives the workflow, appends events, resumes from the log, and makes tool calls idempotent via deterministic `callId`s.
 - **Workflow** ([src/workflow.ts](src/workflow.ts)) — declarative phases/steps (`analyze → locate → propose`).
@@ -76,10 +76,10 @@ npm run dev -- resume <run-id>
 npm run dev -- status <run-id>
 ```
 
-You can also just read the log — it is human-readable JSONL:
+Each run is a directory of sequence-numbered event files (one JSON per event):
 
 ```bash
-cat .agent-runs/<run-id>.jsonl
+ls .agent-runs/<run-id>/   # 000000000000.json, 000000000001.json, ...
 ```
 
 ---
@@ -105,7 +105,7 @@ cat .agent-runs/<run-id>.jsonl
 ## Roadmap
 
 - **D2 — Durability core** ✅ event log + reducer + resume + idempotency (this commit).
-- **D3 — Concurrency safety**: optimistic version check + crash-recovery tests.
+- **D3 — Concurrency safety** ✅ optimistic-concurrency append (exclusive-create) + `ConflictError` + a `recover()` supervisor.
 - **D4 — Observability**: per phase/step/tool spans, token + cost + latency, a timeline view.
 - **D5 — Eval harness**: scenario fixtures + a scorer; catch a regression when a prompt changes.
 - **D6 — Polish**: architecture write-up, comparison benchmarks, recorded demo.

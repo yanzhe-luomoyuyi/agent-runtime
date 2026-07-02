@@ -59,8 +59,17 @@ async function main(): Promise<void> {
       printResult(runtime.status(arg));
       break;
     }
+    case 'recover': {
+      const recovered = await runtime.recover();
+      if (recovered.length === 0) process.stdout.write('No interrupted runs to recover.\n');
+      for (const r of recovered) {
+        if (r.conflict) process.stdout.write(`~ ${r.runId} skipped (another worker owns it)\n`);
+        else process.stdout.write(`\u2713 ${r.runId} \u2192 ${r.state!.status}\n`);
+      }
+      break;
+    }
     default:
-      process.stdout.write('Usage: agent <run|resume|status> [issue|runId]\n');
+      process.stdout.write('Usage: agent <run|resume|status|recover> [issue|runId]\n');
       process.exit(1);
   }
 }
