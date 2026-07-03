@@ -11,6 +11,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 
+import { demoScenarios, renderReport, runEval } from './eval.js';
 import { CachingModelProvider, FileResponseCache } from './model/caching.js';
 import { MockModelProvider } from './model/provider.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
@@ -37,17 +38,30 @@ function loadPricing(): ModelPricing {
   return DEFAULT_PRICING;
 }
 
-function makeRuntime(): Runtime {
+function cannedResponses(): Record<string, string> {
+  return {
+    'analyze.summary': 'Login crashes because the session can be null. Keywords: login, auth, session, null.',
+    // AGENT_REGRESS simulates a prompt/model change that degrades the output.
+    'propose.fix': process.env.AGENT_REGRESS
+      ? 'Try turning it off and on again.'
+      : 'Guard against a null session in src/auth/login.ts before reading user.token.',
+  };
+}
+
+/** Evals build a fresh, un-cached model so a stale response cache can't mask a regression. */
+function buildEvalRuntime(baseDir: string): Runtime {
+  const tools = new ToolRegistry().register(getIssue).register(searchCode);
+  return new Runtime({ baseDir, model: new MockModelProvider(cannedResponses()), tools, workflow: issueWorkflow, pricing: loadPricing() });
+}
+
+function makeRuntime(baseDir: string = BASE_DIR): Runtime {
   const model = new CachingModelProvider(
-    new MockModelProvider({
-      'analyze.summary': 'Login crashes because the session can be null. Keywords: login, auth, session, null.',
-      'propose.fix': 'Guard against a null session in src/auth/login.ts before reading user.token.',
-    }),
+    new MockModelProvider(cannedResponses()),
     new FileResponseCache(process.env.AGENT_CACHE ?? '.agent-cache.json'),
   );
   const tools = new ToolRegistry().register(getIssue).register(searchCode);
   return new Runtime({
-    baseDir: BASE_DIR,
+    baseDir,
     model,
     tools,
     workflow: issueWorkflow,
@@ -96,8 +110,14 @@ async function main(): Promise<void> {
       process.stdout.write(renderTimeline(runtime.trace(arg)) + '\n');
       break;
     }
+    case 'eval': {
+      const report = await runEval(demoScenarios, buildEvalRuntime);
+      process.stdout.write(renderReport(report) + '\n');
+      process.exitCode = report.allPassed ? 0 : 1;
+      break;
+    }
     default:
-      process.stdout.write('Usage: agent <run|resume|status|recover|trace> [issue|runId]\n');
+      process.stdout.write('Usage: agent <run|resume|status|recover|trace|eval> [issue|runId]\n');
       process.exit(1);
   }
 }
