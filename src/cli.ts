@@ -4,9 +4,13 @@
  *   agent run "<issue text>"     Start a new run.
  *   agent resume <runId>         Continue an interrupted run from its event log.
  *   agent status <runId>         Print the derived state of a run.
+ *   agent recover                Drive any interrupted runs to completion.
+ *   agent trace <runId>          Print the run's timeline + token/cost/replay totals.
+ *   agent eval                   Score the demo scenarios (exit 1 on regression).
  *
  * Set CRASH_AFTER=<stepId> (e.g. CRASH_AFTER=locate.1) to inject a crash and
  * demo resume. Run logs live under AGENT_RUNS_DIR (default: .agent-runs).
+ * Set AGENT_REGRESS=1 to degrade the propose step and demo an eval regression.
  */
 
 import { existsSync, readFileSync } from 'node:fs';

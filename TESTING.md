@@ -10,7 +10,7 @@ How to verify the runtime works — one automated command, plus manual CLI check
 npm test
 ```
 
-Expected: **8 passed**. The suite covers every core guarantee:
+Expected: **20 passed**. The suite covers every core guarantee:
 
 **`test/resume.test.ts` — durability (4)**
 1. Completes a clean run end to end.
@@ -23,6 +23,24 @@ Expected: **8 passed**. The suite covers every core guarantee:
 6. `recover()` finds an interrupted run and drives it to completion.
 7. `status()` on an unknown run throws and creates nothing (reads are side-effect-free).
 8. `recover()` ignores stray empty directories.
+
+**`test/trace.test.ts` — observability (4)**
+9. Builds a timeline of 12 spans (run/phase/step/tool/model) with token/cost/wall totals.
+10. Model calls are idempotent across a crash + resume — replayed from the log, not re-issued.
+11. Cost is computed from **injected** pricing (configurable, not hardcoded).
+12. Reports a durable-replay hit rate: `0` on a clean run, `>0` after a resume.
+
+**`test/caching.test.ts` — content cache (5)**
+13. Identical prompts are served from cache; distinct prompts miss (hit/miss counters).
+14. A second run with the same issue serves every model call from the cache (`costSavedUsd > 0`).
+15. Normalizes whitespace so trivial formatting differences still hit.
+16. Evicts least-recently-used entries when the store is full (LRU bound).
+17. Accepts a custom key function (keying is decoupled/injectable).
+
+**`test/eval.test.ts` — eval harness (3)**
+18. Every scenario passes on a good model config.
+19. Catches a regression when the prompt/model degrades (a proposal check fails).
+20. LLM-as-judge scorer passes a good proposal and fails a degraded one.
 
 ## 2. Type check / build
 
@@ -71,6 +89,28 @@ cat .agent-runs/<run-id>/*.json         # the full event stream
 ```
 Expect: `RunStarted → PhaseStarted → StepStarted → ToolCall… → StepCompleted → … → RunCompleted`.
 
+### f. Inspect the trace (observability)
+```bash
+npm run dev -- trace <run-id>
+```
+Expect: a per-span timeline plus totals — model/tool calls, prompt/completion tokens, cost (USD), wall time, and a durable-replay hit rate (`>0` if the run was resumed).
+
+### g. Run the eval harness (quality gate)
+```bash
+npm run dev -- eval
+```
+Expect: each scenario prints its scorer checks (including an LLM-as-judge line) and `2/2 scenarios passed`, exit code `0`. Simulate a regression:
+```bash
+AGENT_REGRESS=1 npm run dev -- eval    # PowerShell: $env:AGENT_REGRESS='1'; npm run dev -- eval
+```
+Expect: the login scenario's proposal + judge checks fail → `1/2 scenarios passed — REGRESSION`, exit code `1`.
+
+### h. One command that runs the whole story
+```powershell
+pwsh ./demo.ps1            # pauses between sections (good for screen recording)
+pwsh ./demo.ps1 -NoPause   # straight through
+```
+
 ## One-line summary
 
-> `npm test` verifies eight invariants in ~1s; `run` / `recover` demo crash-recovery + idempotency live; the files under `.agent-runs/<id>/` are the persisted proof.
+> `npm test` verifies twenty invariants in ~1s; `run` / `recover` demo crash-recovery + idempotency live; `trace` shows cost/latency/replay; `eval` gates quality (and catches a simulated regression); the files under `.agent-runs/<id>/` are the persisted proof.
