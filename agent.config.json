@@ -2,5 +2,10 @@
   "pricing": {
     "promptUsdPerToken": 0.0000005,
     "completionUsdPerToken": 0.0000015
+  },
+  "policy": {
+    "allowedTools": ["getIssue", "searchCode"],
+    "maxCostUsd": 0.01,
+    "redactions": ["email", "phone", "secret"]
   }
 }

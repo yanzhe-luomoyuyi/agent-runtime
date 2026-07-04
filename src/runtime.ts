@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
 import type { ModelProvider } from './model/provider.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
+import { PolicyEnforcer, PolicyViolationError, type Policy } from './policy.js';
 import { applyEvent, reduce } from './reducer.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { buildTrace, type Trace } from './trace.js';
@@ -31,10 +32,16 @@ export interface RuntimeOptions {
   onEvent?: (event: AgentEvent) => void;
   /** Token cost model. Defaults to DEFAULT_PRICING; the CLI loads it from agent.config.json. */
   pricing?: ModelPricing;
+  /** Declarative guardrails (tool allow-list / cost budget / PII redaction). Optional. */
+  policy?: Policy;
 }
 
 export class Runtime {
-  constructor(private readonly opts: RuntimeOptions) {}
+  private readonly policy?: PolicyEnforcer;
+
+  constructor(private readonly opts: RuntimeOptions) {
+    this.policy = opts.policy ? new PolicyEnforcer(opts.policy) : undefined;
+  }
 
   async run(issue: string): Promise<RunState> {
     const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -86,6 +93,11 @@ export class Runtime {
   private async drive(runId: string, log: EventLog, initialEvent?: AgentEvent): Promise<RunState> {
     let state = reduce(log.all(), runId);
 
+    // Running model spend, seeded from the durable log so cost budgets hold
+    // across resume: replayed model calls keep their original recorded cost and
+    // only genuinely new calls add to the total.
+    let spentUsd = log.all().reduce((sum, e) => (e.type === 'ModelCalled' ? sum + e.costUsd : sum), 0);
+
     // Single funnel for every event: persist to the log, notify observers, AND
     // fold it into the in-memory state — so `state` always equals `reduce(log)`.
     // (Skipping the fold for some events is what previously let state drift.)
@@ -93,6 +105,7 @@ export class Runtime {
       log.append(event);
       this.opts.onEvent?.(event);
       state = applyEvent(state, event);
+      if (event.type === 'ModelCalled') spentUsd += event.costUsd;
     };
 
     if (initialEvent) record(initialEvent);
@@ -115,7 +128,7 @@ export class Runtime {
 
           record({ type: 'StepStarted', phase: phase.name, step: stepNum, stepId: step.id, ts: now() });
 
-          const output = await step.run(this.makeContext(runId, record, () => state, issue));
+          const output = await step.run(this.makeContext(runId, record, () => state, () => spentUsd, issue));
 
           if (this.opts.crashAfter === step.id) {
             // Crash AFTER side effects but BEFORE StepCompleted is recorded, to
@@ -146,6 +159,7 @@ export class Runtime {
     runId: string,
     record: (event: AgentEvent) => void,
     getState: () => RunState,
+    getSpentUsd: () => number,
     issue: string,
   ): StepContext {
     return {
@@ -162,8 +176,14 @@ export class Runtime {
         // Idempotency: a completed model call is replayed from the log, never re-issued.
         if (callId in state.modelResults) return state.modelResults[callId]!;
 
+        // Policy funnel: enforce the cost budget, then redact PII before the prompt
+        // ever leaves the runtime — the model sees, and the log stores, only the
+        // redacted text.
+        this.enforceBudget(getSpentUsd(), callId, record);
+        const outbound = this.policy ? this.policy.redact(prompt).text : prompt;
+
         const startedAt = Date.now();
-        const { text, promptTokens, completionTokens, cached } = await this.opts.model.complete(prompt);
+        const { text, promptTokens, completionTokens, cached } = await this.opts.model.complete(outbound);
         const pricing = this.opts.pricing ?? DEFAULT_PRICING;
         const costUsd = promptTokens * pricing.promptUsdPerToken + completionTokens * pricing.completionUsdPerToken;
         record({
@@ -171,7 +191,7 @@ export class Runtime {
           callId,
           phase: state.currentPhase!,
           step: state.currentStep!,
-          prompt,
+          prompt: outbound,
           response: text,
           promptTokens,
           completionTokens,
@@ -188,6 +208,9 @@ export class Runtime {
         // Idempotency: a completed tool call is replayed from the log, never re-run.
         if (callId in state.toolResults) return state.toolResults[callId] as R;
 
+        // Policy funnel: refuse any tool that is not on the allow-list.
+        this.enforceToolAllowed(tool, record);
+
         record({ type: 'ToolCallRequested', callId, tool, args, ts: now() });
         try {
           const result = await this.opts.tools.get(tool).run(args);
@@ -199,6 +222,32 @@ export class Runtime {
         }
       },
     };
+  }
+
+  /** Deny a tool that is not on the policy allow-list (records the denial first). */
+  private enforceToolAllowed(tool: string, record: (event: AgentEvent) => void): void {
+    if (!this.policy) return;
+    try {
+      this.policy.checkTool(tool);
+    } catch (e) {
+      if (e instanceof PolicyViolationError) {
+        record({ type: 'PolicyDenied', scope: 'tool', target: tool, code: e.code, reason: e.message, ts: now() });
+      }
+      throw e;
+    }
+  }
+
+  /** Deny a model call once the cumulative cost budget is exhausted. */
+  private enforceBudget(spentUsd: number, callId: string, record: (event: AgentEvent) => void): void {
+    if (!this.policy) return;
+    try {
+      this.policy.checkBudget(spentUsd, callId);
+    } catch (e) {
+      if (e instanceof PolicyViolationError) {
+        record({ type: 'PolicyDenied', scope: 'model', target: callId, code: e.code, reason: e.message, ts: now() });
+      }
+      throw e;
+    }
   }
 }
 

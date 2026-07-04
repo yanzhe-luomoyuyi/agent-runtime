@@ -9,9 +9,12 @@ import {
   costUnderUsd,
   heuristicJudge,
   llmJudge,
+  noPolicyViolations,
   noToolFailures,
+  policyDenied,
   proposalContains,
   runCompleted,
+  runFailedWith,
   touchedFile,
   type Scenario,
 } from '../eval.js';
@@ -28,11 +31,20 @@ export const demoScenarios: Scenario[] = [
       llmJudge(heuristicJudge, 'the proposal addresses the bug with a concrete, file-specific fix'),
       costUnderUsd(0.01),
       noToolFailures(),
+      noPolicyViolations(),
     ],
   },
   {
     name: 'button render bug',
     issue: 'Button does not render on the settings page',
-    checks: [runCompleted(), touchedFile('src/ui/Button.tsx'), costUnderUsd(0.01), noToolFailures()],
+    checks: [runCompleted(), touchedFile('src/ui/Button.tsx'), costUnderUsd(0.01), noToolFailures(), noPolicyViolations()],
+  },
+  {
+    // Guardrail regression: a deliberately tiny budget must stop the agent mid-run.
+    // Proves the declarative policy layer *enforces* (not just records) the budget.
+    name: 'cost-budget guardrail halts a runaway agent',
+    issue: 'Login page crashes with a null session',
+    policy: { maxCostUsd: 0.000001 },
+    checks: [runFailedWith('budget'), policyDenied()],
   },
 ];

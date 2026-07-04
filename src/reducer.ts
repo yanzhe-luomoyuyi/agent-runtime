@@ -58,7 +58,7 @@ export function applyEvent(state: RunState, event: AgentEvent): RunState {
       return { ...state, status: 'failed', error: event.error };
 
     // Observability-only events carry no state transition:
-    // ToolCallRequested, ToolCallFailed.
+    // ToolCallRequested, ToolCallFailed, PolicyDenied.
     default:
       return state;
   }

@@ -37,10 +37,13 @@ flowchart LR
     LOG -->|reduce| ST[RunState]
     ST --> RT
     RT --> WF[Workflow<br/>phases + steps]
-    WF -->|callTool| TR[Tool Registry]
-    WF -->|callModel| MP[Caching Model Provider]
+    WF -->|callTool / callModel| POL{{Policy<br/>allow-list · budget · PII}}
+    POL -->|tool| TR[Tool Registry]
+    POL -->|model| MP[Caching Model Provider]
+    TR --> LOCAL[Local ToolDefs]
+    TR --> ADP[MCP adapter] --> SDK[MCP base SDK<br/>JSON-RPC · transport · token cache] --> SRV[(MCP servers)]
     MP --> BASE[Base Model]
-    RT -.onEvent.-> OBS[[trace: spans + tokens + cost]]
+    RT -.onEvent.-> OBS[[trace: spans + tokens + cost + denials]]
     LOG -.project.-> EVAL[[eval: scorers + LLM-judge]]
 ```
 
@@ -55,13 +58,15 @@ The boundary is deliberate: everything under `src/` is the **runtime (platform)*
 - **Model provider** ([src/model/provider.ts](src/model/provider.ts)) — swappable LLM; the mock is deterministic for offline dev and stable tests.
 - **Response cache** ([src/model/caching.ts](src/model/caching.ts)) — `CachingModelProvider` decorator: content-keyed (normalized prompt → sha256), LRU-bounded, optionally file-backed. Cuts tokens/cost on repeated prompts across runs.
 - **Pricing** ([src/pricing.ts](src/pricing.ts)) — config-driven token pricing (`agent.config.json`); feeds the cost totals in the trace.
-- **Tool registry** ([src/tools/registry.ts](src/tools/registry.ts)) — the MCP-shaped `ToolDef`/`ToolRegistry` contract. A single adapter can later expose real MCP servers through the same interface.
+- **Tool registry** ([src/tools/registry.ts](src/tools/registry.ts)) — the MCP-shaped `ToolDef`/`ToolRegistry` contract, so a local tool and a remote MCP tool look identical to the runtime.
+- **Declarative policy layer** ([src/policy.ts](src/policy.ts)) — reusable guardrail middleware on the single tool/model funnel: a data-defined `Policy` (tool allow-list · cost budget · PII redaction). Denials are recorded as `PolicyDenied` events, so guardrails are observable and eval-testable — not hardcoded inside a server.
+- **Shared MCP base SDK** ([src/mcp/](src/mcp/)) — the cross-cutting plumbing every MCP server would otherwise duplicate, factored out once: JSON-RPC framing, a swappable transport, and a **shared** token cache. An adapter projects a server's tools into the `ToolRegistry`, so N servers converge onto one client + one auth cache instead of re-implementing curl/JSON-RPC/token caching N times.
 - **Eval harness** ([src/eval.ts](src/eval.ts)) — composable scorers (programmatic + LLM-as-judge) + a runner that grade the derived RunState/trace; `agent eval` exits non-zero on a regression.
 
 **Demo workload — the agent (`src/app/`)**
 
 - **Workflow** ([src/app/issue-workflow.ts](src/app/issue-workflow.ts)) — the `issue → fix` agent as declarative phases/steps (`analyze → locate → propose`).
-- **Tools** ([src/app/tools.ts](src/app/tools.ts)) — deterministic mock `getIssue`/`searchCode`; swap for MCP-backed tools later.
+- **Tools** ([src/app/tools.ts](src/app/tools.ts)) — deterministic mock `getIssue`/`searchCode`. Run with `AGENT_MCP=1` to serve the very same tools through the MCP base SDK ([src/app/mcp-servers.ts](src/app/mcp-servers.ts)) instead — the runtime can't tell the difference.
 - **Model responses** ([src/app/responses.ts](src/app/responses.ts)) — canned, deterministic outputs for the mock model.
 - **Eval scenarios** ([src/app/scenarios.ts](src/app/scenarios.ts)) — the demo fixtures + expected outcomes the harness grades.
 
@@ -98,6 +103,24 @@ Each run is a directory of sequence-numbered event files (one JSON per event):
 ls .agent-runs/<run-id>/   # 000000000000.json, 000000000001.json, ...
 ```
 
+### Demo: declarative guardrails (allow-list · budget · PII)
+
+```bash
+# Policy is data in agent.config.json. The eval includes a guardrail scenario that
+# shrinks the budget to prove the runtime *refuses* the overspending call (records a
+# PolicyDenied event and fails the run) — not just that a budget is configured.
+npm run dev -- eval        # "cost-budget guardrail halts a runaway agent" -> PASS
+```
+
+### Demo: tools over the shared MCP base SDK
+
+```bash
+# Serve the same getIssue/searchCode tools through JSON-RPC + a shared token cache.
+# Identical result to the local path — the runtime can't tell them apart.
+AGENT_MCP=1 npm run dev -- run "Login page crashes with a null session"
+# > tools via MCP base SDK — 2 servers sharing 1 auth fetch
+```
+
 ---
 
 ## Design decisions worth explaining (interview notes)
@@ -122,6 +145,15 @@ ls .agent-runs/<run-id>/   # 000000000000.json, 000000000001.json, ...
 7. **Eval is just another projection.** Scorers read the same event-sourced
    RunState/trace a run already produces, so grading is "read the history." Evals
    run on a fresh, un-cached model so a stale cache can't mask a regression.
+8. **Guardrails are a declarative layer, not server code.** Tool allow-list,
+   cost budget, and PII redaction live as *data* on the one tool/model funnel, so
+   the same policy composes over any workflow and any tool. Every denial is a
+   durable `PolicyDenied` event — which is why the eval can assert a guardrail
+   actually *fires*, not merely that it's configured.
+9. **One MCP base SDK; servers converge onto it.** JSON-RPC, transport, and a
+   shared token cache are factored out once. Adding a server is "point a client at
+   a transport," not "re-implement curl + JSON-RPC + token caching" — and the
+   adapter makes remote tools indistinguishable from local ones to the runtime.
 
 ---
 
@@ -132,6 +164,8 @@ ls .agent-runs/<run-id>/   # 000000000000.json, 000000000001.json, ...
 - **D4 — Observability** ✅ per phase/step/tool/model spans + token/cost/latency totals via `agent trace`; model calls now flow through the runtime (recorded as `ModelCalled` events + idempotent on resume).
 - **D5 — Eval harness** ✅ scenario fixtures + composable scorers (programmatic + LLM-as-judge) grading the RunState/trace; `agent eval` (exits non-zero on failure). Demo: `AGENT_REGRESS=1 agent eval` degrades a prompt → the harness catches the regression.
 - **D6 — Polish** ✅ architecture write-up (this file) + refreshed [TESTING.md](TESTING.md) + a scripted end-to-end walkthrough ([demo.ps1](demo.ps1): run → crash → resume → recover → trace → eval).
+- **D7 — Shared MCP base SDK** ✅ JSON-RPC + swappable transport + a shared, refreshing token cache ([src/mcp/](src/mcp/)); an adapter projects remote tools into the `ToolRegistry`. `AGENT_MCP=1 agent run` serves the demo tools through it with identical results (one auth fetch shared across servers).
+- **D8 — Declarative policy layer** ✅ tool allow-list / cost budget / PII redaction ([src/policy.ts](src/policy.ts)) enforced on the tool/model funnel, recorded as `PolicyDenied` events and surfaced in `agent trace`. The eval includes a guardrail-regression scenario asserting the budget actually halts a run.
 
 ## License
 

@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ModelProvider } from './model/provider.js';
+import type { Policy } from './policy.js';
 import type { Runtime } from './runtime.js';
 import type { Trace } from './trace.js';
 import type { RunState } from './types.js';
@@ -34,6 +35,8 @@ export interface Scenario {
   name: string;
   issue: string;
   checks: Scorer[];
+  /** Optional per-scenario policy override — used by guardrail-regression scenarios. */
+  policy?: Policy;
 }
 
 // --- Scorers (composable; each grades one property of the run) --------------
@@ -69,6 +72,32 @@ export const noToolFailures = (): Scorer => (ctx) => ({
   passed: ctx.trace.totals.failedToolCalls === 0,
   detail: `${ctx.trace.totals.failedToolCalls} failed`,
 });
+
+// --- Policy scorers (grade the declarative guardrail layer) -----------------
+
+/** Assert the run tripped no guardrails (a good run under an active policy). */
+export const noPolicyViolations = (): Scorer => (ctx) => ({
+  name: 'no policy violations',
+  passed: ctx.trace.totals.policyDenials === 0,
+  detail: `${ctx.trace.totals.policyDenials} denied`,
+});
+
+/** Assert the policy layer actively DENIED at least `min` call(s). */
+export const policyDenied = (min = 1): Scorer => (ctx) => ({
+  name: `policy denied \u2265${min} call(s)`,
+  passed: ctx.trace.totals.policyDenials >= min,
+  detail: `${ctx.trace.totals.policyDenials} denied`,
+});
+
+/** Assert the run failed and its error mentions `substr` (e.g. "budget"). */
+export const runFailedWith = (substr: string): Scorer => (ctx) => {
+  const error = ctx.state.error ?? '';
+  return {
+    name: `run failed with "${substr}"`,
+    passed: ctx.state.status === 'failed' && error.toLowerCase().includes(substr.toLowerCase()),
+    detail: `status=${ctx.state.status}${error ? ` \u2014 ${error.slice(0, 40)}` : ''}`,
+  };
+};
 
 /**
  * LLM-as-judge scorer: ask a model to grade the proposal against a criterion.
@@ -121,12 +150,12 @@ export interface EvalReport {
 
 export async function runEval(
   scenarios: Scenario[],
-  buildRuntime: (baseDir: string) => Runtime,
+  buildRuntime: (baseDir: string, scenario: Scenario) => Runtime | Promise<Runtime>,
 ): Promise<EvalReport> {
   const results: ScenarioResult[] = [];
   for (const scenario of scenarios) {
     try {
-      const runtime = buildRuntime(mkdtempSync(join(tmpdir(), 'agent-eval-')));
+      const runtime = await buildRuntime(mkdtempSync(join(tmpdir(), 'agent-eval-')), scenario);
       const state = await runtime.run(scenario.issue);
       const trace = runtime.trace(state.runId);
       const checks = await Promise.all(scenario.checks.map((check) => check({ state, trace })));

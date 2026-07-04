@@ -33,6 +33,8 @@ export interface TraceTotals {
   modelCalls: number;
   toolCalls: number;
   failedToolCalls: number;
+  /** Tool/model calls refused by the declarative policy layer. */
+  policyDenials: number;
   /** Calls served from the log on resume instead of re-executed. */
   replayedCalls: number;
   /** replayedCalls / (executed + replayed) — work saved by durable replay. */
@@ -95,6 +97,7 @@ export function buildTrace(events: AgentEvent[]): Trace {
     modelCalls: 0,
     toolCalls: 0,
     failedToolCalls: 0,
+    policyDenials: 0,
     replayedCalls: 0,
     replayHitRate: 0,
     cachedModelCalls: 0,
@@ -154,6 +157,9 @@ export function buildTrace(events: AgentEvent[]): Trace {
         modelSpans.push({ name: 'model', kind: 'model', startMs: t - e.latencyMs - first, durationMs: e.latencyMs, depth: 3 });
         break;
       }
+      case 'PolicyDenied':
+        totals.policyDenials++;
+        break;
       case 'RunCompleted':
       case 'RunFailed':
         runEnd = t;
@@ -210,6 +216,7 @@ export function renderTimeline(trace: Trace): string {
   );
   lines.push(`Replay: ${t.replayedCalls} calls replayed from log (hit rate ${(t.replayHitRate * 100).toFixed(0)}%)`);
   lines.push(`Cache:  ${t.cachedModelCalls}/${t.modelCalls} model calls served from cache (saved $${t.costSavedUsd.toFixed(6)})`);
+  if (t.policyDenials > 0) lines.push(`Policy: ${t.policyDenials} call(s) denied by guardrails`);
   const phases = Object.keys(trace.byPhase);
   if (phases.length > 0) {
     lines.push('By phase (model tokens / cost):');

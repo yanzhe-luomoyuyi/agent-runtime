@@ -3,18 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { demoScenarios } from '../src/app/scenarios.js';
 import { getIssue, searchCode } from '../src/app/tools.js';
-import { runEval } from '../src/eval.js';
+import { runEval, type Scenario } from '../src/eval.js';
 import { MockModelProvider } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 
 function buildRuntimeFactory(canned: Record<string, string>) {
-  return (baseDir: string): Runtime =>
+  return (baseDir: string, scenario: Scenario): Runtime =>
     new Runtime({
       baseDir,
       model: new MockModelProvider(canned),
       tools: new ToolRegistry().register(getIssue).register(searchCode),
       workflow: issueWorkflow,
+      policy: scenario.policy,
     });
 }
 
