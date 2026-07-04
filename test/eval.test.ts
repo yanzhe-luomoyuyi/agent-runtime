@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { demoScenarios, runEval } from '../src/eval.js';
+import { issueWorkflow } from '../src/app/issue-workflow.js';
+import { demoScenarios } from '../src/app/scenarios.js';
+import { getIssue, searchCode } from '../src/app/tools.js';
+import { runEval } from '../src/eval.js';
 import { MockModelProvider } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
-import { getIssue, searchCode } from '../src/tools/builtins.js';
 import { ToolRegistry } from '../src/tools/registry.js';
-import { issueWorkflow } from '../src/workflow.js';
 
 function buildRuntimeFactory(canned: Record<string, string>) {
   return (baseDir: string): Runtime =>

@@ -15,16 +15,18 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 
-import { demoScenarios, renderReport, runEval } from './eval.js';
+import { issueWorkflow } from './app/issue-workflow.js';
+import { cannedResponses } from './app/responses.js';
+import { demoScenarios } from './app/scenarios.js';
+import { getIssue, searchCode } from './app/tools.js';
+import { renderReport, runEval } from './eval.js';
 import { CachingModelProvider, FileResponseCache } from './model/caching.js';
 import { MockModelProvider } from './model/provider.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { Runtime } from './runtime.js';
-import { getIssue, searchCode } from './tools/builtins.js';
 import { ToolRegistry } from './tools/registry.js';
 import { renderTimeline } from './trace.js';
 import type { RunState } from './types.js';
-import { issueWorkflow } from './workflow.js';
 
 const BASE_DIR = process.env.AGENT_RUNS_DIR ?? '.agent-runs';
 
@@ -40,16 +42,6 @@ function loadPricing(): ModelPricing {
     }
   }
   return DEFAULT_PRICING;
-}
-
-function cannedResponses(): Record<string, string> {
-  return {
-    'analyze.summary': 'Login crashes because the session can be null. Keywords: login, auth, session, null.',
-    // AGENT_REGRESS simulates a prompt/model change that degrades the output.
-    'propose.fix': process.env.AGENT_REGRESS
-      ? 'Try turning it off and on again.'
-      : 'Guard against a null session in src/auth/login.ts before reading user.token.',
-  };
 }
 
 /** Evals build a fresh, un-cached model so a stale response cache can't mask a regression. */

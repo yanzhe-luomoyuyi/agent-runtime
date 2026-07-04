@@ -44,15 +44,26 @@ flowchart LR
     LOG -.project.-> EVAL[[eval: scorers + LLM-judge]]
 ```
 
+The boundary is deliberate: everything under `src/` is the **runtime (platform)** and knows nothing about "issues" or "fixes"; everything under `src/app/` is the **demo workload** and can be swapped without touching the runtime.
+
+**Runtime — the platform (`src/`)**
+
 - **Event log** ([src/eventlog.ts](src/eventlog.ts)) — append-only; one exclusively-created file per event (optimistic concurrency).
 - **Reducer** ([src/reducer.ts](src/reducer.ts)) — pure `(state, event) => state`; the only way state is built.
 - **Runtime** ([src/runtime.ts](src/runtime.ts)) — drives the workflow, appends events, resumes from the log, and makes tool calls idempotent via deterministic `callId`s.
-- **Workflow** ([src/workflow.ts](src/workflow.ts)) — declarative phases/steps (`analyze → locate → propose`).
+- **Workflow contract** ([src/workflow.ts](src/workflow.ts)) — the `WorkflowDef`/`PhaseDef`/`StepDef`/`StepContext` types describing *what a workflow looks like*. The runtime drives any workflow of this shape; it has no knowledge of the demo.
 - **Model provider** ([src/model/provider.ts](src/model/provider.ts)) — swappable LLM; the mock is deterministic for offline dev and stable tests.
 - **Response cache** ([src/model/caching.ts](src/model/caching.ts)) — `CachingModelProvider` decorator: content-keyed (normalized prompt → sha256), LRU-bounded, optionally file-backed. Cuts tokens/cost on repeated prompts across runs.
 - **Pricing** ([src/pricing.ts](src/pricing.ts)) — config-driven token pricing (`agent.config.json`); feeds the cost totals in the trace.
-- **Tools** ([src/tools/registry.ts](src/tools/registry.ts)) — MCP-shaped tool defs; deterministic mocks for the demo.
-- **Eval** ([src/eval.ts](src/eval.ts)) — scenario fixtures + composable scorers (programmatic + LLM-as-judge) that grade the derived RunState/trace; `agent eval` exits non-zero on a regression.
+- **Tool registry** ([src/tools/registry.ts](src/tools/registry.ts)) — the MCP-shaped `ToolDef`/`ToolRegistry` contract. A single adapter can later expose real MCP servers through the same interface.
+- **Eval harness** ([src/eval.ts](src/eval.ts)) — composable scorers (programmatic + LLM-as-judge) + a runner that grade the derived RunState/trace; `agent eval` exits non-zero on a regression.
+
+**Demo workload — the agent (`src/app/`)**
+
+- **Workflow** ([src/app/issue-workflow.ts](src/app/issue-workflow.ts)) — the `issue → fix` agent as declarative phases/steps (`analyze → locate → propose`).
+- **Tools** ([src/app/tools.ts](src/app/tools.ts)) — deterministic mock `getIssue`/`searchCode`; swap for MCP-backed tools later.
+- **Model responses** ([src/app/responses.ts](src/app/responses.ts)) — canned, deterministic outputs for the mock model.
+- **Eval scenarios** ([src/app/scenarios.ts](src/app/scenarios.ts)) — the demo fixtures + expected outcomes the harness grades.
 
 ---
 

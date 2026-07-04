@@ -1,12 +1,15 @@
 /**
  * Demo tools — deterministic, offline stand-ins for real integrations.
  *
- * `getIssue` mimics an issue-tracker fetch; `searchCode` mimics a code search.
- * Both are pure functions of their args so the whole demo is reproducible.
- * Swap these for MCP-backed tools (ADO, GitHub, a real code index) later.
+ * Part of the demo *workload* (see ./issue-workflow.ts), not the runtime. The
+ * platform only knows the `ToolDef`/`ToolRegistry` contract (../tools/registry.ts);
+ * these concrete tools plug into it. `getIssue` mimics an issue-tracker fetch and
+ * `searchCode` mimics a code search — both pure functions of their args so the
+ * whole demo is reproducible. Swap these for MCP-backed tools (ADO, GitHub, a
+ * real code index) later.
  */
 
-import type { ToolDef } from './registry.js';
+import type { ToolDef } from '../tools/registry.js';
 
 export interface IssueRecord {
   title: string;

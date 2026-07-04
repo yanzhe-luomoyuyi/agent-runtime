@@ -155,26 +155,3 @@ export function renderReport(report: EvalReport): string {
   lines.push(`${report.passed}/${report.total} scenarios passed${report.allPassed ? '' : '  \u2014 REGRESSION'}`);
   return lines.join('\n');
 }
-
-// --- Demo fixtures ----------------------------------------------------------
-
-export const demoScenarios: Scenario[] = [
-  {
-    name: 'null-session login bug',
-    issue: 'Login page crashes with a null session',
-    checks: [
-      runCompleted(),
-      proposalContains('guard'),
-      proposalContains('login.ts'),
-      touchedFile('src/auth/login.ts'),
-      llmJudge(heuristicJudge, 'the proposal addresses the bug with a concrete, file-specific fix'),
-      costUnderUsd(0.01),
-      noToolFailures(),
-    ],
-  },
-  {
-    name: 'button render bug',
-    issue: 'Button does not render on the settings page',
-    checks: [runCompleted(), touchedFile('src/ui/Button.tsx'), costUnderUsd(0.01), noToolFailures()],
-  },
-];

@@ -4,11 +4,11 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { CachingModelProvider, InMemoryResponseCache } from '../src/model/caching.js';
 import { MockModelProvider, type ModelProvider, type ModelResult } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
 import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
-import { issueWorkflow } from '../src/workflow.js';
 
 /** Counts how many calls actually reach the underlying model (i.e. cache misses). */
 class CountingModel implements ModelProvider {

@@ -4,12 +4,12 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { ConflictError, EventLog, runDir } from '../src/eventlog.js';
 import { MockModelProvider } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
 import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
 import type { AgentEvent } from '../src/types.js';
-import { issueWorkflow } from '../src/workflow.js';
 
 function makeModel(): MockModelProvider {
   return new MockModelProvider({
