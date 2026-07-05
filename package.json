@@ -1,0 +1,20 @@
+{
+  "name": "agent-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Monorepo root linking the shared agent contracts and the model-driven agent harness. The durable-agent-runtime consumes @agent/contracts to run a harness durably.",
+  "workspaces": [
+    "agent-contracts",
+    "agent-harness"
+  ],
+  "scripts": {
+    "build": "npm run build -w @agent/contracts && npm run build -w @agent/harness",
+    "build:contracts": "npm run build -w @agent/contracts",
+    "typecheck": "npm run build:contracts && npm run typecheck -w @agent/harness",
+    "test": "npm run build:contracts && npm run test -w @agent/harness"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

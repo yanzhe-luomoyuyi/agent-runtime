@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Runtime artifacts (durable-agent-runtime)
+.agent-runs/
+.agent-cache.json
+*.log
+
+# Generated documents
+*.docx
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

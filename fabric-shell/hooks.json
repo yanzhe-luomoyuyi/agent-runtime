@@ -1,0 +1,14 @@
+{
+    "version": 1,
+    "hooks": {
+        "sessionEnd": [
+            {
+                "type": "command",
+                "bash": "node hooks/flush-checkpoint.js",
+                "powershell": "node hooks/flush-checkpoint.js",
+                "cwd": ".",
+                "timeoutSec": 5
+            }
+        ]
+    }
+}
