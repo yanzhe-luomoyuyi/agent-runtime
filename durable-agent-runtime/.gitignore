@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.agent-runs/
+.agent-cache.json
+*.log
