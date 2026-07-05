@@ -1,118 +1,276 @@
 # Agent monorepo
 
-A small monorepo exploring the **platform layer** beneath AI agents: a durable
-execution runtime, a model-driven agent harness, and the shared contract that
-lets them interoperate without depending on each other.
+一个探索 AI Agent **平台层**的小型 monorepo：一个可持久化的执行运行时、一个模型驱动的
+Agent harness，以及让两者在互不依赖的前提下协作的共享契约。
 
-> The thesis: the hard part of a production agent isn't the business logic — it's
-> what it runs *on*. This repo separates the **agent brain** (a model-driven
-> loop) from the **execution substrate** (durability, resume, idempotency,
-> observability, policy) and connects them through one tiny seam.
+> 立意：一个生产级 Agent 的难点不在业务逻辑，而在它**运行的底座**。本仓库把
+> **Agent 的大脑**（模型驱动循环）和**执行底座**（持久化、恢复、幂等、可观测、策略）
+> 拆开，再用一条极小的缝 (seam) 把它们连起来。
 
-## The four projects
+## 四个 project
 
-| Project | What it is | Depends on |
+| Project | 是什么 | 依赖 |
 | --- | --- | --- |
-| [`agent-contracts`](agent-contracts) | **The seam.** Pure types, zero logic: messages, tool specs, and the `ChatModel` / `ToolInvoker` interfaces both sides speak. | — |
-| [`agent-harness`](agent-harness) | **The agent brain.** A model-driven loop: tool-calling protocol + arg validation (A), error recovery / self-healing (B), context & memory management (C), and control flow — planning, reflection, sub-agents, human-in-the-loop (D). Runtime-agnostic. | `@agent/contracts` |
-| [`durable-agent-runtime`](durable-agent-runtime) | **The execution substrate.** Event-sourced, resumable, idempotent multi-phase execution with observability, cost accounting, a declarative policy layer, and a shared MCP base SDK. | `@agent/contracts`, `@agent/harness` |
-| [`fabric-shell`](fabric-shell) | The real-world Copilot-CLI agent (MCP servers + skills + agent config) that motivated the study. | — (standalone tooling) |
+| [`agent-contracts`](agent-contracts) | **缝 (seam)。** 纯类型、零逻辑：messages、tool spec，以及两侧都遵循的 `ChatModel` / `ToolInvoker` 接口。 | — |
+| [`agent-harness`](agent-harness) | **Agent 的大脑。** 一个模型驱动循环：工具调用协议 + 参数校验 (A)、错误恢复 / 自愈 (B)、上下文与记忆管理 (C)，以及控制流——规划、反思、子 Agent、human-in-the-loop (D)。与运行时无关。 | `@agent/contracts` |
+| [`durable-agent-runtime`](durable-agent-runtime) | **执行底座。** 事件溯源、可恢复、幂等的多阶段执行，带可观测性、成本核算、声明式策略层，以及一个共享的 MCP base SDK。 | `@agent/contracts`、`@agent/harness` |
+| [`fabric-shell`](fabric-shell) | 启发整个研究的真实 Copilot-CLI Agent（MCP servers + skills + agent 配置）。 | —（独立工具） |
 
-Each of `agent-harness` and `durable-agent-runtime` has its own detailed README
-([harness](agent-harness/README.md)) / README + [TESTING](durable-agent-runtime/TESTING.md).
+`agent-harness` 与 `durable-agent-runtime` 各自有详细的 README
+（[harness](agent-harness/README.md) / README + [TESTING](durable-agent-runtime/TESTING.md)）。
 
-## How they fit together
+## 总体架构
+
+整套仓库的核心是：把 **Agent 的大脑**（`agent-harness`）和**执行底座**（`durable-agent-runtime`）
+彻底拆开，中间只用一个零依赖的纯类型契约包（`agent-contracts`）作为唯一的缝。`fabric-shell`
+是启发整个研究的真实产品——它用「单快照 checkpoint」实现跨会话续跑，本仓库把那一层重做成了
+事件溯源、可恢复、幂等的平台层。
 
 ```mermaid
 flowchart TB
-  subgraph seam[" "]
-    contracts["@agent/contracts<br/>messages · ToolSpec · ChatModel · ToolInvoker"]
+  subgraph FS["fabric-shell — 真实的 Copilot-CLI Agent（灵感来源 · 独立，不属于 npm workspace）"]
+    direction LR
+    FSagent["agents/<br/>dev-agent · backlog-triage"]
+    FSskills["skills/ — 8 个阶段<br/>analysis→clarify→spec→ux→design→impl→PR→iterate"]
+    FSmcp["mcp/ — 8 个 server<br/>work-item · code · docx · sharepoint · whisper · ffmpeg ..."]
+    FScp["checkpoint 单快照 → 回传 Azure DevOps 工作项 → 跨会话 rehydrate"]
   end
-  harness["@agent/harness<br/>model-driven loop (A protocol · B recovery · C context · D control)"]
-  runtime["durable-agent-runtime<br/>event log · reducer · resume · idempotent calls · policy · trace"]
-  adapter["harness-adapter (in runtime/app)<br/>implements ChatModel + ToolInvoker over StepContext,<br/>forwarding the per-turn key"]
 
-  harness -->|imports types| contracts
-  runtime -->|imports types| contracts
-  adapter -->|drives| harness
-  adapter -->|runs inside| runtime
+  FS -. "启发：把『单快照 checkpoint』重做成<br/>事件溯源、可恢复、幂等的平台层" .-> MONO
+
+  subgraph MONO["npm monorepo — agent-workspace"]
+    direction TB
+
+    subgraph SEAM["🔌 agent-contracts（唯一的缝 · 纯类型 · 零逻辑 · 零依赖）"]
+      C1["messages — Message · ToolCall · untrusted 标记"]
+      C2["tools — ToolSpec · ToolInvoker(list/call) · key"]
+      C3["model — ChatModel(chat) · ChatRequest/Response · Usage"]
+    end
+
+    subgraph HARNESS["🧠 agent-harness — Agent 的大脑（模型驱动循环 · runtime 无关）"]
+      HA["A 协议 protocol/ + schema/<br/>解析 tool call · 参数校验"]
+      HB["B 恢复 recovery/<br/>瞬时重试退避 · 死循环检测"]
+      HC["C 上下文 context/<br/>token 预算 · 压缩 · untrusted 隔离"]
+      HD["D 控制 control/<br/>runAgent · planner · reflection · subagent · human"]
+    end
+
+    subgraph RUNTIME["⚙️ durable-agent-runtime — 执行底座（事件溯源 · 可恢复）"]
+      direction TB
+      subgraph PLAT["平台 src/（不懂『issue』是什么）"]
+        RLOG["eventlog · reducer · runtime<br/>append-only · 纯函数派生 · 幂等 callId"]
+        RPOL["policy — allow-list · 预算 · PII"]
+        RMCP["mcp/ — 共享 MCP base SDK<br/>JSON-RPC · transport · token cache"]
+        RTRACE["trace + eval — span / 成本 / 评分"]
+      end
+      subgraph APP["工作负载 src/app/（可替换）"]
+        ADP["★ harness-adapter<br/>RuntimeChatModel + RuntimeToolInvoker"]
+        AWF["issue-workflow<br/>analyze→locate→propose"]
+      end
+    end
+  end
+
+  HARNESS -->|"imports 类型"| SEAM
+  RUNTIME -->|"imports 类型"| SEAM
+  ADP -->|"import runAgent + 驱动"| HD
+  ADP -->|"作为 durable step 跑在"| RLOG
 ```
 
-- The **harness** drives an abstract `ChatModel` + `ToolInvoker` and knows nothing
-  about how it's hosted. A plain host can call `runAgent` directly.
-- The **runtime** hosts it durably: a thin **adapter**
-  ([harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts))
-  implements those two contracts over the runtime's `StepContext`, forwarding the
-  harness's per-turn **`key`** to `ctx.callModel` / `ctx.callTool`.
-- That single forwarded `key` is the entire durability contract: every model turn
-  and tool call is recorded in the event log and replayed idempotently on resume,
-  so a crash mid-loop resumes **without re-running completed turns**.
+- **harness** 驱动一个抽象的 `ChatModel` + `ToolInvoker`，完全不知道自己被谁托管；
+  普通宿主可以直接调用 `runAgent`。
+- **runtime** 把它持久化托管：一个很薄的**适配器**
+  （[harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts)）在 runtime 的
+  `StepContext` 上实现这两个契约，把 harness 每一步的 **`key`** 原样转发给
+  `ctx.callModel` / `ctx.callTool`。
+- **依赖方向是关键**：`harness` 和 `runtime` 谁都不依赖对方，只各自依赖 `contracts`。这样
+  大脑保持「宿主无关」、底座保持「Agent 无关」，只有 adapter 这一个地方同时认识两边。
 
-The runtime still runs on its own too — a fixed 3-phase demo workflow and an
-in-runtime model-driven demo loop — with the harness being fully opt-in.
+runtime 也能完全独立运行——一个固定的三阶段 demo 工作流，以及一个 runtime 内置的模型驱动
+demo 循环——harness 是完全可选的。
 
-## Run modes (durable-agent-runtime CLI)
+## 缝的本质：一个 `key` 就是整个持久化契约
 
-| Mode | How | What runs |
+harness 每一步生成一个确定性的 `key`（模型用 `t<turn>`，工具用 `t<turn>:<callId>`），adapter
+原样转发给 runtime，runtime 就能把每次模型/工具调用记进事件日志、在恢复时幂等重放——已完成的
+turn 与工具副作用不会重复执行。
+
+```mermaid
+sequenceDiagram
+    participant H as harness runAgent
+    participant AD as harness-adapter
+    participant RT as runtime StepContext
+    participant LOG as 事件日志
+
+    H->>AD: model.chat({..., key:"t1"})
+    AD->>RT: ctx.callModel(prompt, {key:"t1"})
+    RT->>LOG: append ModelCalled(callId=t1)
+    H->>AD: tools.call(name, args, {key:"t1:c1"})
+    AD->>RT: ctx.callTool(name, args, {key:"t1:c1"})
+    RT->>LOG: ToolCallRequested → …Succeeded(callId=t1:c1)
+    Note over H,LOG: 💥 turn 之间崩溃
+
+    Note over RT,LOG: —— resume ——
+    RT->>LOG: 重放日志到 head
+    H->>AD: 重跑 → model.chat(key:"t1")
+    AD->>RT: callModel(key:"t1")
+    RT-->>AD: 命中日志 → 重放，不重新执行
+```
+
+子 Agent 会扩展 `keyPrefix`（如 `t1:p1:t1:s1`），保证嵌套下 key 全局唯一。
+
+## 每个 project 的功能模块
+
+### 🔌 agent-contracts — 缝（纯类型）
+
+| 模块 | 职责 |
+| --- | --- |
+| [messages.ts](agent-contracts/src/messages.ts) | 工具调用对话记录：`Message` / `ToolCall` / `Role`，构造器 `systemMessage` / `userMessage` / `assistantMessage` / `toolResultMessage`，以及 `untrusted` 标记（防注入的关键）。 |
+| [tools.ts](agent-contracts/src/tools.ts) | `JSONSchema` 子集 · `ToolSpec` · `ToolInvoker`（`list` / `call`）· 带 `key` 的 `CallOptions`。 |
+| [model.ts](agent-contracts/src/model.ts) | `ChatModel`（`chat`）· `ChatRequest` / `ChatResponse` · `Usage` · `StopReason`。 |
+
+### 🧠 agent-harness — Agent 的大脑（A / B / C / D 四层）
+
+| 层 | 模块 | 职责 |
 | --- | --- | --- |
-| Fixed workflow (default) | `agent run "<issue>"` | Code-driven `analyze → locate → propose` pipeline |
-| In-runtime demo loop | `AGENT_LOOP=1 agent run "<issue>"` | A minimal model-driven loop built into the runtime |
-| **Harness on the runtime** | `HARNESS=1 agent run "<issue>"` | The standalone `@agent/harness` loop, run as a durable step |
+| **A 协议** | [protocol/tool-calling.ts](agent-harness/src/protocol/tool-calling.ts) · [schema/validate.ts](agent-harness/src/schema/validate.ts) | 把 `ChatResponse` 解释成已校验的 tool call 或最终答案；执行**前**按各工具的 `inputSchema` 校验参数——非法调用变成结构化错误而非崩溃；含一个给无原生 tool-calling 模型用的容错文本解析器。 |
+| **B 恢复** | [recovery/retry.ts](agent-harness/src/recovery/retry.ts) · [recovery/loop-detector.ts](agent-harness/src/recovery/loop-detector.ts) | 只对**瞬时**失败按退避重试；把抛错的工具变成模型能反应的 observation；检测无进展的重复调用死循环。 |
+| **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) | token 预算内的 prompt 组装 + 滚动压缩（保留 system + 近期，其余摘要）、observation 截断、**untrusted 输出隔离**（工具结果只当数据、绝不当指令）。 |
+| **D 控制** | [control/loop.ts](agent-harness/src/control/loop.ts) · [planner.ts](agent-harness/src/control/planner.ts) · [reflection.ts](agent-harness/src/control/reflection.ts) · [subagent.ts](agent-harness/src/control/subagent.ts) · [human.ts](agent-harness/src/control/human.ts) | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行）、`runReflectiveAgent`（自我批评并修订）、`makeSubagentTool`（把委派做成一个工具）、以及 human-in-the-loop 的 `Approver`。 |
 
-`*_CRASH_TURN=<n>` / `CRASH_AFTER=<stepId>` inject a crash to demo resume.
+另外：`testkit/`（确定性的 `ChatModel` / `ToolInvoker` 测试替身）+ `demo.ts`（可离线运行的 demo）。
 
-## Build & test
+一次 turn 内 A / B / C / D 如何协作：
 
-Everything is an npm workspace rooted here. First:
+```mermaid
+flowchart LR
+  START([一个 turn]) --> C["C 上下文<br/>组装预算内 prompt · fence untrusted"]
+  C --> B1["B 重试 withRetry 包裹模型调用"]
+  B1 --> MODEL{{"ChatModel.chat · key=t·turn"}}
+  MODEL --> A["A 协议 解释响应 + 校验参数"]
+  A -->|final answer| DONE([返回答案])
+  A -->|tool calls| D["D 审批 approver 门"]
+  D --> B2["B 死循环检测"]
+  B2 --> TOOL{{"ToolInvoker.call · key=t·turn:callId"}}
+  TOOL -->|抛错也变成 observation| C
+```
+
+### ⚙️ durable-agent-runtime — 执行底座（平台 vs 工作负载）
+
+边界很清晰：`src/` 下的一切是**平台（runtime）**，完全不懂「issue / fix」；`src/app/` 下的
+一切是**demo 工作负载**，可整体替换而不动 runtime。
+
+**平台 `src/`**
+
+| 模块 | 职责 |
+| --- | --- |
+| [eventlog.ts](durable-agent-runtime/src/eventlog.ts) | append-only；每个事件一个独占创建的文件（乐观并发）。 |
+| [reducer.ts](durable-agent-runtime/src/reducer.ts) | 纯函数 `(state, event) => state`，唯一构建状态的途径。 |
+| [runtime.ts](durable-agent-runtime/src/runtime.ts) | 驱动工作流、追加事件、从日志恢复，用确定性 `callId` 让工具调用幂等。 |
+| [workflow.ts](durable-agent-runtime/src/workflow.ts) | `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 契约——描述工作流长什么样。 |
+| [types.ts](durable-agent-runtime/src/types.ts) | `AgentEvent`（所有事件类型）+ 派生态 `RunState`（永不落盘，靠 reducer 重建）。 |
+| [model/provider.ts](durable-agent-runtime/src/model/provider.ts) · [model/caching.ts](durable-agent-runtime/src/model/caching.ts) | 可换的模型 provider + 内容寻址的响应缓存装饰器。 |
+| [pricing.ts](durable-agent-runtime/src/pricing.ts) | 配置驱动（`agent.config.json`）的 token 定价，喂给成本核算。 |
+| [tools/registry.ts](durable-agent-runtime/src/tools/registry.ts) | MCP 形状的 `ToolDef` / `ToolRegistry`——本地工具和远程 MCP 工具在 runtime 眼里一模一样。 |
+| [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏）；拒绝记为 `PolicyDenied` 事件，可观测、可 eval。 |
+| [mcp/](durable-agent-runtime/src/mcp/index.ts) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
+| [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 的 span + token / 成本 / 延迟；可组合的打分器（含 LLM 裁判）。 |
+
+**工作负载 `src/app/`**
+
+| 模块 | 职责 |
+| --- | --- |
+| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker` 在 `StepContext` 上实现契约并转发 `key`；`createHarnessWorkflow` 把 `runAgent` 包成单个 durable step。 |
+| [issue-workflow.ts](durable-agent-runtime/src/app/issue-workflow.ts) | demo 的 `issue → fix` Agent，声明为 `analyze → locate → propose` 三阶段。 |
+| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) | 确定性的 mock 工具 / 模型响应、通过 MCP base SDK 提供同一批工具的封装、eval 场景。 |
+| [agent-loop.ts](durable-agent-runtime/src/agent-loop.ts) | runtime 内置的极简模型驱动 demo 循环。 |
+
+状态永远是「算出来的」，不是「存下来的」：
+
+```mermaid
+flowchart LR
+    CLI[cli.ts] --> RT[Runtime]
+    RT -->|append| LOG[("事件日志<br/>每事件一个文件")]
+    LOG -->|reduce 纯函数| ST[RunState 派生态]
+    ST --> RT
+    RT --> WF["Workflow phases + steps"]
+    WF -->|"callTool / callModel"| POL{{"Policy · allow-list · 预算 · PII"}}
+    POL -->|tool| TR[Tool Registry]
+    POL -->|model| MP[缓存模型 Provider]
+    TR --> LOCAL[本地 ToolDef]
+    TR --> MADP[MCP adapter] --> SDK["MCP base SDK<br/>JSON-RPC · transport · 共享 token cache"] --> SRV[(MCP servers)]
+    RT -.onEvent.-> OBS[["trace: span + token + 成本 + 拒绝"]]
+    LOG -.projection.-> EVAL[["eval: 打分器 + LLM 裁判"]]
+```
+
+### 📦 fabric-shell — 灵感来源（独立 Copilot-CLI 插件）
+
+| 模块 | 职责 |
+| --- | --- |
+| `agents/` | [dev-agent](fabric-shell/agents/fabric-shell-dev-agent.md)（工作项端到端处理）、[backlog-triage-agent](fabric-shell/agents/fabric-shell-backlog-triage-agent.md)。 |
+| `skills/` | 8 个阶段各一个 skill：work-item-analysis → clarification → pm-spec → ux-design → dev-design → dev-implementation → pr-submission → pr-iteration。 |
+| `mcp/` | 8 个 MCP server：work-item · code · docx · sharepoint · openai-whisper · ffmpeg · fabric-docs · checkpoint。 |
+| [hooks.json](fabric-shell/hooks.json) + [hooks/flush-checkpoint.js](fabric-shell/hooks/flush-checkpoint.js) | checkpoint 落盘 hook。 |
+| [checkpoint-schema.json](fabric-shell/checkpoint-schema.json) | 单快照 checkpoint，回传 Azure DevOps 工作项，实现跨会话 / 跨机器 rehydrate——正是这个「单快照」设计启发了 runtime 的事件溯源重做。 |
+
+## 运行模式（durable-agent-runtime CLI）
+
+| 模式 | 命令 | 跑的是什么 |
+| --- | --- | --- |
+| 固定工作流（默认） | `agent run "<issue>"` | 代码驱动的 `analyze → locate → propose` 流水线 |
+| runtime 内置 demo 循环 | `AGENT_LOOP=1 agent run "<issue>"` | runtime 内置的极简模型驱动循环 |
+| **harness 跑在 runtime 上** | `HARNESS=1 agent run "<issue>"` | 独立的 `@agent/harness` 循环，作为一个 durable step 运行 |
+
+`*_CRASH_TURN=<n>` / `CRASH_AFTER=<stepId>` 用于注入崩溃以演示恢复。
+
+## 构建与测试
+
+一切都是以这里为根的 npm workspace。首先：
 
 ```powershell
-npm install          # links @agent/contracts + @agent/harness across the workspace
+npm install          # 在整个 workspace 中链接 @agent/contracts + @agent/harness
 ```
 
-Then:
+然后：
 
 ```powershell
 # contracts + harness
-npm run build        # tsc: builds @agent/contracts, then @agent/harness
-npm test             # builds contracts, then runs the harness test suite (43 tests)
+npm run build        # tsc：先构建 @agent/contracts，再构建 @agent/harness
+npm test             # 先构建 contracts，再跑 harness 测试套件（43 个测试）
 
-# durable runtime (its own package tests)
-npm test -w durable-agent-runtime            # 41 tests (incl. harness-integration)
+# durable runtime（它自己的包测试）
+npm test -w durable-agent-runtime            # 41 个测试（含 harness-integration）
 npm run build -w durable-agent-runtime       # tsc
 
-# harness offline demo (deterministic, no network)
+# harness 离线 demo（确定性，无网络）
 npm run dev -w agent-harness
 
-# harness running ON the runtime (durable), live:
+# harness 跑在 runtime 上（持久化），实时：
 $env:HARNESS='1'; npm run dev -w durable-agent-runtime -- run "Login page crashes with a null session"
 
-# durability payoff — crash mid-loop, then resume without re-running tools:
+# 持久化的回报——循环中途崩溃，恢复时不重跑已完成的工具：
 $env:HARNESS='1'; $env:HARNESS_CRASH_TURN='1'; npm run dev -w durable-agent-runtime -- run "Login page crashes with a null session"
 $env:HARNESS='1'; npm run dev -w durable-agent-runtime -- resume <run-id>
 ```
 
-> Windows note: if a freshly-installed Node isn't on a terminal's PATH yet, refresh it with
-> `$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")`.
+> Windows 提示：如果刚装好的 Node 还没进入某个终端的 PATH，用下面这行刷新：
+> `$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")`
 
-## Layout
+## 目录结构
 
 ```
-agent/                        # workspace root (this repo)
-  agent-contracts/            # @agent/contracts — the shared seam (types only)
-  agent-harness/              # @agent/harness — model-driven loop (A/B/C/D) + testkit + demo
-  durable-agent-runtime/      # event-sourced durable runtime + app workload + harness adapter
-  fabric-shell/               # the Copilot-CLI agent that inspired the study
-  package.json                # npm workspaces: agent-contracts, agent-harness, durable-agent-runtime
+agent/                        # workspace 根（本仓库）
+  agent-contracts/            # @agent/contracts — 共享的缝（仅类型）
+  agent-harness/              # @agent/harness — 模型驱动循环 (A/B/C/D) + testkit + demo
+  durable-agent-runtime/      # 事件溯源的持久化 runtime + app 工作负载 + harness adapter
+  fabric-shell/               # 启发本研究的 Copilot-CLI Agent
+  package.json                # npm workspaces：agent-contracts、agent-harness、durable-agent-runtime
 ```
 
-## Design notes
+## 设计说明
 
-- **Why a separate contracts package?** So neither core depends on the other. The
-  harness stays host-agnostic; the runtime stays agent-agnostic. The connector
-  (the adapter) is the only place that knows both.
-- **Why is the whole loop one durable step?** Coarse but simple: per-turn
-  idempotency keys (`t<turn>` / `t<turn>:<callId>`) make each model/tool call
-  replayable, so the single step resumes deterministically. Finer-grained
-  checkpointing is a possible evolution.
-- **Untrusted tool output** is fenced and isolated by the harness's context layer
-  (C) — tool results are data, never instructions (prompt-injection defence).
+- **为什么单独抽一个 contracts 包？** 让两个核心谁都不依赖对方。harness 保持宿主无关、
+  runtime 保持 Agent 无关，只有连接器（adapter）同时认识两边。
+- **为什么整个循环是一个 durable step？** 粗但简单：每步的幂等 key（`t<turn>` /
+  `t<turn>:<callId>`）让每次模型/工具调用可重放，所以这单个 step 能确定性地恢复。更细
+  粒度的 checkpoint 是可能的演进方向。
+- **untrusted 工具输出**被 harness 的上下文层 (C) fence 和隔离——工具结果是数据，绝不是
+  指令（防 prompt injection）。
