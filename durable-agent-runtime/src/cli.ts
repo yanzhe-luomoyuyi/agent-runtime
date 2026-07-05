@@ -11,14 +11,17 @@
  * Set CRASH_AFTER=<stepId> (e.g. CRASH_AFTER=locate.1) to inject a crash and
  * demo resume. Run logs live under AGENT_RUNS_DIR (default: .agent-runs).
  * Set AGENT_REGRESS=1 to degrade the propose step and demo an eval regression.
- * Set AGENT_LOOP=1 to run the model-driven agent harness (src/agent-loop.ts) instead
- * of the fixed demo workflow; AGENT_LOOP_CRASH_TURN=<n> injects a mid-loop crash.
+ * Set AGENT_LOOP=1 to run the in-runtime model-driven demo loop (src/agent-loop.ts)
+ * instead of the fixed demo workflow; AGENT_LOOP_CRASH_TURN=<n> injects a mid-loop crash.
+ * Set HARNESS=1 to run the standalone @agent/harness loop over the runtime seam
+ * (src/app/harness-adapter.ts); HARNESS_CRASH_TURN=<n> injects a mid-loop crash.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
 
 import { createAgentWorkflow } from './agent-loop.js';
 import { MockAgentModel } from './app/agent-scenario.js';
+import { createHarnessWorkflow } from './app/harness-adapter.js';
 import { issueWorkflow } from './app/issue-workflow.js';
 import { demoMcpServers } from './app/mcp-servers.js';
 import { cannedResponses } from './app/responses.js';
@@ -118,8 +121,27 @@ async function buildEvalRuntime(baseDir: string, scenario: Scenario): Promise<Ru
 async function makeRuntime(baseDir: string = BASE_DIR): Promise<Runtime> {
   const tools = await buildTools();
 
-  // AGENT_LOOP=1 selects the model-driven agent harness (src/agent-loop.ts) instead
-  // of the fixed demo workflow. The model becomes the deterministic MockAgentModel,
+  // HARNESS=1 runs the standalone @agent/harness loop over the runtime seam: the
+  // model drives, and the adapter forwards each turn's key to ctx.callModel/callTool
+  // so the whole loop is durable, resumable, and idempotent. HARNESS_CRASH_TURN=<n>
+  // injects a mid-loop crash to demo resume. (Set the same env on `resume`.)
+  if (process.env.HARNESS === '1') {
+    return new Runtime({
+      baseDir,
+      model: new MockAgentModel(),
+      tools,
+      workflow: createHarnessWorkflow({
+        maxTurns: numFromEnv('AGENT_MAX_TURNS'),
+        crashAfterTurn: numFromEnv('HARNESS_CRASH_TURN'),
+      }),
+      pricing: loadPricing(),
+      policy: loadPolicy(),
+      onEvent: agentOnEvent,
+    });
+  }
+
+  // AGENT_LOOP=1 selects the in-runtime model-driven demo loop (src/agent-loop.ts)
+  // instead of the fixed demo workflow. The model becomes the deterministic MockAgentModel,
   // which plays the tool-calling LLM's role offline. (Set the same env on `resume`.)
   if (process.env.AGENT_LOOP === '1') {
     const workflow = createAgentWorkflow({
