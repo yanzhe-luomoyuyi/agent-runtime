@@ -1,0 +1,25 @@
+# Normalize line endings across the whole repo.
+# Text files are stored as LF in git and checked out as LF everywhere, so the
+# CRLF/LF churn that made every file look "modified" on Windows stops recurring.
+* text=auto eol=lf
+
+# Windows-only scripts must stay CRLF or they can misbehave.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files: never apply any line-ending conversion.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.woff  binary
+*.woff2 binary
+*.mp4   binary
+*.mov   binary
+*.mp3   binary
+*.wav   binary
