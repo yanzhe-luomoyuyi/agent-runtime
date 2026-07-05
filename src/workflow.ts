@@ -15,15 +15,26 @@
 import type { ToolRegistry } from './tools/registry.js';
 import type { RunState } from './types.js';
 
+/**
+ * Options for a single tool/model call. A `key` disambiguates multiple calls
+ * *within one step*: idempotency is normally keyed by `<phase>.<step>`, so a step
+ * that issues many model/tool calls (e.g. an agentic loop, one call per turn)
+ * must pass a unique key per call — otherwise every call would collide on the
+ * same idempotency id and replay the first result.
+ */
+export interface CallOptions {
+  key?: string;
+}
+
 export interface StepContext {
   runId: string;
   input: { issue: string };
   state: RunState;
   tools: ToolRegistry;
   /** Call a tool with automatic, deterministic idempotency across resumes. */
-  callTool: <R = unknown>(tool: string, args: unknown) => Promise<R>;
+  callTool: <R = unknown>(tool: string, args: unknown, opts?: CallOptions) => Promise<R>;
   /** Call the model; recorded as a ModelCalled event (tokens/cost/latency) and idempotent across resumes. */
-  callModel: (prompt: string) => Promise<string>;
+  callModel: (prompt: string, opts?: CallOptions) => Promise<string>;
   /** Read the output an earlier step produced (e.g. "analyze.1"). */
   getStepOutput: <R = unknown>(stepId: string) => R | undefined;
 }
@@ -43,4 +54,10 @@ export interface PhaseDef {
 export interface WorkflowDef {
   name: string;
   phases: PhaseDef[];
+  /**
+   * Optional: derive the run's `summary` from the final derived state. If omitted,
+   * the runtime falls back to the demo workload's convention (reading `propose.1`).
+   * A model-driven agent (see ../agent-loop.ts) uses this to surface its final answer.
+   */
+  summarize?: (state: RunState) => unknown;
 }

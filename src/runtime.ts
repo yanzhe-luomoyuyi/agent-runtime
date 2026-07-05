@@ -143,7 +143,8 @@ export class Runtime {
         record({ type: 'PhaseCompleted', phase: phase.name, ts: now() });
       }
 
-      record({ type: 'RunCompleted', summary: buildSummary(state), ts: now() });
+      const summary = this.opts.workflow.summarize ? this.opts.workflow.summarize(state) : buildSummary(state);
+      record({ type: 'RunCompleted', summary, ts: now() });
       return state;
     } catch (err) {
       if (err instanceof ConflictError) throw err; // another writer owns this run — don't clobber its log
@@ -170,9 +171,9 @@ export class Runtime {
       },
       tools: this.opts.tools,
       getStepOutput: <R>(stepId: string): R | undefined => getState().stepOutputs[stepId] as R | undefined,
-      callModel: async (prompt: string): Promise<string> => {
+      callModel: async (prompt: string, opts?: { key?: string }): Promise<string> => {
         const state = getState();
-        const callId = `${state.currentPhase}.${state.currentStep}:model`;
+        const callId = `${state.currentPhase}.${state.currentStep}:${opts?.key ? `${opts.key}:` : ''}model`;
         // Idempotency: a completed model call is replayed from the log, never re-issued.
         if (callId in state.modelResults) return state.modelResults[callId]!;
 
@@ -202,9 +203,9 @@ export class Runtime {
         });
         return text;
       },
-      callTool: async <R>(tool: string, args: unknown): Promise<R> => {
+      callTool: async <R>(tool: string, args: unknown, opts?: { key?: string }): Promise<R> => {
         const state = getState();
-        const callId = `${state.currentPhase}.${state.currentStep}:${tool}`;
+        const callId = `${state.currentPhase}.${state.currentStep}:${opts?.key ? `${opts.key}:` : ''}${tool}`;
         // Idempotency: a completed tool call is replayed from the log, never re-run.
         if (callId in state.toolResults) return state.toolResults[callId] as R;
 
