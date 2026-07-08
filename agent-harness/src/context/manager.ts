@@ -136,7 +136,11 @@ function renderMessage(m: Message): string {
 function heuristicSummary(older: Message[]): string {
   return older
     .map((m) => {
-      const gist = (m.content ?? (m.toolCalls ? m.toolCalls.map((c) => `${c.name}(...)`).join(', ') : '')).replace(/\s+/g, ' ').trim();
+      // Untrusted tool content must never leak into the system-instruction region.
+      const gist =
+        m.role === 'tool' && m.untrusted
+          ? '[untrusted tool output omitted]'
+          : (m.content ?? (m.toolCalls ? m.toolCalls.map((c) => `${c.name}(...)`).join(', ') : '')).replace(/\s+/g, ' ').trim();
       const label = m.role === 'tool' ? `tool ${m.name ?? ''}`.trim() : m.role;
       return `- ${label}: ${gist.slice(0, 100)}`;
     })

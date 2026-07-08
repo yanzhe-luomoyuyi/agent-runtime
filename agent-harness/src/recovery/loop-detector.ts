@@ -1,11 +1,35 @@
 /**
  * B: no-progress / loop detection.
  *
- * A model can get stuck re-issuing the same tool call with the same arguments
- * forever (until the turn budget). The detector tracks a stable signature per
- * call and reports when one repeats past a limit, so the loop can stop early
- * with a clear diagnostic instead of burning the whole budget.
+ * A model can get stuck re-issuing the same tool call, or cycling through a
+ * handful of calls in a repeating pattern (A→B→A→B…).  The detector now uses a
+ * **sliding window** (so non-consecutive repeats don't falsely trip) and
+ * optionally detects repeating **sequences** of calls in addition to single-call
+ * repeats.
+ *
+ * Per-tool limits let read-only tools (search, grep) be retried more often than
+ * write tools (deploy, delete).
  */
+
+export interface LoopDetectorOptions {
+  /** How many identical (or sequence) repeats within the window before it trips. Default 3. */
+  limit?: number;
+  /** Per-tool overrides for `limit` (tool name → limit). */
+  toolLimits?: Record<string, number>;
+  /** Sliding-window size — only the last N calls count. Default 12. */
+  windowSize?: number;
+  /** Enable sequence-pattern detection (A→B→A→B cycles). Default true. */
+  sequenceDetection?: boolean;
+  /** Lengths of sequences to detect. Default [2] (pair cycles). */
+  sequenceLengths?: number[];
+  /** How many times a sequence must appear to trip. Default 2 (i.e. appears twice). */
+  sequenceLimit?: number;
+}
+
+interface CallEntry {
+  name: string;
+  sig: string;
+}
 
 /** Stable signature for a tool call (argument key order does not matter). */
 export function callSignature(name: string, args: unknown): string {
@@ -13,26 +37,98 @@ export function callSignature(name: string, args: unknown): string {
 }
 
 export class LoopDetector {
-  private readonly counts = new Map<string, number>();
+  private readonly window: CallEntry[] = [];
+  private readonly maxWindow: number;
+  private readonly defaultLimit: number;
+  private readonly toolLimits: Record<string, number>;
+  private readonly seqDetection: boolean;
+  private readonly seqLengths: number[];
+  private readonly seqLimit: number;
 
-  /** @param limit How many identical calls before it is considered a loop. Default 3. */
-  constructor(private readonly limit = 3) {}
-
-  /** Record one occurrence of `signature`; returns the new count. */
-  record(signature: string): number {
-    const next = (this.counts.get(signature) ?? 0) + 1;
-    this.counts.set(signature, next);
-    return next;
+  /**
+   * @param opts  Either a plain `number` (limit only, backward-compatible) or a
+   *              full options object.
+   */
+  constructor(opts?: number | LoopDetectorOptions) {
+    const resolved: LoopDetectorOptions =
+      typeof opts === 'number' ? { limit: opts } : (opts ?? {});
+    this.defaultLimit = resolved.limit ?? 3;
+    this.toolLimits = resolved.toolLimits ?? {};
+    this.maxWindow = resolved.windowSize ?? 12;
+    this.seqDetection = resolved.sequenceDetection ?? true;
+    this.seqLengths = resolved.sequenceLengths ?? [2];
+    this.seqLimit = resolved.sequenceLimit ?? 2;
   }
 
-  /** True once `signature` has been seen at least `limit` times. */
-  tripped(signature: string): boolean {
-    return (this.counts.get(signature) ?? 0) >= this.limit;
+  /** Record one tool call. `name` is the tool name, `sig` is `callSignature(name, args)`. */
+  record(name: string, sig: string): void {
+    this.window.push({ name, sig });
+    // Keep only the most recent `maxWindow` entries.
+    while (this.window.length > this.maxWindow) this.window.shift();
+  }
+
+  /**
+   * True when either (a) the exact call signature has appeared `limit` times
+   * within the sliding window, or (b) a sequence pattern is repeating.
+   */
+  tripped(name: string, sig: string): boolean {
+    const limit = this.toolLimits[name] ?? this.defaultLimit;
+
+    // (a) Single-call repeat within the sliding window
+    let count = 0;
+    for (const entry of this.window) {
+      if (entry.sig === sig) count++;
+    }
+    if (count >= limit) return true;
+
+    // (b) Sequence-pattern repeat
+    if (this.seqDetection && this.window.length >= 2) {
+      for (const len of this.seqLengths) {
+        if (this.window.length < len * 2) continue;
+        if (sequenceCount(this.window, len) >= this.seqLimit) return true;
+      }
+    }
+
+    return false;
   }
 
   reset(): void {
-    this.counts.clear();
+    this.window.length = 0;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Count how many times the last `len` entries form a sequence that appears
+ * (non-overlapping) earlier in the window. Uses string keys for O(n) comparison.
+ */
+function sequenceCount(window: CallEntry[], len: number): number {
+  if (window.length < len * 2) return 0;
+
+  // Build the key for the most recent `len` entries.
+  const recent = buildSeqKey(window, window.length - len, len);
+
+  let count = 1; // the recent sequence itself counts as one occurrence
+  // Scan backwards from (length - len - 1) to 0, moving by `len` each time
+  // to count non-overlapping occurrences.
+  let pos = window.length - len * 2;
+  while (pos >= 0) {
+    const key = buildSeqKey(window, pos, len);
+    if (key === recent) count++;
+    pos -= len;
+  }
+  return count;
+}
+
+function buildSeqKey(window: CallEntry[], start: number, len: number): string {
+  const parts: string[] = [];
+  for (let i = 0; i < len; i++) {
+    parts.push(window[start + i]!.sig);
+  }
+  return parts.join('→');
 }
 
 /** JSON with deterministically ordered object keys, so equal args hash equally. */

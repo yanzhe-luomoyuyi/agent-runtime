@@ -107,4 +107,42 @@ describe('agent loop', () => {
     expect(res.stopReason).toBe('loop_detected');
     expect(res.finished).toBe(false);
   });
+
+  it('detects an A→B→A→B sequence loop', async () => {
+    const tools = new MockToolInvoker([getIssue, searchCode]);
+    // Model alternates getIssue→searchCode→getIssue→searchCode…
+    const model = new ScriptedChatModel([
+      toolCallResponse([toolCall('c1', 'getIssue', { issue: 'same' })]),
+      toolCallResponse([toolCall('c2', 'searchCode', { query: 'same' })]),
+      toolCallResponse([toolCall('c3', 'getIssue', { issue: 'same' })]),
+      toolCallResponse([toolCall('c4', 'searchCode', { query: 'same' })]),
+      finalResponse('unreachable'),
+    ]);
+    const res = await runAgent({
+      goal: 'x', model, tools, maxTurns: 20,
+      loopOptions: {
+        limit: 99,              // never trip on single-call repeats
+        sequenceDetection: true,
+        sequenceLengths: [2],
+        sequenceLimit: 2,       // 2 occurrences of the pair = loop
+      },
+    });
+    expect(res.stopReason).toBe('loop_detected');
+  });
+
+  it('respects per-tool loop limits via loopOptions', async () => {
+    // searchCode: limit 2 → first repeat trips (2nd call)
+    const tools = new MockToolInvoker([searchCode]);
+    const model = new ScriptedChatModel([
+      toolCallResponse([toolCall('c1', 'searchCode', { query: 'x' })]),
+      toolCallResponse([toolCall('c2', 'searchCode', { query: 'x' })]),
+      finalResponse('unreachable'),
+    ]);
+    const res = await runAgent({
+      goal: 'x', model, tools, maxTurns: 10,
+      loopOptions: { toolLimits: { searchCode: 2 }, limit: 99 },
+    });
+    expect(res.stopReason).toBe('loop_detected');
+    expect(res.turns).toBe(2);
+  });
 });

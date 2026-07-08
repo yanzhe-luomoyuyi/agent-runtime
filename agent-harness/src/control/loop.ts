@@ -22,11 +22,12 @@ import { systemMessage, toolResultMessage, userMessage } from '@agent/contracts'
 
 import { ContextManager } from '../context/manager.js';
 import { interpretResponse, type PreparedCall } from '../protocol/tool-calling.js';
-import { callSignature, LoopDetector } from '../recovery/loop-detector.js';
+import { callSignature, LoopDetector, type LoopDetectorOptions } from '../recovery/loop-detector.js';
 import { withRetry, type RetryOptions } from '../recovery/retry.js';
+import { type TraceCollector } from '../tracing/collector.js';
 import { autoApprove, type Approver } from './human.js';
 
-export type AgentStopReason = 'finished' | 'max_turns' | 'loop_detected';
+export type AgentStopReason = 'finished' | 'max_turns' | 'loop_detected' | 'retry_budget_exhausted';
 
 /** Optional observability callbacks. */
 export interface AgentHooks {
@@ -47,9 +48,22 @@ export interface RunAgentOptions {
   retry?: RetryOptions;
   /** Identical-call repeats before the loop stops. Default 3. */
   loopLimit?: number;
+  /**
+   * Full loop-detector configuration (sliding window, per-tool limits, sequence
+   * detection). When provided, `loopLimit` is ignored in favour of this object.
+   */
+  loopOptions?: LoopDetectorOptions;
+  /**
+   * Max total retries across the ENTIRE run (model calls only). After this many
+   * transient-failure retries the run stops with `retry_budget_exhausted`.
+   * Default: unlimited (0 or undefined).
+   */
+  retryBudget?: number;
   /** Deterministic key namespace for durable hosts / sub-agents. Default ''. */
   keyPrefix?: string;
   hooks?: AgentHooks;
+  /** Structured trace collector — tracks timing, retries, success rates per turn. */
+  trace?: TraceCollector;
   /** Test/demo hook: throw after this turn's tool calls, to exercise durable resume. */
   crashAfterTurn?: number;
 }
@@ -63,6 +77,8 @@ export interface AgentRunResult {
   messages: Message[];
   /** Tools actually executed, in call order (repeats included). */
   toolsUsed: string[];
+  /** Wall-clock duration of the entire run (ms). */
+  durationMs: number;
 }
 
 const DEFAULT_MAX_TURNS = 12;
@@ -80,8 +96,22 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
   const maxTurns = opts.maxTurns && opts.maxTurns > 0 ? opts.maxTurns : DEFAULT_MAX_TURNS;
   const approver = opts.approver ?? autoApprove;
   const prefix = opts.keyPrefix ?? '';
-  const detector = new LoopDetector(opts.loopLimit ?? 3);
+  const detector = new LoopDetector(opts.loopOptions ?? (opts.loopLimit ?? 3));
   const toolsUsed: string[] = [];
+  const startTime = Date.now();
+  const retryBudget = opts.retryBudget ?? 0;
+  let retryCount = 0; // per-run retry counter
+
+  // Merge trace onRetry into retry options (updated signature: now includes delayMs).
+  const retryOpts: RetryOptions | undefined = opts.trace
+    ? {
+        ...opts.retry,
+        onRetry: (err, attempt, delayMs) => {
+          opts.retry?.onRetry?.(err, attempt, delayMs);
+          opts.trace!.recordRetry(err, attempt);
+        },
+      }
+    : opts.retry;
 
   const messages: Message[] = [
     systemMessage(opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT),
@@ -90,20 +120,52 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     opts.hooks?.onTurnStart?.(turn);
+    opts.trace?.startTurn(turn);
 
     const assembled = context.assemble(messages);
-    const resp = await withRetry(() => model.chat({ messages: assembled, tools: specs, key: `${prefix}t${turn}` }), opts.retry);
+    opts.trace?.startModelCall();
+    let resp;
+    try {
+      resp = await withRetry(
+        () => model.chat({ messages: assembled, tools: specs, key: `${prefix}t${turn}` }),
+        retryBudget > 0
+          ? {
+              ...retryOpts,
+              onRetry: (err, attempt, delayMs) => {
+                retryCount++;
+                retryOpts?.onRetry?.(err, attempt, delayMs);
+              },
+            }
+          : retryOpts,
+      );
+      opts.trace?.endModelCall();
+    } catch (e) {
+      opts.trace?.endModelCallError(e instanceof Error ? e.message : String(e));
+      // If we exhausted the retry budget, report it clearly.
+      if (retryBudget > 0 && retryCount >= retryBudget) {
+        return makeResult(
+          `Stopped: retry budget exhausted (${retryBudget} retries). Last error: ${e instanceof Error ? e.message : String(e)}`,
+          false,
+          'retry_budget_exhausted',
+          turn,
+          messages,
+          toolsUsed,
+          startTime,
+        );
+      }
+      throw e;
+    }
     messages.push(resp.message);
     opts.hooks?.onModelResponse?.(turn, resp.message);
 
     const decision = interpretResponse(resp, specs);
     if (decision.kind === 'final') {
-      return makeResult(decision.answer, true, 'finished', turn, messages, toolsUsed);
+      return makeResult(decision.answer, true, 'finished', turn, messages, toolsUsed, startTime);
     }
 
     let tripped = false;
     for (const prepared of decision.calls) {
-      const obs = await executeCall(prepared, { tools, approver, detector, prefix, turn, toolsUsed });
+      const obs = await executeCall(prepared, { tools, approver, detector, prefix, turn, toolsUsed, trace: opts.trace });
       if (obs.tripped) tripped = true;
       messages.push(toolResultMessage(prepared.call, context.truncateObservation(obs.text)));
       opts.hooks?.onToolResult?.(turn, prepared.call.name, obs.text, obs.ok);
@@ -116,11 +178,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
     }
 
     if (tripped) {
-      return makeResult('Stopped: the same tool call repeated without progress (possible loop).', false, 'loop_detected', turn, messages, toolsUsed);
+      return makeResult('Stopped: the same tool call repeated without progress (possible loop).', false, 'loop_detected', turn, messages, toolsUsed, startTime);
     }
   }
 
-  return makeResult(`Stopped after the ${maxTurns}-turn budget without a final answer.`, false, 'max_turns', maxTurns, messages, toolsUsed);
+  return makeResult(`Stopped after the ${maxTurns}-turn budget without a final answer.`, false, 'max_turns', maxTurns, messages, toolsUsed, startTime);
 }
 
 interface Observation {
@@ -136,6 +198,7 @@ interface CallCtx {
   prefix: string;
   turn: number;
   toolsUsed: string[];
+  trace?: TraceCollector;
 }
 
 /** Run (or refuse) one prepared tool call, always returning an observation — never throwing. */
@@ -143,28 +206,40 @@ async function executeCall(prepared: PreparedCall, ctx: CallCtx): Promise<Observ
   const { call } = prepared;
 
   // A: unknown tool or invalid arguments — feed the error back, no side effect.
-  if (!prepared.valid) return { text: `ERROR: ${prepared.error}`, ok: false, tripped: false };
+  if (!prepared.valid) {
+    ctx.trace?.endToolCall(call.name, false, prepared.error);
+    return { text: `ERROR: ${prepared.error}`, ok: false, tripped: false };
+  }
 
   // D: human-in-the-loop approval gate.
   const decision = await ctx.approver.approve({ tool: call.name, args: call.arguments, callId: call.id });
   if (!decision.approved) {
-    return { text: `DENIED: tool "${call.name}" was not approved${decision.reason ? ` (${decision.reason})` : ''}.`, ok: false, tripped: false };
+    const reason = `DENIED: tool "${call.name}" was not approved${decision.reason ? ` (${decision.reason})` : ''}.`;
+    ctx.trace?.endToolCall(call.name, false, reason);
+    return { text: reason, ok: false, tripped: false };
   }
 
-  // B: loop / no-progress detection.
-  ctx.detector.record(callSignature(call.name, call.arguments));
-  if (ctx.detector.tripped(callSignature(call.name, call.arguments))) {
-    return { text: `ERROR: refusing to repeat "${call.name}" with identical arguments (possible loop).`, ok: false, tripped: true };
+  // B: loop / no-progress detection (sliding window + sequence detection).
+  const sig = callSignature(call.name, call.arguments);
+  ctx.detector.record(call.name, sig);
+  if (ctx.detector.tripped(call.name, sig)) {
+    const reason = `ERROR: refusing to repeat "${call.name}" — possible loop detected (identical call or repeating sequence).`;
+    ctx.trace?.endToolCall(call.name, false, reason);
+    return { text: reason, ok: false, tripped: true };
   }
 
   // Execute through the seam, passing the deterministic durable key.
   ctx.toolsUsed.push(call.name);
+  ctx.trace?.startToolCall();
   try {
     const raw = await ctx.tools.call(call.name, call.arguments, { key: `${ctx.prefix}t${ctx.turn}:${call.id}` });
+    ctx.trace?.endToolCall(call.name, true);
     return { text: typeof raw === 'string' ? raw : safeStringify(raw), ok: true, tripped: false };
   } catch (e) {
     // B: a thrown tool becomes an observation the model can react to and recover from.
-    return { text: `ERROR: tool "${call.name}" failed: ${e instanceof Error ? e.message : String(e)}`, ok: false, tripped: false };
+    const errMsg = `ERROR: tool "${call.name}" failed: ${e instanceof Error ? e.message : String(e)}`;
+    ctx.trace?.endToolCall(call.name, false, errMsg);
+    return { text: errMsg, ok: false, tripped: false };
   }
 }
 
@@ -175,8 +250,9 @@ function makeResult(
   turns: number,
   messages: Message[],
   toolsUsed: string[],
+  startTime: number,
 ): AgentRunResult {
-  return { answer, finished, stopReason, turns, messages, toolsUsed };
+  return { answer, finished, stopReason, turns, messages, toolsUsed, durationMs: Date.now() - startTime };
 }
 
 function safeStringify(value: unknown): string {

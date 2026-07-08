@@ -31,3 +31,9 @@ export * from './control/loop.js';
 export * from './control/planner.js';
 export * from './control/reflection.js';
 export * from './control/subagent.js';
+
+// Tracing / observability
+export * from './tracing/collector.js';
+export * from './control/planner.js';
+export * from './control/reflection.js';
+export * from './control/subagent.js';
