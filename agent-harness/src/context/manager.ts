@@ -164,16 +164,18 @@ export class ContextManager {
   /**
    * Produce the message list to actually send to the model.
    *
-   * Strategy (cache-friendly ordering):
+   * Strategy (cache-friendly ordering, HARD cap):
    *   1. Reserve output + tool-def tokens from the budget.
    *   2. System messages always come first (maximises prompt-cache hits).
    *   3. Goal message is protected — never compacted.
    *   4. From the tail backwards, keep recent messages while budget allows.
-   *      Importance-scored messages get a lower effective cost so they survive
-   *      farther back.
-   *   5. Everything older is compacted into a summary (placed after system,
-   *      before the tail — static-ish region for cache friendliness).
-   *   6. Final order: [system…, summary, goal, …recent dynamic]
+   *      Importance-scored messages get a lower effective cost for the
+   *      inclusion *decision*, so they survive farther back.
+   *   5. If importance decisions cause the hard budget to be exceeded, trim
+   *      the lowest-importance messages from the tail until the cap is met
+   *      (industry-standard hard cap — models reject prompts over the limit).
+   *   6. Everything older + anything trimmed is compacted into a summary.
+   *   7. Final order: [system…, summary, goal, …recent dynamic]
    */
   assemble(messages: Message[]): Message[] {
     const availableBudget = this.maxPromptTokens - this.outputReserve - this.toolDefReserve;
@@ -192,8 +194,8 @@ export class ContextManager {
     let budgetUsed = mandatoryTokens;
 
     // Start with the guaranteed-recent tail, then grow backwards while budget
-    // allows. When importance scoring is on, high-importance messages cost
-    // proportionally less against the budget.
+    // allows. Importance-scored messages get a discounted cost for the
+    // keep/cut decision; the REAL cost is always tracked in budgetUsed.
     const keepN = Math.min(this.keepRecentMessages, nonSystem.length);
     let tailStart = nonSystem.length - keepN;
     budgetUsed += this.countTokens(nonSystem.slice(tailStart));
@@ -206,11 +208,21 @@ export class ContextManager {
         : rawCost;
       if (budgetUsed + effectiveCost > availableBudget) break;
       tailStart--;
-      budgetUsed += rawCost; // charge the REAL cost, discount only affects keep/cut decision
+      budgetUsed += rawCost;
     }
 
-    const older = nonSystem.slice(0, tailStart);
+    // ── Hard-cap enforcement ──────────────────────────────────────
+    // If importance discounts let us overshoot the budget, trim the
+    // lowest-importance messages from the tail until we're within limits.
+    // This is how real systems work — the context window is a physical
+    // hard limit, not a soft suggestion.
     const tail = nonSystem.slice(tailStart);
+    const olderFromScan = nonSystem.slice(0, tailStart);
+    const { kept, evicted } = this.importanceScoring && budgetUsed > availableBudget
+      ? trimByImportance(tail, availableBudget - mandatoryTokens, this.tokenizer, messageImportance)
+      : { kept: tail, evicted: [] as Message[] };
+
+    const older = [...olderFromScan, ...evicted];
 
     // Build output: system (cache-friendly prefix) → summary (semi-static) → goal → tail (dynamic)
     const out: Message[] = [...system];
@@ -221,7 +233,7 @@ export class ContextManager {
       });
     }
     out.push(...goal);
-    out.push(...tail);
+    out.push(...kept);
     return out;
   }
 
@@ -256,6 +268,48 @@ function applyImportanceDiscount(cost: number, importance: number): number {
   // Map importance 0–100 to discount factor 1.0–0.05 using an exponential curve.
   const factor = 0.05 + 0.95 * Math.exp(-importance / 25);
   return Math.max(1, Math.round(cost * factor));
+}
+
+/**
+ * Trim the lowest-importance messages from `tail` until the total token count
+ * of `kept` fits within `budget`.  Evicted messages are returned so they can
+ * be folded into the summary instead of lost entirely.
+ *
+ * This guarantees a HARD cap — the assembled prompt never exceeds the model's
+ * physical context-window limit, which is how real systems work.
+ */
+function trimByImportance(
+  tail: Message[],
+  budget: number,
+  tokenizer: Tokenizer,
+  score: (m: Message) => number,
+): { kept: Message[]; evicted: Message[] } {
+  // Sort by importance (ascending) so we evict the least valuable first,
+  // but preserve original order among kept messages.
+  const indexed = tail.map((m, i) => ({ m, i, score: score(m) }));
+  const sorted = [...indexed].sort((a, b) => a.score - b.score);
+
+  let used = 0;
+  const evictSet = new Set<number>();
+  for (const item of sorted) {
+    const cost = tokenizer.countMessage(item.m);
+    if (used + cost <= budget) {
+      used += cost;
+    } else {
+      evictSet.add(item.i);
+    }
+  }
+
+  const kept: Message[] = [];
+  const evicted: Message[] = [];
+  for (const item of indexed) {
+    if (evictSet.has(item.i)) {
+      evicted.push(item.m);
+    } else {
+      kept.push(item.m);
+    }
+  }
+  return { kept, evicted };
 }
 
 /** Serialised form used for token counting. */
