@@ -20,6 +20,7 @@ export * from './protocol/tool-calling.js';
 
 // C — context & memory
 export * from './context/manager.js';
+export * from './context/tokenizer.js';
 
 // B — recovery
 export * from './recovery/retry.js';
@@ -34,6 +35,3 @@ export * from './control/subagent.js';
 
 // Tracing / observability
 export * from './tracing/collector.js';
-export * from './control/planner.js';
-export * from './control/reflection.js';
-export * from './control/subagent.js';
