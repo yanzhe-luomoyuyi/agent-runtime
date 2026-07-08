@@ -138,7 +138,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
             }
           : retryOpts,
       );
-      opts.trace?.endModelCall();
+      opts.trace?.endModelCall(resp.usage);
     } catch (e) {
       opts.trace?.endModelCallError(e instanceof Error ? e.message : String(e));
       // If we exhausted the retry budget, report it clearly.
@@ -207,7 +207,7 @@ async function executeCall(prepared: PreparedCall, ctx: CallCtx): Promise<Observ
 
   // A: unknown tool or invalid arguments — feed the error back, no side effect.
   if (!prepared.valid) {
-    ctx.trace?.endToolCall(call.name, false, prepared.error);
+    ctx.trace?.endToolCall(call.name, false, call.arguments, prepared.error);
     return { text: `ERROR: ${prepared.error}`, ok: false, tripped: false };
   }
 
@@ -215,7 +215,7 @@ async function executeCall(prepared: PreparedCall, ctx: CallCtx): Promise<Observ
   const decision = await ctx.approver.approve({ tool: call.name, args: call.arguments, callId: call.id });
   if (!decision.approved) {
     const reason = `DENIED: tool "${call.name}" was not approved${decision.reason ? ` (${decision.reason})` : ''}.`;
-    ctx.trace?.endToolCall(call.name, false, reason);
+    ctx.trace?.endToolCall(call.name, false, call.arguments, reason);
     return { text: reason, ok: false, tripped: false };
   }
 
@@ -224,7 +224,7 @@ async function executeCall(prepared: PreparedCall, ctx: CallCtx): Promise<Observ
   ctx.detector.record(call.name, sig);
   if (ctx.detector.tripped(call.name, sig)) {
     const reason = `ERROR: refusing to repeat "${call.name}" — possible loop detected (identical call or repeating sequence).`;
-    ctx.trace?.endToolCall(call.name, false, reason);
+    ctx.trace?.endToolCall(call.name, false, call.arguments, reason);
     return { text: reason, ok: false, tripped: true };
   }
 
@@ -233,12 +233,12 @@ async function executeCall(prepared: PreparedCall, ctx: CallCtx): Promise<Observ
   ctx.trace?.startToolCall();
   try {
     const raw = await ctx.tools.call(call.name, call.arguments, { key: `${ctx.prefix}t${ctx.turn}:${call.id}` });
-    ctx.trace?.endToolCall(call.name, true);
+    ctx.trace?.endToolCall(call.name, true, call.arguments);
     return { text: typeof raw === 'string' ? raw : safeStringify(raw), ok: true, tripped: false };
   } catch (e) {
     // B: a thrown tool becomes an observation the model can react to and recover from.
     const errMsg = `ERROR: tool "${call.name}" failed: ${e instanceof Error ? e.message : String(e)}`;
-    ctx.trace?.endToolCall(call.name, false, errMsg);
+    ctx.trace?.endToolCall(call.name, false, call.arguments, errMsg);
     return { text: errMsg, ok: false, tripped: false };
   }
 }
