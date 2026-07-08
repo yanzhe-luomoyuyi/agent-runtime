@@ -7,7 +7,8 @@
  *
  *  - Token budgeting + compaction: keep the system instructions and the most
  *    recent turns verbatim, and fold everything older into a single short
- *    summary message. The budget is a soft cap; recent turns always survive.
+ *    summary message. The budget is a hard cap (industry standard); recent
+ *    turns + high-importance messages survive.
  *  - Observation truncation: cap the size of any single tool result.
  *  - Untrusted isolation (prompt-injection defence): tool output is marked
  *    `untrusted`; when the transcript is rendered to text for a text-only model,
@@ -41,11 +42,11 @@ import { heuristicTokenizer, type Tokenizer } from './tokenizer.js';
 export type Summarizer = (older: Message[]) => string;
 
 export interface ContextManagerOptions {
-  /** Soft token cap for the assembled prompt. Default 4000. */
+  /** Token cap for the assembled prompt. Default 64_000（≈ 半窗口，适合 GPT-4o / Claude 128K-200K）. */
   maxPromptTokens?: number;
-  /** Always keep at least this many of the most recent non-system messages. Default 8. */
+  /** Always keep at least this many of the most recent non-system messages. Default 20. */
   keepRecentMessages?: number;
-  /** Cap on a single tool observation's characters. Default 2000. */
+  /** Cap on a single tool observation's characters. Default 8000. */
   maxObservationChars?: number;
   /** How to compact older messages. Default: a deterministic heuristic (no model call). */
   summarize?: Summarizer;
@@ -141,9 +142,9 @@ export class ContextManager {
   private readonly importanceScoring: boolean;
 
   constructor(opts: ContextManagerOptions = {}) {
-    this.maxPromptTokens = opts.maxPromptTokens ?? 4000;
-    this.keepRecentMessages = opts.keepRecentMessages ?? 8;
-    this.maxObservationChars = opts.maxObservationChars ?? 2000;
+    this.maxPromptTokens = opts.maxPromptTokens ?? 64_000;
+    this.keepRecentMessages = opts.keepRecentMessages ?? 20;
+    this.maxObservationChars = opts.maxObservationChars ?? 8000;
     this.summarize = opts.summarize ?? heuristicSummary;
 
     // New options with sensible defaults.
