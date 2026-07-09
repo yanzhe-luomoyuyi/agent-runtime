@@ -84,13 +84,13 @@ flowchart TB
 - **依赖方向是关键**：`harness` 和 `runtime` 谁都不依赖对方，只各自依赖 `contracts`。这样
   大脑保持「宿主无关」、底座保持「Agent 无关」，只有 adapter 这一个地方同时认识两边。
 
-runtime 也能完全独立运行——一个固定的三阶段 demo 工作流，以及一个 runtime 内置的模型驱动
-demo 循环——harness 是完全可选的。
+runtime 也能完全独立运行——支持三种执行模式：固定工作流（默认）、内置 agent 循环（`AGENT_LOOP=1`）、
+以及托管 harness 循环（`HARNESS=1`）。harness 是完全可选的。
 
 ## 缝的本质：一个 `key` 就是整个持久化契约
 
 harness 每一步生成一个确定性的 `key`（模型用 `t<turn>`，工具用 `t<turn>:<callId>`），adapter
-原样转发给 runtime，runtime 就能把每次模型/工具调用记进事件日志、在恢复时幂等重放——已完成的
+原封不动地转发给 runtime，runtime 就能把每次模型/工具调用记录到事件日志、在恢复时幂等重放——已完成的
 turn 与工具副作用不会重复执行。
 
 ```mermaid
@@ -123,7 +123,7 @@ sequenceDiagram
 
 | 模块 | 职责 |
 | --- | --- |
-| [messages.ts](agent-contracts/src/messages.ts) | 工具调用对话记录：`Message` / `ToolCall` / `Role`，构造器 `systemMessage` / `userMessage` / `assistantMessage` / `toolResultMessage`，以及 `untrusted` 标记（防注入的关键）。 |
+| [messages.ts](agent-contracts/src/messages.ts) | 工具调用对话记录：`Message` / `ToolCall` / `Role`，构造函数 `systemMessage` / `userMessage` / `assistantMessage` / `toolResultMessage`，以及 `untrusted` 标记（防注入的关键设计）。 |
 | [tools.ts](agent-contracts/src/tools.ts) | `JSONSchema` 子集 · `ToolSpec` · `ToolInvoker`（`list` / `call`）· 带 `key` 的 `CallOptions`。 |
 | [model.ts](agent-contracts/src/model.ts) | `ChatModel`（`chat`）· `ChatRequest` / `ChatResponse` · `Usage` · `StopReason`。 |
 
@@ -131,12 +131,12 @@ sequenceDiagram
 
 | 层 | 模块 | 职责 |
 | --- | --- | --- |
-| **A 协议** | [protocol/tool-calling.ts](agent-harness/src/protocol/tool-calling.ts) · [schema/validate.ts](agent-harness/src/schema/validate.ts) | 把 `ChatResponse` 解释成已校验的 tool call 或最终答案；执行**前**按各工具的 `inputSchema` 校验参数——非法调用变成结构化错误而非崩溃；含一个给无原生 tool-calling 模型用的容错文本解析器。 |
-| **B 恢复** | [recovery/retry.ts](agent-harness/src/recovery/retry.ts) · [recovery/loop-detector.ts](agent-harness/src/recovery/loop-detector.ts) | 只对**瞬时**失败按退避重试；把抛错的工具变成模型能反应的 observation；检测无进展的重复调用死循环。 |
-| **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) | token 预算内的 prompt 组装 + 滚动压缩（保留 system + 近期，其余摘要）、observation 截断、**untrusted 输出隔离**（工具结果只当数据、绝不当指令）。 |
-| **D 控制** | [control/loop.ts](agent-harness/src/control/loop.ts) · [planner.ts](agent-harness/src/control/planner.ts) · [reflection.ts](agent-harness/src/control/reflection.ts) · [subagent.ts](agent-harness/src/control/subagent.ts) · [human.ts](agent-harness/src/control/human.ts) | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行）、`runReflectiveAgent`（自我批评并修订）、`makeSubagentTool`（把委派做成一个工具）、以及 human-in-the-loop 的 `Approver`。 |
+| **A 协议** | [protocol/tool-calling.ts](agent-harness/src/protocol/tool-calling.ts) · [schema/validate.ts](agent-harness/src/schema/validate.ts) | 把 `ChatResponse` 解释成已校验的 tool call 或最终答案；执行**前**按各工具的 `inputSchema` 校验参数——非法调用变成结构化错误而非崩溃；内置一个为不支持原生 tool-calling 的模型准备的容错文本解析器。 |
+| **B 恢复** | [recovery/retry.ts](agent-harness/src/recovery/retry.ts) · [recovery/loop-detector.ts](agent-harness/src/recovery/loop-detector.ts) | 只对**瞬时性**失败执行退避重试（HTTP 429/5xx 分类 + `Retry-After` 头 + 指数退避 + full jitter）；把工具抛出的异常转化为模型能理解的 observation；检测无进展的死循环——包括单次重复调用和重复序列模式（A→B→A→B）。 |
+| **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) | 在 token 预算内组装 prompt + 滚动压缩（保留 system + 近期消息，其余压缩为摘要）、observation 截断、**untrusted 输出隔离**（工具结果只当数据、绝不当指令）。 |
+| **D 控制** | [control/loop.ts](agent-harness/src/control/loop.ts) · [planner.ts](agent-harness/src/control/planner.ts) · [reflection.ts](agent-harness/src/control/reflection.ts) · [subagent.ts](agent-harness/src/control/subagent.ts) · [human.ts](agent-harness/src/control/human.ts) | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行）、`runReflectiveAgent`（自我批评并修订）、`makeSubagentTool`（把子任务委派封装成一个工具）、以及 human-in-the-loop 的 `Approver`。 |
 
-另外：`testkit/`（确定性的 `ChatModel` / `ToolInvoker` 测试替身）+ `demo.ts`（可离线运行的 demo）。
+另外：`tracing/collector.ts`（结构化 trace：token 用量统计、每次调用的成本估算、每 turn 决策记录）+ `testkit/`（确定性的 `ChatModel` / `ToolInvoker` 测试替身）+ `demo.ts`（可离线运行的 demo）。
 
 一次 turn 内 A / B / C / D 如何协作：
 
@@ -168,11 +168,14 @@ flowchart LR
 | [workflow.ts](durable-agent-runtime/src/workflow.ts) | `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 契约——描述工作流长什么样。 |
 | [types.ts](durable-agent-runtime/src/types.ts) | `AgentEvent`（所有事件类型）+ 派生态 `RunState`（永不落盘，靠 reducer 重建）。 |
 | [model/provider.ts](durable-agent-runtime/src/model/provider.ts) · [model/caching.ts](durable-agent-runtime/src/model/caching.ts) | 可换的模型 provider + 内容寻址的响应缓存装饰器。 |
-| [pricing.ts](durable-agent-runtime/src/pricing.ts) | 配置驱动（`agent.config.json`）的 token 定价，喂给成本核算。 |
-| [tools/registry.ts](durable-agent-runtime/src/tools/registry.ts) | MCP 形状的 `ToolDef` / `ToolRegistry`——本地工具和远程 MCP 工具在 runtime 眼里一模一样。 |
-| [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏）；拒绝记为 `PolicyDenied` 事件，可观测、可 eval。 |
+| [pricing.ts](durable-agent-runtime/src/pricing.ts) | 配置驱动（`agent.config.json`）的 token 定价，供成本核算使用。 |
+| [tools/registry.ts](durable-agent-runtime/src/tools/registry.ts) | 遵循 MCP 规范的 `ToolDef` / `ToolRegistry`——本地工具和远程 MCP 工具在 runtime 眼里一模一样。 |
+| [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏）；拒绝操作记录为 `PolicyDenied` 事件，可观测、可 eval。 |
 | [mcp/](durable-agent-runtime/src/mcp/index.ts) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
-| [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 的 span + token / 成本 / 延迟；可组合的打分器（含 LLM 裁判）。 |
+| [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
+| [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；可组合的打分器（含 LLM 裁判）。 |
+| [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace` / `eval`；通过环境变量切换多种执行模式。 |
+| [agent-loop.ts](durable-agent-runtime/src/agent-loop.ts) | runtime 内置的模型驱动 Agent 循环（比 harness 更简单，但核心概念相同），封装为单个 durable step。 |
 
 **工作负载 `src/app/`**
 
@@ -180,8 +183,7 @@ flowchart LR
 | --- | --- |
 | [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker` 在 `StepContext` 上实现契约并转发 `key`；`createHarnessWorkflow` 把 `runAgent` 包成单个 durable step。 |
 | [issue-workflow.ts](durable-agent-runtime/src/app/issue-workflow.ts) | demo 的 `issue → fix` Agent，声明为 `analyze → locate → propose` 三阶段。 |
-| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) | 确定性的 mock 工具 / 模型响应、通过 MCP base SDK 提供同一批工具的封装、eval 场景。 |
-| [agent-loop.ts](durable-agent-runtime/src/agent-loop.ts) | runtime 内置的极简模型驱动 demo 循环。 |
+| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性的 mock 工具 / 模型响应、通过 MCP base SDK 暴露同一批工具的封装、eval 测试场景、内置 agent 循环的 mock 模型大脑。 |
 
 状态永远是「算出来的」，不是「存下来的」：
 
@@ -213,11 +215,33 @@ flowchart LR
 
 ## 运行模式（durable-agent-runtime CLI）
 
+### Agent 执行模式
+
 | 模式 | 命令 | 跑的是什么 |
 | --- | --- | --- |
-| 固定工作流（默认） | `agent run "<issue>"` | 代码驱动的 `analyze → locate → propose` 流水线 |
-| runtime 内置 demo 循环 | `AGENT_LOOP=1 agent run "<issue>"` | runtime 内置的极简模型驱动循环 |
-| **harness 跑在 runtime 上** | `HARNESS=1 agent run "<issue>"` | 独立的 `@agent/harness` 循环，作为一个 durable step 运行 |
+| 固定工作流（默认） | `npm run dev -- run "<issue>"` | 代码驱动的 `analyze → locate → propose` 流水线 |
+| runtime 内置循环 | `AGENT_LOOP=1 npm run dev -- run "<issue>"` | runtime 内置的模型驱动循环（`agent-loop.ts`） |
+| **harness 跑在 runtime 上** | `HARNESS=1 npm run dev -- run "<issue>"` | 独立的 `@agent/harness` 四层循环，作为 durable step 运行 |
+
+### 持久化与可观测性命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `npm run dev -- resume <run-id>` | 从事件日志恢复并继续未完成的 run |
+| `npm run dev -- status <run-id>` | 查看派生 RunState |
+| `npm run dev -- recover <run-id>` | 修复因乐观并发冲突而卡住的 run |
+| `npm run dev -- trace <run-id>` | 查看 span 时间线 + token / 成本 / 延迟汇总 |
+| `npm run dev -- eval` | 跑 eval 场景，回归时非零退出 |
+
+### 环境变量开关
+
+| 变量 | 作用 |
+| --- | --- |
+| `HARNESS=1` | 使用 harness 四层循环替代固定工作流 |
+| `AGENT_LOOP=1` | 使用 runtime 内置 agent 循环 |
+| `AGENT_MCP=1` | 通过 MCP base SDK（JSON-RPC + 共享 token cache）提供 demo 工具 |
+| `AGENT_REGRESS=1` | 故意降级模型输出质量，用于验证 eval 框架能否捕获回归 |
+| `CRASH_AFTER=<phase.step>` | 在指定 step 后注入崩溃，测试恢复能力 |
 
 `*_CRASH_TURN=<n>` / `CRASH_AFTER=<stepId>` 用于注入崩溃以演示恢复。
 
