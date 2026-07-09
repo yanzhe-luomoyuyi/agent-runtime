@@ -1,9 +1,0 @@
-{
-  "name": "fabric-shell",
-  "description": "Plugin for the Fabric Shell team's dev agent — end-to-end work item resolution from Azure DevOps (bugs, tasks, features, user stories)",
-  "version": "0.0.1",
-  "skills": "skills/",
-  "agents": "agents/",
-  "hooks": "hooks.json",
-  "mcpServers": ".mcp.json"
-}
