@@ -35,16 +35,17 @@ function seqFileName(version: number): string {
 export class EventLog {
   private readonly events: AgentEvent[] = [];
 
-  constructor(private readonly dir: string) {
+  constructor(private readonly _dir: string) {
     // Reading is side-effect-free: a non-existent run yields zero events and
     // creates nothing on disk. The directory is created lazily on first append.
-    if (!existsSync(dir)) return;
-    const files = readdirSync(dir)
-      .filter((f) => f.endsWith('.json'))
+    if (!existsSync(_dir)) return;
+    const seqRe = /^\d{12}\.json$/;
+    const files = readdirSync(_dir)
+      .filter((f) => seqRe.test(f))
       .sort();
     for (const file of files) {
       try {
-        this.events.push(JSON.parse(readFileSync(join(dir, file), 'utf8')) as AgentEvent);
+        this.events.push(JSON.parse(readFileSync(join(_dir, file), 'utf8')) as AgentEvent);
       } catch {
         break; // torn trailing write — stop at the last valid event (valid prefix)
       }
@@ -60,6 +61,11 @@ export class EventLog {
     return this.events.length;
   }
 
+  /** The filesystem directory backing this log (exposed for snapshot). */
+  get dir(): string {
+    return this._dir;
+  }
+
   get length(): number {
     return this.events.length;
   }
@@ -70,12 +76,12 @@ export class EventLog {
    */
   append(event: AgentEvent): void {
     const version = this.events.length;
-    if (version === 0) mkdirSync(this.dir, { recursive: true }); // create the run dir lazily, on first write
+    if (version === 0) mkdirSync(this._dir, { recursive: true }); // create the run dir lazily, on first write
     try {
-      writeFileSync(join(this.dir, seqFileName(version)), JSON.stringify(event), { flag: 'wx' });
+      writeFileSync(join(this._dir, seqFileName(version)), JSON.stringify(event), { flag: 'wx' });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new ConflictError(this.dir, version);
+        throw new ConflictError(this._dir, version);
       }
       throw e;
     }

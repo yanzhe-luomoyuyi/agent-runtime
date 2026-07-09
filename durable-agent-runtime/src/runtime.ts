@@ -16,6 +16,7 @@ import type { ModelProvider } from './model/provider.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { PolicyEnforcer, PolicyViolationError, type Policy } from './policy.js';
 import { applyEvent, reduce } from './reducer.js';
+import { readSnapshot, writeSnapshot } from './snapshot.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { buildTrace, type Trace } from './trace.js';
 import type { AgentEvent, RunState } from './types.js';
@@ -34,6 +35,13 @@ export interface RuntimeOptions {
   pricing?: ModelPricing;
   /** Declarative guardrails (tool allow-list / cost budget / PII redaction). Optional. */
   policy?: Policy;
+  /**
+   * Minimum number of NEW events between snapshots. Snapshots are still taken
+   * at phase boundaries, but only if at least this many events have accumulated
+   * since the last snapshot. Terminal snapshots (RunCompleted / RunFailed) are
+   * always written regardless. Default: 20.
+   */
+  snapshotInterval?: number;
 }
 
 export class Runtime {
@@ -58,6 +66,13 @@ export class Runtime {
   status(runId: string): RunState {
     const log = new EventLog(runDir(this.opts.baseDir, runId));
     if (log.length === 0) throw new Error(`Run not found: ${runId}`);
+
+    // Fast path: replay only the tail beyond the latest snapshot.
+    const snap = readSnapshot(log.dir, log.version);
+    if (snap) {
+      const tail = log.all().slice(snap.version);
+      return reduce(tail, runId, snap.state);
+    }
     return reduce(log.all(), runId);
   }
 
@@ -91,12 +106,33 @@ export class Runtime {
   }
 
   private async drive(runId: string, log: EventLog, initialEvent?: AgentEvent): Promise<RunState> {
-    let state = reduce(log.all(), runId);
+    // ── Fast resume via snapshot ──────────────────────────────────────────
+    // If a snapshot exists, we start from its pre-reduced state and only
+    // replay events appended after it. Without a snapshot (or if it's
+    // invalid), we fall back to a full log replay — the safe default.
+    const allEvents = log.all();
+    const snap = readSnapshot(log.dir, log.version);
+    let state: RunState;
+    let spentUsd: number;
 
-    // Running model spend, seeded from the durable log so cost budgets hold
-    // across resume: replayed model calls keep their original recorded cost and
-    // only genuinely new calls add to the total.
-    let spentUsd = log.all().reduce((sum, e) => (e.type === 'ModelCalled' ? sum + e.costUsd : sum), 0);
+    if (snap) {
+      // Start from the snapshot; replay only events after snap.version.
+      state = snap.state;
+      spentUsd = snap.spentUsd;
+      const tail = allEvents.slice(snap.version);
+      for (const e of tail) {
+        state = applyEvent(state, e);
+        if (e.type === 'ModelCalled') spentUsd += e.costUsd;
+      }
+    } else {
+      state = reduce(allEvents, runId);
+      spentUsd = allEvents.reduce((sum, e) => (e.type === 'ModelCalled' ? sum + e.costUsd : sum), 0);
+    }
+
+    // Track the last snapshot version so we only write a new one when enough
+    // new events have accumulated (avoids thrashing the filesystem on tiny
+    // phases). Terminal snapshots still flush unconditionally.
+    let lastSnapVersion = snap?.version ?? 0;
 
     // Single funnel for every event: persist to the log, notify observers, AND
     // fold it into the in-memory state — so `state` always equals `reduce(log)`.
@@ -141,10 +177,13 @@ export class Runtime {
         }
 
         record({ type: 'PhaseCompleted', phase: phase.name, ts: now() });
+        // Checkpoint: snapshot state so the next resume skips all events up to here.
+        lastSnapVersion = this.checkpoint(log.dir, log.version, state, spentUsd, lastSnapVersion);
       }
 
       const summary = this.opts.workflow.summarize ? this.opts.workflow.summarize(state) : buildSummary(state);
       record({ type: 'RunCompleted', summary, ts: now() });
+      this.checkpoint(log.dir, log.version, state, spentUsd, lastSnapVersion, true);
       return state;
     } catch (err) {
       if (err instanceof ConflictError) throw err; // another writer owns this run — don't clobber its log
@@ -152,8 +191,39 @@ export class Runtime {
       if (message.includes('__CRASH__')) throw err; // leave the log resumable — no RunFailed
 
       record({ type: 'RunFailed', error: message, ts: now() });
+      this.checkpoint(log.dir, log.version, state, spentUsd, lastSnapVersion, true);
       return state;
     }
+  }
+
+  /**
+   * Write a snapshot at the current log version so future resumes can skip
+   * full-log replay. Best-effort: a write failure is silently ignored because
+   * the log is still the authoritative source of truth.
+   *
+   * Snapshot are throttled by `snapshotInterval`: we skip the write unless at
+   * least that many new events have accumulated since the last snapshot.
+   * Terminal snapshots (force=true) always flush regardless.
+   *
+   * Returns the updated lastSnapshotVersion (== version if written, or the
+   * old value if skipped).
+   *
+   * Concurrency note: only the runtime that owns this run (has won every
+   * optimistic-concurrency append) calls this — there is no writer–writer race.
+   * The atomic tmp+rename in writeSnapshot guards against crash-mid-write.
+   */
+  private checkpoint(
+    runDir: string,
+    version: number,
+    state: RunState,
+    spentUsd: number,
+    lastVersion: number,
+    force = false,
+  ): number {
+    const interval = this.opts.snapshotInterval ?? 20;
+    if (!force && version - lastVersion < interval) return lastVersion;
+    writeSnapshot(runDir, { version, state, spentUsd });
+    return version;
   }
 
   private makeContext(
