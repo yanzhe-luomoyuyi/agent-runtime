@@ -275,9 +275,6 @@ $env:HARNESS='1'; $env:HARNESS_CRASH_TURN='1'; npm run dev -w durable-agent-runt
 $env:HARNESS='1'; npm run dev -w durable-agent-runtime -- resume <run-id>
 ```
 
-> Windows 提示：如果刚装好的 Node 还没进入某个终端的 PATH，用下面这行刷新：
-> `$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")`
-
 ## 目录结构
 
 ```

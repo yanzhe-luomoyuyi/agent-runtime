@@ -151,7 +151,7 @@ npm run dev -- recover <run-id>
 
 ---
 
-## 值得解释的设计决策（面试笔记）
+## 设计决策
 
 1. **状态是派生出来的，从不持久化存储。** Reducer 是纯函数，同样的日志总能重建出同样的状态。恢复就是"把日志重放到最新位置，然后继续执行"。
 2. **幂等工具调用。** 每次调用有确定性 id（`<phase>.<step>:<tool>`）。如果日志已有其结果，运行时重放而不重新调用工具——恢复时绝不重复已发生的副作用。
@@ -165,19 +165,6 @@ npm run dev -- recover <run-id>
 10. **快照 checkpoint 加速恢复。** 对于长 run，从头重放所有事件可能很慢。运行时会周期性写入派生状态的快照；恢复时优先加载快照，只重放快照之后的事件。快照是纯性能优化——即使损坏或缺失，系统仍可完全从事件日志重建所有状态。
 
 ---
-
-## 路线图
-
-- **D2 — 持久化核心** ✅ 事件日志 + reducer + 恢复 + 幂等（本 commit）。
-- **D3 — 并发安全** ✅ 乐观并发追加（独占创建）+ `ConflictError` + `recover()` 监管者。
-- **D4 — 可观测性** ✅ 每个 phase / step / tool / model 的 span + 通过 `agent trace` 查看 token / 成本 / 延迟汇总；模型调用现在流经运行时（记为 `ModelCalled` 事件 + 恢复时幂等）。
-- **D5 — Eval 框架** ✅ 场景 fixtures + 可组合打分器（程序化 + LLM 裁判）对 RunState / trace 打分；`agent eval`（失败时非零退出）。Demo：`AGENT_REGRESS=1 agent eval` 降级 prompt → 框架捕获回归。
-- **D6 — 打磨** ✅ 架构文档（本文件）+ 刷新 [TESTING.md](TESTING.md) + 脚本化端到端演示（[demo.ps1](demo.ps1)：run → crash → resume → recover → trace → eval）。
-- **D7 — 共享 MCP base SDK** ✅ JSON-RPC + 可换 transport + 共享刷新 token cache（[src/mcp/](src/mcp/)）；adapter 将远程工具投影进 `ToolRegistry`。`AGENT_MCP=1 agent run` 通过它提供 demo 工具且结果一致（一次 auth fetch 跨 server 共享）。
-- **D8 — 声明式策略层** ✅ 工具 allow-list / 成本预算 / PII 脱敏（[src/policy.ts](src/policy.ts)）在工具/模型漏斗上执行，记为 `PolicyDenied` 事件并在 `agent trace` 中展示。eval 包含护栏回归场景，断言预算确实中止了 run。
-- **D9 — 快照 checkpoint** ✅ 周期性状态快照（[src/snapshot.ts](src/snapshot.ts)）加速恢复；原子写入 + 完整性校验。
-- **D10 — 多 Agent 循环模式** ✅ 三种执行模式：固定工作流 / 内置 agent 循环（`AGENT_LOOP=1`）/ harness 循环（`HARNESS=1`），统一在 CLI 下。
-- **D11 — Harness 适配器** ✅ `harness-adapter.ts` 将 `runAgent` 封装为单个 durable step，实现 `ChatModel` + `ToolInvoker` 契约并转发幂等 `key`。
 
 ## License
 
