@@ -43,6 +43,7 @@ export const heuristicTokenizer: Tokenizer = {
     const parts: string[] = [message.role, message.content ?? ''];
     if (message.toolCalls && message.toolCalls.length > 0) parts.push(JSON.stringify(message.toolCalls));
     if (message.name) parts.push(message.name);
+    if (message.thinking) parts.push(message.thinking);
     return this.count(parts.join(' '));
   },
 

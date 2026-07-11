@@ -53,16 +53,21 @@ export class RuleChatModel implements ChatModel {
 }
 
 /** Build an assistant "final answer" response. */
-export function finalResponse(text: string): ChatResponse {
-  return { message: { role: 'assistant', content: text }, stopReason: 'stop', usage: usageFor(text) };
+export function finalResponse(text: string, thinking?: string): ChatResponse {
+  const msg: ChatResponse['message'] = { role: 'assistant', content: text };
+  if (thinking) msg.thinking = thinking;
+  return { message: msg, stopReason: 'stop', usage: usageFor(text + (thinking ?? '')), thinking };
 }
 
 /** Build an assistant "tool calls" response. */
-export function toolCallResponse(calls: ToolCall[], content = ''): ChatResponse {
+export function toolCallResponse(calls: ToolCall[], content = '', thinking?: string): ChatResponse {
+  const msg: ChatResponse['message'] = { role: 'assistant', content, toolCalls: calls };
+  if (thinking) msg.thinking = thinking;
   return {
-    message: { role: 'assistant', content, toolCalls: calls },
+    message: msg,
     stopReason: 'tool_calls',
-    usage: usageFor(content + JSON.stringify(calls)),
+    usage: usageFor(content + JSON.stringify(calls) + (thinking ?? '')),
+    thinking,
   };
 }
 

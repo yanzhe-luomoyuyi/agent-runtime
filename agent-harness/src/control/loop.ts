@@ -189,6 +189,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
     opts.hooks?.onModelResponse?.(turn, resp.message);
 
     const decision = interpretResponse(resp, specs);
+
+    // Persist thinking / chain-of-thought onto the assistant message so it
+    // survives context compaction and is fed back to the model next turn.
+    if (decision.thinking) {
+      messages[messages.length - 1]!.thinking = decision.thinking;
+    }
+
     if (decision.kind === 'final') {
       return makeResult(decision.answer, true, 'finished', turn, messages, toolsUsed, startTime);
     }

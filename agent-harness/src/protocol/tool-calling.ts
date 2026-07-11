@@ -21,8 +21,8 @@ import { formatErrors, validate } from '../schema/validate.js';
 
 /** The loop-facing decision derived from a model reply. */
 export type ProtocolDecision =
-  | { kind: 'final'; answer: string }
-  | { kind: 'tool_calls'; calls: PreparedCall[] };
+  | { kind: 'final'; answer: string; /** Internal reasoning from this turn (o1/Claude/R1). */ thinking?: string }
+  | { kind: 'tool_calls'; calls: PreparedCall[]; /** Internal reasoning from this turn. */ thinking?: string; /** Natural-language text the model produced alongside its tool calls (Anthropic multi-block). */ aside?: string };
 
 /** A tool call after name/argument checking. `error` is set when it must not run. */
 export interface PreparedCall {
@@ -34,12 +34,18 @@ export interface PreparedCall {
 
 /** Interpret a structured model response into tool calls (validated) or a final answer. */
 export function interpretResponse(resp: ChatResponse, specs: ToolSpec[]): ProtocolDecision {
+  const thinking = resp.thinking ?? resp.message.thinking;
   const toolCalls = resp.message.toolCalls;
   if (toolCalls && toolCalls.length > 0) {
     const byName = new Map(specs.map((s) => [s.name, s]));
-    return { kind: 'tool_calls', calls: toolCalls.map((call) => prepareCall(call, byName)) };
+    return {
+      kind: 'tool_calls',
+      calls: toolCalls.map((call) => prepareCall(call, byName)),
+      thinking,
+      aside: resp.message.content || undefined,
+    };
   }
-  return { kind: 'final', answer: resp.message.content ?? '' };
+  return { kind: 'final', answer: resp.message.content ?? '', thinking };
 }
 
 /** Validate one requested call against the known tools. Never throws. */

@@ -35,6 +35,14 @@ export interface ChatResponse {
   message: Message;
   stopReason: StopReason;
   usage: Usage;
+  /**
+   * Internal reasoning / chain-of-thought produced by models with extended
+   * thinking (o1/o3, Claude, DeepSeek-R1).  Stored separately from `content`
+   * so the context layer can treat it specially (not shown to user, must be
+   * fed back to the model on next turn).  When set, this is also available as
+   * `message.thinking` for convenience.
+   */
+  thinking?: string;
 }
 
 /** A tool-calling chat model. Swappable: mock for tests, live provider in prod. */

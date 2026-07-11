@@ -41,6 +41,15 @@ export interface Message {
    * rewrite the agent's objective (prompt-injection defence).
    */
   untrusted?: boolean;
+  /**
+   * Assistant-only: internal reasoning / chain-of-thought produced by models
+   * that support extended thinking (OpenAI o1/o3, Claude Extended Thinking,
+   * DeepSeek-R1).  This content MUST be fed back to the model on subsequent
+   * turns so it remembers its prior reasoning, but it is typically NOT shown
+   * to the end user.  Like `untrusted`, the context layer fences it from the
+   * instruction region.
+   */
+  thinking?: string;
 }
 
 /** Construct a system (instruction) message. Always trusted. */
