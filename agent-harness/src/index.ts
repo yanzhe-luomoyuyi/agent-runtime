@@ -14,6 +14,9 @@
  *  - D  control/   — the loop, plus planning, reflection, sub-agents, approval
  */
 
+// Agent — the "what" that the harness runs
+export * from './agent.js';
+
 // A — tool-calling protocol + schema validation
 export * from './schema/validate.js';
 export * from './protocol/tool-calling.js';

@@ -8,6 +8,7 @@
  * contract) and nothing else changes.
  */
 
+import { createAgent } from './agent.js';
 import { runAgent } from './control/loop.js';
 import { MockToolInvoker, RuleChatModel, finalResponse, makeTool, toolCall, toolCallResponse } from './testkit/index.js';
 
@@ -40,10 +41,17 @@ async function main(): Promise<void> {
     return finalResponse('Guard against a null session in src/auth/login.ts before reading user.token.');
   });
 
-  const res = await runAgent({
-    goal: GOAL,
+  // ── NEW: define the agent as a configuration bundle ──
+  const devAgent = createAgent({
+    name: 'dev-agent',
+    instructions: 'You are a senior engineer debugging a production issue.',
     model,
     tools,
+  });
+
+  const res = await runAgent({
+    agent: devAgent,
+    goal: GOAL,
     hooks: {
       onModelResponse: (t, m) =>
         console.log(`turn ${t}: assistant ${m.toolCalls ? '-> ' + m.toolCalls.map((c) => `${c.name}()`).join(', ') : '(final answer)'}`),

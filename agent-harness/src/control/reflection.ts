@@ -57,10 +57,14 @@ export async function runReflectiveAgent(opts: ReflectiveAgentOptions): Promise<
   const maxReflections = opts.maxReflections ?? 1;
   const critiques: Critique[] = [];
 
+  // Resolve model from explicit override or agent config (backward compat).
+  const model = opts.model ?? opts.agent?.model;
+  if (!model) throw new Error('runReflectiveAgent: a model is required');
+
   let result = await runAgent({ ...opts, keyPrefix: `${prefix}a0:` });
 
   for (let i = 0; i < maxReflections; i++) {
-    const c = await critique(opts.goal, result.answer, opts.model, { key: `${prefix}reflect${i}` });
+    const c = await critique(opts.goal, result.answer, model, { key: `${prefix}reflect${i}` });
     critiques.push(c);
     if (c.satisfactory) break;
 

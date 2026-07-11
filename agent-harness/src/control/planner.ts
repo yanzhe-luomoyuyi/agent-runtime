@@ -24,6 +24,7 @@
 import type { ChatModel, Message, ToolInvoker } from '@agent/contracts';
 import { systemMessage, userMessage } from '@agent/contracts';
 
+import type { AgentConfig } from '../agent.js';
 import { extractJsonObject } from '../protocol/tool-calling.js';
 import { DEFAULT_SYSTEM_PROMPT, runAgent, type AgentRunResult, type AgentStopReason, type RunAgentOptions } from './loop.js';
 
@@ -143,9 +144,15 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
   const maxReplans = opts.maxReplans ?? 2;
   const replanOnFailure = opts.replanOnFailure ?? true;
 
-  let plan = await makePlan(opts.goal, opts.model, {
+  // Resolve model/tools from explicit override or agent config (backward compat).
+  const model = opts.model ?? opts.agent?.model;
+  const tools = opts.tools ?? opts.agent?.tools;
+  if (!model) throw new Error('runPlannedAgent: a model is required');
+  if (!tools) throw new Error('runPlannedAgent: tools are required');
+
+  let plan = await makePlan(opts.goal, model, {
     key: opts.planKey ?? `${prefix}plan`,
-    tools: opts.tools,
+    tools,
   });
   if (plan.steps.length === 0) plan = newPlan(['Accomplish the goal']);
   plan = advancePlan(plan, 0);
@@ -162,11 +169,14 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
   while (plan.currentStep >= 0 && plan.currentStep < plan.steps.length) {
     const stepGoal = buildStepGoal(opts.goal, plan);
 
+    // Resolve the base system prompt — from explicit override, agent config, or default.
+    const basePrompt = opts.systemPrompt ?? opts.agent?.instructions ?? DEFAULT_SYSTEM_PROMPT;
+
     const result = await runAgent({
       ...opts,
       goal: stepGoal,
       keyPrefix: `${prefix}s${plan.currentStep}:`,
-      systemPrompt: (opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT) +
+      systemPrompt: basePrompt +
         `\n\nFollow this plan (you are on → step ${plan.currentStep + 1}):\n${formatPlanForPrompt(plan)}`,
     });
 
@@ -184,9 +194,9 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
       const failures = plan.steps
         .filter((_, i) => plan.statuses[i] === 'failed')
         .map((s) => `Step "${s}" was not completed.`);
-      plan = await makePlan(opts.goal, opts.model, {
+      plan = await makePlan(opts.goal, model, {
         key: `${prefix}replan${replans}`,
-        tools: opts.tools,
+        tools,
         previousFailures: failures,
       });
       plan = advancePlan(plan, 0);

@@ -26,7 +26,7 @@ import type {
   ToolInvoker,
   ToolSpec,
 } from '@agent/contracts';
-import { parseTextToolCall, runAgent, type AgentRunResult } from '@agent/harness';
+import { createAgent, parseTextToolCall, runAgent, type AgentConfig, type AgentRunResult } from '@agent/harness';
 
 import type { RunState } from '../types.js';
 import type { StepContext, WorkflowDef } from '../workflow.js';
@@ -98,14 +98,20 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
           {
             id: 'agent.1',
             name: 'Harness loop',
-            run: (ctx) =>
-              runAgent({
-                goal: ctx.input.issue,
+            run: (ctx) => {
+              const agent: AgentConfig = {
+                name: 'harness-agent',
+                instructions: 'You are a durable, tool-using agent. Achieve the user goal by calling tools one at a time (or several at once when they are independent). When finished, reply with a final answer and NO tool calls.',
                 model: new RuntimeChatModel(ctx),
                 tools: new RuntimeToolInvoker(ctx),
                 maxTurns: opts.maxTurns,
+              };
+              return runAgent({
+                agent,
+                goal: ctx.input.issue,
                 crashAfterTurn: opts.crashAfterTurn,
-              }),
+              });
+            },
           },
         ],
       },

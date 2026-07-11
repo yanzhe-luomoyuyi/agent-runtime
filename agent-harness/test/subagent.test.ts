@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createAgent } from '../src/agent.js';
 import { runAgent } from '../src/control/loop.js';
 import { makeSubagentTool } from '../src/control/subagent.js';
 import { MockToolInvoker, ScriptedChatModel, finalResponse, makeTool, toolCall, toolCallResponse } from '../src/testkit/index.js';
@@ -13,7 +14,15 @@ describe('sub-agent delegation', () => {
       toolCallResponse([toolCall('s1', 'lookup', { q: 'x' })]),
       finalResponse('sub says 42'),
     ]);
-    const subagent = makeSubagentTool({ model: subModel, tools: subTools });
+
+    // ── NEW: sub-agent defined as an AgentConfig ──
+    const lookupAgent = createAgent({
+      name: 'lookup-agent',
+      instructions: 'You are a data lookup specialist.',
+      model: subModel,
+      tools: subTools,
+    });
+    const subagent = makeSubagentTool({ agent: lookupAgent });
 
     const parentTools = new MockToolInvoker([{ spec: subagent.spec, handler: subagent.run }]);
     const parentModel = new ScriptedChatModel([
@@ -21,7 +30,14 @@ describe('sub-agent delegation', () => {
       finalResponse('final 42'),
     ]);
 
-    const res = await runAgent({ goal: 'g', model: parentModel, tools: parentTools });
+    const parentAgent = createAgent({
+      name: 'parent-agent',
+      instructions: 'You are an orchestrator.',
+      model: parentModel,
+      tools: parentTools,
+    });
+
+    const res = await runAgent({ agent: parentAgent, goal: 'g' });
 
     expect(res.finished).toBe(true);
     expect(res.answer).toBe('final 42');
