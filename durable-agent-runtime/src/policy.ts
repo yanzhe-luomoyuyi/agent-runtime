@@ -9,12 +9,29 @@
  * server — the same policy composes over any workflow and any tool, local or
  * MCP-backed.
  *
+ * ## Content safety (pre-model / post-model)
+ *
+ * Three additional checkpoints are available via an injectable
+ * `ContentSafetyProvider`:
+ *
+ *   checkContent(text)   — harmful content before it reaches the model
+ *   checkJailbreak(text) — prompt injection / DAN-style attacks
+ *   checkOutput(text)    — unsafe / ungrounded model response
+ *
+ * The default provider is a no-op (everything passes). Swap in Azure Content
+ * Safety, Llama Guard, or any HTTP-based safety API by implementing the
+ * `ContentSafetyProvider` interface in ./content-safety.ts.
+ *
  * Contrast with hardcoding guardrails inside one server (e.g. a checkpoint
  * server): that couples policy to a single integration and can't be reused.
  * Here the policy is a standalone, declarative, composable middleware.
  */
 
-export type PolicyViolationCode = 'tool_not_allowed' | 'budget_exceeded';
+import type { ContentSafetyProvider } from './policy/content-safety.js';
+import { NoOpContentSafety } from './policy/content-safety.js';
+import type { ContentCheckResult, JailbreakResult, OutputCheckResult } from './policy/content-safety.js';
+
+export type PolicyViolationCode = 'tool_not_allowed' | 'budget_exceeded' | 'content_safety' | 'jailbreak' | 'output_safety';
 
 /** Raised when a call is refused by the policy. Carries a machine-readable code. */
 export class PolicyViolationError extends Error {
@@ -65,7 +82,14 @@ export function resolveRedactions(names: string[]): RedactionRule[] {
 }
 
 export class PolicyEnforcer {
-  constructor(private readonly policy: Policy) {}
+  private readonly contentSafety: ContentSafetyProvider;
+
+  constructor(
+    private readonly policy: Policy,
+    contentSafety?: ContentSafetyProvider,
+  ) {
+    this.contentSafety = contentSafety ?? new NoOpContentSafety();
+  }
 
   /** The declared policy (read-only view for inspection/observability). */
   get declared(): Policy {
@@ -118,4 +142,29 @@ export class PolicyEnforcer {
     }
     return { text: out, applied };
   }
-}
+  // ── Content safety checkpoints (delegated to injectable provider) ────
+
+  /**
+   * Check text for harmful content BEFORE it reaches the model.
+   * Returns the full result so the caller can record a `PolicyDenied` event
+   * with category + severity for observability.
+   */
+  async checkContent(text: string): Promise<ContentCheckResult> {
+    return this.contentSafety.checkContent(text);
+  }
+
+  /**
+   * Check for prompt injection / jailbreak attempts (DAN, ignore-previous,
+   * system-prompt extraction, etc.).
+   */
+  async checkJailbreak(text: string): Promise<JailbreakResult> {
+    return this.contentSafety.checkJailbreak(text);
+  }
+
+  /**
+   * Check the model's RESPONSE for harmful or ungrounded output.
+   * `context` is optional grounding text (e.g. retrieved documents).
+   */
+  async checkOutput(text: string, context?: string): Promise<OutputCheckResult> {
+    return this.contentSafety.checkOutput(text, context);
+  }}

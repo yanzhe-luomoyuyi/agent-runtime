@@ -251,12 +251,27 @@ export class Runtime {
         // ever leaves the runtime — the model sees, and the log stores, only the
         // redacted text.
         this.enforceBudget(getSpentUsd(), callId, record);
+
+        // Pre-model content safety: detect prompt injection & harmful content
+        // BEFORE the prompt is sent. The raw (pre-redaction) prompt is checked
+        // so that injection attacks can't hide behind PII redaction markers.
+        if (this.policy) {
+          await this.enforceContentSafety(this.policy, prompt, callId, record);
+        }
+
         const outbound = this.policy ? this.policy.redact(prompt).text : prompt;
 
         const startedAt = Date.now();
         const { text, promptTokens, completionTokens, cached } = await this.opts.model.complete(outbound);
         const pricing = this.opts.pricing ?? DEFAULT_PRICING;
         const costUsd = promptTokens * pricing.promptUsdPerToken + completionTokens * pricing.completionUsdPerToken;
+
+        // Post-model content safety: check the model's response for harmful or
+        // ungrounded output before it flows back into the workflow.
+        if (this.policy) {
+          await this.enforceOutputSafety(this.policy, text, callId, record);
+        }
+
         record({
           type: 'ModelCalled',
           callId,
@@ -318,6 +333,70 @@ export class Runtime {
         record({ type: 'PolicyDenied', scope: 'model', target: callId, code: e.code, reason: e.message, ts: now() });
       }
       throw e;
+    }
+  }
+
+  /**
+   * Pre-model guard: run jailbreak + content checks on the raw prompt.
+   * Records a PolicyDenied event on violation so every blocked call is audit-
+   * able and surfaced in traces / evals.
+   */
+  private async enforceContentSafety(
+    policy: PolicyEnforcer,
+    prompt: string,
+    callId: string,
+    record: (event: AgentEvent) => void,
+  ): Promise<void> {
+    // Jailbreak check (prompt injection / DAN / system-override attempts).
+    const jb = await policy.checkJailbreak(prompt);
+    if (!jb.safe) {
+      record({
+        type: 'PolicyDenied',
+        scope: 'model',
+        target: callId,
+        code: 'jailbreak',
+        reason: `${jb.attackType ?? 'prompt_injection'}: ${jb.reason ?? 'jailbreak detected'}`,
+        ts: now(),
+      });
+      throw new PolicyViolationError('jailbreak', 'model', callId, jb.reason ?? 'Prompt injection detected');
+    }
+
+    // Harmful content check (violence, hate, self-harm, sexual, etc.).
+    const cc = await policy.checkContent(prompt);
+    if (!cc.safe) {
+      record({
+        type: 'PolicyDenied',
+        scope: 'model',
+        target: callId,
+        code: 'content_safety',
+        reason: `${cc.category ?? 'unsafe'}(severity=${cc.severity ?? '?'}): ${cc.reason ?? 'harmful content'}`,
+        ts: now(),
+      });
+      throw new PolicyViolationError('content_safety', 'model', callId, cc.reason ?? 'Harmful content detected');
+    }
+  }
+
+  /**
+   * Post-model guard: check the model's response for harmful/ungrounded output
+   * before it is returned to the workflow.
+   */
+  private async enforceOutputSafety(
+    policy: PolicyEnforcer,
+    response: string,
+    callId: string,
+    record: (event: AgentEvent) => void,
+  ): Promise<void> {
+    const oc = await policy.checkOutput(response);
+    if (!oc.safe) {
+      record({
+        type: 'PolicyDenied',
+        scope: 'model',
+        target: callId,
+        code: 'output_safety',
+        reason: `${oc.category ?? 'unsafe'}: ${oc.reason ?? 'harmful output'}`,
+        ts: now(),
+      });
+      throw new PolicyViolationError('output_safety', 'model', callId, oc.reason ?? 'Harmful model output detected');
     }
   }
 }
