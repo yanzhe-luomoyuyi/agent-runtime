@@ -1,20 +1,33 @@
 /**
  * Runnable demo (no network, fully deterministic):  tsx src/demo.ts
  *
- * Wires a rule-based mock brain and two in-memory tools into `runAgent` and
- * prints the model-driven trajectory: the model decides to fetch the issue,
- * search the code, then answer — the harness runs each tool and feeds the
- * observation back. Swap the mock for a live tool-calling model (same ChatModel
- * contract) and nothing else changes.
+ * Three scenarios, each swap-compatible with a live tool-calling model:
+ *   1. Happy path — the model fetches the issue, searches code, then answers.
+ *   2. Resilience — the primary model is "down"; a resilient model (circuit
+ *      breaker + fallback tier) escalates to a backup so the run still finishes.
+ *   3. Compensation — a side effect commits, the run then fails, and the
+ *      opt-in saga decorator rolls the side effect back.
  */
+
+import type { ChatModel } from '@agent/contracts';
 
 import { createAgent } from './agent.js';
 import { runAgent } from './control/loop.js';
+import { CompensatingToolInvoker } from './recovery/compensation.js';
+import { createResilientModel } from './recovery/fallback.js';
+import { TransientError } from './recovery/retry.js';
 import { MockToolInvoker, RuleChatModel, finalResponse, makeTool, toolCall, toolCallResponse } from './testkit/index.js';
 
 const GOAL = 'Login page crashes with a null session';
 
 async function main(): Promise<void> {
+  await demoHappyPath();
+  await demoResilientModel();
+  await demoCompensation();
+}
+
+async function demoHappyPath(): Promise<void> {
+  console.log('\n########## 1. happy path ##########');
   const tools = new MockToolInvoker([
     makeTool(
       'getIssue',
@@ -63,6 +76,123 @@ async function main(): Promise<void> {
   console.log(`finished: ${res.finished} | turns: ${res.turns} | stop: ${res.stopReason}`);
   console.log(`toolsUsed: ${res.toolsUsed.join(' -> ')}`);
   console.log(`answer: ${res.answer}`);
+}
+
+// ---------------------------------------------------------------------------
+// 2. Resilient model: primary is "down" → circuit breaker + fallback tier.
+// ---------------------------------------------------------------------------
+async function demoResilientModel(): Promise<void> {
+  console.log('\n########## 2. resilient model (fallback + circuit breaker) ##########');
+
+  const tools = new MockToolInvoker([
+    makeTool(
+      'searchCode',
+      'Search the codebase for files relevant to a query.',
+      { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      () => ({ files: ['src/auth/login.ts'] }),
+    ),
+  ]);
+
+  // Primary provider is unhealthy: every call throws a transient failure.
+  const primary: ChatModel = {
+    name: 'gpt-primary',
+    chat: () => Promise.reject(new TransientError('provider overloaded (503)')),
+  };
+
+  // Backup provider works — the same rule-based brain as scenario 1.
+  const backup = new RuleChatModel((req) => {
+    const called = new Set(req.messages.filter((m) => m.role === 'tool').map((m) => m.name));
+    if (!called.has('searchCode')) return toolCallResponse([toolCall('c1', 'searchCode', { query: 'login null session' })]);
+    return finalResponse('Guard against a null session in src/auth/login.ts.');
+  });
+
+  // The resilient model is itself a ChatModel — it drops straight into runAgent.
+  const model = createResilientModel({
+    tiers: [
+      { model: primary, retry: { retries: 1, jitter: 'none', sleep: () => Promise.resolve() }, breaker: { failureThreshold: 1 } },
+      { model: backup },
+    ],
+    onEscalate: ({ from, to }) => console.log(`escalate: ${from} -> ${to} (primary unhealthy)`),
+  });
+
+  const res = await runAgent({
+    goal: GOAL,
+    model,
+    tools,
+    retry: { retries: 0 }, // each tier already retries; don't multiply at the loop level
+    hooks: {
+      onModelResponse: (t, m) =>
+        console.log(`turn ${t}: assistant ${m.toolCalls ? '-> ' + m.toolCalls.map((c) => `${c.name}()`).join(', ') : '(final answer)'}`),
+    },
+  });
+
+  console.log('\n=== result ===');
+  console.log(`finished: ${res.finished} | turns: ${res.turns} | stop: ${res.stopReason} (answered by backup)`);
+  console.log(`answer: ${res.answer}`);
+}
+
+// ---------------------------------------------------------------------------
+// 3. Compensation: a side effect commits, the run fails, saga rolls it back.
+// ---------------------------------------------------------------------------
+async function demoCompensation(): Promise<void> {
+  console.log('\n########## 3. compensation (saga rollback on failure) ##########');
+
+  const base = new MockToolInvoker([
+    makeTool(
+      'createOrder',
+      'Create an order (side effect).',
+      { type: 'object', properties: {}, additionalProperties: true },
+      () => ({ id: 'ORD-1' }),
+    ),
+    makeTool(
+      'chargeCard',
+      'Charge the customer (fails in this demo).',
+      { type: 'object', properties: {}, additionalProperties: true },
+      () => { throw new Error('payment gateway declined'); },
+    ),
+    makeTool(
+      'deleteOrder',
+      'Delete a previously created order (compensating action).',
+      { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+      (args) => ({ deleted: (args as { id: string }).id }),
+    ),
+  ]);
+
+  // Wrap the tools: a successful createOrder is recorded so it can be undone.
+  const tools = new CompensatingToolInvoker(base, {
+    compensators: {
+      createOrder: async ({ result }) => {
+        await base.call('deleteOrder', { id: (result as { id: string }).id });
+      },
+    },
+    onCompensate: (o) => console.log(`compensate: ${o.name} -> ${o.ok ? 'undone' : `FAILED (${o.error})`}`),
+  });
+
+  // Brain: create the order, then keep trying to charge (which always fails).
+  const model = new RuleChatModel((req) => {
+    const called = req.messages.filter((m) => m.role === 'tool').map((m) => m.name);
+    if (!called.includes('createOrder')) return toolCallResponse([toolCall('c1', 'createOrder', {})]);
+    return toolCallResponse([toolCall('c2', 'chargeCard', {})]); // repeated → loop detected
+  });
+
+  const res = await runAgent({
+    goal: 'Place an order and charge the customer',
+    model,
+    tools,
+    loopLimit: 2, // the repeated failing chargeCard trips the loop detector
+    hooks: {
+      onToolResult: (t, name, obs, ok) => console.log(`turn ${t}: ${name} -> ${ok ? obs : obs}`),
+    },
+  });
+
+  console.log(`\nrun finished: ${res.finished} | stop: ${res.stopReason}`);
+
+  // The run failed with a committed side effect — roll it back.
+  if (!res.finished && tools.pending.length > 0) {
+    console.log(`rolling back ${tools.pending.length} committed side effect(s): ${tools.pending.map((p) => p.name).join(', ')}`);
+    await tools.compensate();
+  }
+  console.log(`pending after compensation: ${tools.pending.length}`);
 }
 
 void main();

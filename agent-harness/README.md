@@ -11,7 +11,7 @@
 | 层 | 目录 | 做什么 |
 | --- | --- | --- |
 | **A** — 工具调用协议 | `src/protocol`, `src/schema` | 把 `ChatResponse` 解释成已校验的工具调用或最终答案。参数在执行**前**按各工具的 `inputSchema` 校验；非法调用变成结构化错误而非崩溃。内置一个为不支持原生 tool-calling 的模型准备的容错文本解析器（`parseTextToolCall`、`extractJsonObject`）。 |
-| **B** — 恢复 / 自愈 | `src/recovery` | 只对**瞬时性**模型/工具失败执行退避重试（`withRetry`），支持 HTTP 状态码分类（429 / 5xx / 超时）→ 结构化 `TransientError` / `HttpError`，遵循 `Retry-After` 头 + 指数退避 + full jitter；把工具抛出的异常转化为模型能理解的 observation；检测无进展的重复调用死循环（`LoopDetector`），不仅检测单次重复调用，还能检测重复序列模式（A→B→A→B），支持按工具维度的调用次数上限。 |
+| **B** — 恢复 / 自愈 | `src/recovery` | 只对**瞬时性**模型/工具失败执行退避重试（`withRetry`），支持 HTTP 状态码分类（429 / 5xx / 超时）→ 结构化 `TransientError` / `HttpError`，遵循 `Retry-After` 头 + 指数退避 + full jitter。**熔断器** `CircuitBreaker`（closed→open→half_open，只对 transient error 跳闸）。**分级模型链** `createResilientModel` 按 tier 顺序尝试模型（每 tier 独立 retry+breaker），包含 escalation ladder（retry→降级→…），作为普通 `ChatModel` 零侵入。**Saga 补偿** `CompensatingToolInvoker`（opt-in 装饰器，LIFO 回滚已提交副作用，best-effort / stopOnError）。把工具抛出的异常转化为模型能理解的 observation；检测无进展的重复调用死循环（`LoopDetector`），不仅检测单次重复调用，还能检测重复序列模式（A→B→A→B），支持按工具维度的调用次数上限。 |
 | **C** — 上下文 / 记忆 | `src/context` | 在 token 预算内组装 prompt + 滚动压缩（保留 system + 近期消息，其余压缩为摘要），observation 截断，重要性加权淘汰（工具错误 > 写入 > 读取），缓存友好排序；**untrusted 输出隔离**——工具结果被隔离标记为"仅数据"，被污染的结果无法劫持 agent。支持可插拔 tokenizer（`heuristicTokenizer` 默认 `length/4`，`fromCounter` 对接 tiktoken / Anthropic 等）。 |
 | **D** — 控制流 | `src/control` | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行，失败时重新规划，每步有 ✓/→/○ 进度标记）、`runReflectiveAgent`（自我批评并修订，每次尝试有独立 key 命名空间 `a0:` / `a1:` …）、`makeSubagentTool`（把子任务委派封装成一个工具，嵌套 key 全局唯一），以及 human-in-the-loop 的 `Approver`（基于模式匹配的审批门控 `deploy*`、`write*`，带过期时间的审批缓存 + 审计时间戳）。 |
 
@@ -42,6 +42,9 @@ src/
   context/tokenizer.ts      # C: 可插拔 token 计数
   recovery/retry.ts         # B: 瞬时失败重试 + 退避 + HTTP 分类
   recovery/loop-detector.ts # B: 无进展检测（含序列检测 A→B→A→B）
+  recovery/circuit-breaker.ts # B: 熔断器（closed→open→half_open 三态）
+  recovery/fallback.ts      # B: 分级模型链（fallback + escalation ladder）
+  recovery/compensation.ts  # B: Saga 补偿（opt-in 装饰器，LIFO 回滚）
   control/loop.ts           # D: 核心 agentic 循环（组合 A/B/C/D）
   control/planner.ts        # D: 先规划后执行
   control/reflection.ts     # D: 自我批评并修订
@@ -49,7 +52,7 @@ src/
   control/human.ts          # D: 审批接入点
   tracing/collector.ts      # 结构化 trace：token / 成本 / 决策
   testkit/index.ts          # 确定性的 ChatModel / ToolInvoker 替身
-  demo.ts                   # 可离线运行的 demo
+  demo.ts                   # 3 场景离线 demo：happy path + resilient model + saga compensation
 ```
 
 ## 使用

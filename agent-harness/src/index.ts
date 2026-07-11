@@ -28,6 +28,9 @@ export * from './context/tokenizer.js';
 // B — recovery
 export * from './recovery/retry.js';
 export * from './recovery/loop-detector.js';
+export * from './recovery/circuit-breaker.js';
+export * from './recovery/fallback.js';
+export * from './recovery/compensation.js';
 
 // D — control flow
 export * from './control/human.js';
