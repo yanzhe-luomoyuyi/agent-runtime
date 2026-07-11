@@ -52,6 +52,63 @@ export const heuristicTokenizer: Tokenizer = {
   },
 };
 
+// ── CJK-aware heuristic (better default) ───────────────────────────
+
+/**
+ * True for CJK / full-width codepoints, which real tokenizers encode at roughly
+ * one token per character — very different from the ~4 chars/token that Latin
+ * text gets. Counting these separately keeps the estimate honest for Chinese,
+ * Japanese, and Korean content instead of under-counting it ~4×.
+ */
+function isCjkCodepoint(cp: number): boolean {
+  return (
+    (cp >= 0x2e80 && cp <= 0x2eff) ||   // CJK radicals
+    (cp >= 0x3000 && cp <= 0x303f) ||   // CJK symbols & punctuation
+    (cp >= 0x3040 && cp <= 0x30ff) ||   // Hiragana + Katakana
+    (cp >= 0x3400 && cp <= 0x4dbf) ||   // CJK Ext A
+    (cp >= 0x4e00 && cp <= 0x9fff) ||   // CJK Unified Ideographs
+    (cp >= 0xac00 && cp <= 0xd7af) ||   // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) ||   // CJK compatibility ideographs
+    (cp >= 0xff00 && cp <= 0xffef) ||   // Half/full-width forms
+    (cp >= 0x20000 && cp <= 0x2a6df)    // CJK Ext B (astral plane)
+  );
+}
+
+/**
+ * A zero-dependency estimator that is meaningfully more accurate than plain
+ * `length / 4` on mixed content: CJK characters count as ~1 token each, all
+ * other characters at ~4 chars/token. This is still a heuristic (a real BPE
+ * tokenizer via `fromCounter` is always more accurate), but it removes the worst
+ * failure mode — silently under-counting non-Latin text and blowing the window.
+ *
+ * This is the default tokenizer for `ContextManager`. The plain `heuristicTokenizer`
+ * remains available for callers who want the legacy length/4 behaviour.
+ */
+export const cjkAwareTokenizer: Tokenizer = {
+  count(text: string): number {
+    let cjk = 0;
+    let other = 0;
+    for (const ch of text) {
+      const cp = ch.codePointAt(0)!;
+      if (isCjkCodepoint(cp)) cjk++;
+      else other++;
+    }
+    return Math.max(1, cjk + Math.ceil(other / 4));
+  },
+
+  countMessage(message: Message): number {
+    const parts: string[] = [message.role, message.content ?? ''];
+    if (message.toolCalls && message.toolCalls.length > 0) parts.push(JSON.stringify(message.toolCalls));
+    if (message.name) parts.push(message.name);
+    if (message.thinking) parts.push(message.thinking);
+    return this.count(parts.join(' '));
+  },
+
+  countMessages(messages: Message[]): number {
+    return messages.reduce((sum, m) => sum + this.countMessage(m), 0);
+  },
+};
+
 // ── Factory helpers ─────────────────────────────────────────────────
 
 /**

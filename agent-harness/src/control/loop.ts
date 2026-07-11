@@ -147,12 +147,18 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
     systemMessage(systemPrompt),
     userMessage(`Goal: ${opts.goal}`),
   ];
+  // Reassignable view: proactive compaction may replace history with a shorter one.
+  let convo: Message[] = messages;
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     opts.hooks?.onTurnStart?.(turn);
     opts.trace?.startTurn(turn);
 
-    const assembled = context.assemble(messages);
+    // C: proactive, stateful compaction (opt-in via ContextManager.modelSummarize).
+    // No-op unless a model summarizer is configured; keeps the durable key scheme.
+    convo = await context.compactIfNeeded(convo, { keyPrefix: prefix, turn });
+
+    const assembled = context.assemble(convo);
     opts.trace?.startModelCall();
     let resp;
     try {
@@ -178,14 +184,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
           false,
           'retry_budget_exhausted',
           turn,
-          messages,
+          convo,
           toolsUsed,
           startTime,
         );
       }
       throw e;
     }
-    messages.push(resp.message);
+    convo.push(resp.message);
     opts.hooks?.onModelResponse?.(turn, resp.message);
 
     const decision = interpretResponse(resp, specs);
@@ -193,18 +199,18 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
     // Persist thinking / chain-of-thought onto the assistant message so it
     // survives context compaction and is fed back to the model next turn.
     if (decision.thinking) {
-      messages[messages.length - 1]!.thinking = decision.thinking;
+      convo[convo.length - 1]!.thinking = decision.thinking;
     }
 
     if (decision.kind === 'final') {
-      return makeResult(decision.answer, true, 'finished', turn, messages, toolsUsed, startTime);
+      return makeResult(decision.answer, true, 'finished', turn, convo, toolsUsed, startTime);
     }
 
     let tripped = false;
     for (const prepared of decision.calls) {
       const obs = await executeCall(prepared, { tools, approver, detector, prefix, turn, toolsUsed, trace: opts.trace });
       if (obs.tripped) tripped = true;
-      messages.push(toolResultMessage(prepared.call, context.truncateObservation(obs.text)));
+      convo.push(toolResultMessage(prepared.call, context.truncateObservation(obs.text)));
       opts.hooks?.onToolResult?.(turn, prepared.call.name, obs.text, obs.ok);
     }
 
@@ -215,11 +221,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
     }
 
     if (tripped) {
-      return makeResult('Stopped: the same tool call repeated without progress (possible loop).', false, 'loop_detected', turn, messages, toolsUsed, startTime);
+      return makeResult('Stopped: the same tool call repeated without progress (possible loop).', false, 'loop_detected', turn, convo, toolsUsed, startTime);
     }
   }
 
-  return makeResult(`Stopped after the ${maxTurns}-turn budget without a final answer.`, false, 'max_turns', maxTurns, messages, toolsUsed, startTime);
+  return makeResult(`Stopped after the ${maxTurns}-turn budget without a final answer.`, false, 'max_turns', maxTurns, convo, toolsUsed, startTime);
 }
 
 interface Observation {

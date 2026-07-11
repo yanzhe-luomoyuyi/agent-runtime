@@ -1,17 +1,23 @@
 /**
  * Runnable demo (no network, fully deterministic):  tsx src/demo.ts
  *
- * Three scenarios, each swap-compatible with a live tool-calling model:
+ * Five scenarios, each swap-compatible with a live tool-calling model:
  *   1. Happy path — the model fetches the issue, searches code, then answers.
  *   2. Resilience — the primary model is "down"; a resilient model (circuit
  *      breaker + fallback tier) escalates to a backup so the run still finishes.
  *   3. Compensation — a side effect commits, the run then fails, and the
  *      opt-in saga decorator rolls the side effect back.
+ *   4. Scratchpad — an oversized tool result is auto-offloaded to the scratchpad;
+ *      the model retrieves the full content on demand instead of losing it.
+ *   5. Model compaction — once the transcript crosses the budget threshold, older
+ *      messages are folded into a keyed LLM summary (durable-replay safe).
  */
 
-import type { ChatModel } from '@agent/contracts';
+import type { ChatModel, ChatRequest, ChatResponse } from '@agent/contracts';
 
 import { createAgent } from './agent.js';
+import { ContextManager, createModelSummarizer } from './context/manager.js';
+import { ScratchpadToolInvoker } from './context/scratchpad.js';
 import { runAgent } from './control/loop.js';
 import { CompensatingToolInvoker } from './recovery/compensation.js';
 import { createResilientModel } from './recovery/fallback.js';
@@ -24,6 +30,8 @@ async function main(): Promise<void> {
   await demoHappyPath();
   await demoResilientModel();
   await demoCompensation();
+  await demoScratchpad();
+  await demoModelCompaction();
 }
 
 async function demoHappyPath(): Promise<void> {
@@ -193,6 +201,109 @@ async function demoCompensation(): Promise<void> {
     await tools.compensate();
   }
   console.log(`pending after compensation: ${tools.pending.length}`);
+}
+
+// ---------------------------------------------------------------------------
+// 4. Scratchpad: an oversized tool result is offloaded; the model reads it back.
+// ---------------------------------------------------------------------------
+async function demoScratchpad(): Promise<void> {
+  console.log('\n########## 4. scratchpad (offload + read-back) ##########');
+
+  const base = new MockToolInvoker([
+    makeTool(
+      'fetchLog',
+      'Fetch the full server log for an incident (can be very large).',
+      { type: 'object', properties: {}, additionalProperties: true },
+      () => `LOGSTART ${'x'.repeat(6000)} NULL_SESSION at auth/login.ts:42 LOGEND`,
+    ),
+  ]);
+
+  // Wrap tools: results over 4000 chars are offloaded, leaving only a pointer.
+  const tools = new ScratchpadToolInvoker(base, { offloadThreshold: 4000, previewChars: 40 });
+
+  // Brain: fetch the (huge) log → see a pointer → read it back → answer.
+  const model = new RuleChatModel((req) => {
+    const toolMsgs = req.messages.filter((m) => m.role === 'tool');
+    const called = new Set(toolMsgs.map((m) => m.name));
+    if (!called.has('fetchLog')) return toolCallResponse([toolCall('c1', 'fetchLog', {})]);
+    if (!called.has('scratchpad_read')) {
+      // The offload pointer is in the fetchLog observation — pull the id out of it.
+      const ptr = toolMsgs.find((m) => m.name === 'fetchLog')?.content ?? '';
+      const id = /id="([^"]+)"/.exec(ptr)?.[1] ?? 'sp-0';
+      return toolCallResponse([toolCall('c2', 'scratchpad_read', { id })]);
+    }
+    return finalResponse('Null session originates at auth/login.ts:42 (found in the full log).');
+  });
+
+  const res = await runAgent({
+    goal: GOAL,
+    model,
+    tools,
+    hooks: {
+      onToolResult: (t, name, obs) => console.log(`turn ${t}: ${name} -> ${obs.slice(0, 90)}${obs.length > 90 ? '…' : ''}`),
+    },
+  });
+
+  console.log(`\nscratchpad entries: ${tools.store.size} | ${JSON.stringify(tools.store.list())}`);
+  console.log(`finished: ${res.finished} | answer: ${res.answer}`);
+}
+
+// ---------------------------------------------------------------------------
+// 5. Model compaction: cross the budget threshold → keyed LLM summary.
+// ---------------------------------------------------------------------------
+async function demoModelCompaction(): Promise<void> {
+  console.log('\n########## 5. model-summarizer compaction ##########');
+
+  // A dedicated summarizer model (separate from the agent brain). Records its
+  // keyed calls so we can show that compaction fired deterministically.
+  const summarizerCalls: string[] = [];
+  const summarizer: ChatModel = {
+    name: 'summarizer',
+    async chat(req: ChatRequest): Promise<ChatResponse> {
+      summarizerCalls.push(req.key ?? '(no key)');
+      return {
+        message: { role: 'assistant', content: 'Earlier: the agent searched code and inspected several files.' },
+        stopReason: 'stop',
+        usage: { promptTokens: 10, completionTokens: 10 },
+      };
+    },
+  };
+
+  // Small budget + low threshold so compaction triggers after a couple of turns.
+  const context = new ContextManager({
+    maxPromptTokens: 300,
+    outputReserveTokens: 0,
+    keepRecentMessages: 3,
+    compactionThreshold: 0.6,
+    modelSummarize: createModelSummarizer(summarizer),
+  });
+
+  const tools = new MockToolInvoker([
+    makeTool('searchCode', 'Search the codebase.', { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+      (args) => `matches for ${(args as { q: string }).q}: ${'file.ts '.repeat(20)}`),
+  ]);
+
+  // Brain: keep searching (growing the transcript) for several turns, then finish.
+  let searches = 0;
+  const model = new RuleChatModel(() => {
+    if (searches++ < 5) return toolCallResponse([toolCall(`c${searches}`, 'searchCode', { q: `term${searches}` })]);
+    return finalResponse('Done investigating.');
+  });
+
+  const res = await runAgent({
+    goal: GOAL,
+    model,
+    tools,
+    context,
+    maxTurns: 8,
+    hooks: {
+      onModelResponse: (t, m) =>
+        console.log(`turn ${t}: assistant ${m.toolCalls ? '-> ' + m.toolCalls.map((c) => `${c.name}()`).join(', ') : '(final answer)'}`),
+    },
+  });
+
+  console.log(`\ncompaction fired ${summarizerCalls.length} time(s), keys: ${JSON.stringify(summarizerCalls)}`);
+  console.log(`finished: ${res.finished} | turns: ${res.turns}`);
 }
 
 void main();

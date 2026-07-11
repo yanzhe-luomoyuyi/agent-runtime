@@ -55,6 +55,7 @@ flowchart LR
 - **工具注册表** ([src/tools/registry.ts](src/tools/registry.ts)) — 遵循 MCP 规范的 `ToolDef` / `ToolRegistry` 契约，本地工具和远程 MCP 工具在运行时眼里完全一样。
 - **声明式策略层** ([src/policy.ts](src/policy.ts)) — 可复用的护栏中间件，作用于统一的工具/模型调用通道：以数据声明 `Policy`（工具 allow-list · 成本预算 · PII 脱敏）。拒绝操作记录为 `PolicyDenied` 事件，护栏可观测、可 eval 测试——而不是硬编码在 server 代码里。
 - **共享 MCP base SDK** ([src/mcp/](src/mcp/)) — 把每个 MCP server 都要重复实现的横切逻辑一次性提取出来：JSON-RPC 框架、可替换 transport、**共享** token cache。adapter 把 server 的工具投影进 `ToolRegistry`，让 N 个 server 共享一个 client + 一个 auth cache，而不是每个 server 各自实现一遍 curl / JSON-RPC / token 缓存。
+- **跨会话记忆** ([src/memory/store.ts](src/memory/store.ts)) — 持久、分 scope、活过单次 run 的知识（事实 / 偏好 / how-to）。与 per-run 事件日志**完全分开**：一个 scope 一个 JSON 文件、原子写（tmp+rename）、**内容哈希 id 保证幂等写**（崩溃重放不产生重复）。记忆以普通工具（`memory_write/search/read`）形式暴露给模型；读写走 `ctx.callTool` 被记日志，所以即使其他会话改了 store，replay 仍确定。
 - **Trace 可观测性** ([src/trace.ts](src/trace.ts)) — 从事件日志派生 span 时间线 + token / 成本 / 延迟汇总。统计持久化重放的关键指标：`replayHitRate`、`cachedModelCalls`、`costSavedUsd`。
 - **Eval 框架** ([src/eval.ts](src/eval.ts)) — 可组合打分器（程序化打分 + LLM 裁判）+ runner，对派生出的 RunState / trace 打分；`agent eval` 发现回归时以非零退出码退出。
 - **内置 Agent 循环** ([src/agent-loop.ts](src/agent-loop.ts)) — 运行时内置的模型驱动 Agent 循环（比 harness 更简单，但核心概念相同）。模型每 turn 决定 `call_tool` 或 `finish`。封装为单个 durable workflow step。通过 `AGENT_LOOP=1` 启用。
@@ -68,6 +69,7 @@ flowchart LR
 - **模型响应** ([src/app/responses.ts](src/app/responses.ts)) — 为 mock 模型预设的确定性输出。`AGENT_REGRESS=1` 会故意降级输出质量，用于验证 eval 框架能否捕获回归。
 - **Eval 场景** ([src/app/scenarios.ts](src/app/scenarios.ts)) — demo 的测试场景 + 预期结果，供 eval 框架打分。
 - **Agent 场景模型** ([src/app/agent-scenario.ts](src/app/agent-scenario.ts)) — 内置 agent 循环的确定性 mock 模型大脑：`getIssue` → `searchCode` → `finish`。
+- **记忆工具** ([src/app/memory-tools.ts](src/app/memory-tools.ts)) — 把 `MemoryStore` 包成 `memory_write/search/read` 并绑定 scope；`registerMemoryTools()` 把它们注册进 `ToolRegistry`，从而读写走得 durable seam、完全可重放。
 
 ---
 

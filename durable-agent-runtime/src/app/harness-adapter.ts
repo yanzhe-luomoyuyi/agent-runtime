@@ -26,7 +26,7 @@ import type {
   ToolInvoker,
   ToolSpec,
 } from '@agent/contracts';
-import { createAgent, parseTextToolCall, runAgent, type AgentConfig, type AgentRunResult } from '@agent/harness';
+import { createAgent, ContextManager, createModelSummarizer, parseTextToolCall, runAgent, type AgentConfig, type AgentRunResult } from '@agent/harness';
 
 import type { RunState } from '../types.js';
 import type { StepContext, WorkflowDef } from '../workflow.js';
@@ -56,6 +56,14 @@ export class RuntimeChatModel implements ChatModel {
   constructor(private readonly ctx: StepContext) {}
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
+    // A plain text completion (e.g. summarisation) must NOT be reshaped into the
+    // agent-decision prompt, nor parsed as a tool call — pass it through as-is.
+    if (req.textCompletion) {
+      const prompt = req.messages.map((m) => m.content ?? '').join('\n\n');
+      const text = await this.ctx.callModel(prompt, { key: req.key });
+      return { message: { role: 'assistant', content: text }, stopReason: 'stop', usage: usage(prompt, text) };
+    }
+
     const prompt = renderPrompt(req.messages, req.tools);
     const text = await this.ctx.callModel(prompt, { key: req.key });
 
@@ -79,6 +87,18 @@ export interface HarnessWorkflowOptions {
   maxTurns?: number;
   /** Inject a crash right after this turn's tool calls (to demo mid-loop resume). */
   crashAfterTurn?: number;
+  /**
+   * Enable proactive, model-driven context compaction. When set, older messages
+   * are folded into a keyed LLM summary once the transcript crosses the budget
+   * threshold. The summary goes through the same durable `callModel` seam (as a
+   * `textCompletion` request), so it is recorded and replayed on resume.
+   */
+  modelCompaction?: {
+    /** Prompt-token budget before compaction. Default: the ContextManager default. */
+    maxPromptTokens?: number;
+    /** Fraction of budget (0–1) at which to compact. Default 0.85. */
+    threshold?: number;
+  };
 }
 
 /**
@@ -99,13 +119,22 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
             id: 'agent.1',
             name: 'Harness loop',
             run: (ctx) => {
+              const chatModel = new RuntimeChatModel(ctx);
               const agent: AgentConfig = {
                 name: 'harness-agent',
                 instructions: 'You are a durable, tool-using agent. Achieve the user goal by calling tools one at a time (or several at once when they are independent). When finished, reply with a final answer and NO tool calls.',
-                model: new RuntimeChatModel(ctx),
+                model: chatModel,
                 tools: new RuntimeToolInvoker(ctx),
                 maxTurns: opts.maxTurns,
               };
+              // Opt-in: wire a keyed model summarizer through the same durable seam.
+              if (opts.modelCompaction) {
+                agent.context = new ContextManager({
+                  maxPromptTokens: opts.modelCompaction.maxPromptTokens,
+                  compactionThreshold: opts.modelCompaction.threshold,
+                  modelSummarize: createModelSummarizer(chatModel),
+                });
+              }
               return runAgent({
                 agent,
                 goal: ctx.input.issue,

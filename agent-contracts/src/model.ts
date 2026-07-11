@@ -27,6 +27,16 @@ export interface ChatRequest {
   tools: ToolSpec[];
   /** Deterministic idempotency handle for durable replay (see tools.ts header). */
   key?: string;
+  /**
+   * Hint that this request is a plain TEXT completion (e.g. summarisation),
+   * not an agentic tool-calling turn. Most models ignore it. But a bridge that
+   * reformats the transcript into an agent-decision prompt (like the durable
+   * runtime's text-model adapter) MUST, when this is true, pass the messages
+   * through verbatim and return the raw text as `content` WITHOUT parsing it as
+   * a tool call — otherwise a summary request would be mangled into an
+   * agent-decision prompt and come back empty.
+   */
+  textCompletion?: boolean;
 }
 
 /** One chat completion response. */

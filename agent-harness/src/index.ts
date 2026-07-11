@@ -24,6 +24,9 @@ export * from './protocol/tool-calling.js';
 // C — context & memory
 export * from './context/manager.js';
 export * from './context/tokenizer.js';
+export * from './context/model-limits.js';
+export * from './context/scratchpad.js';
+export * from './context/tool-augment.js';
 
 // B — recovery
 export * from './recovery/retry.js';
