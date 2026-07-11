@@ -18,3 +18,6 @@ Thumbs.db
 
 # Private project (not for public repo)
 fabric-shell/
+
+# Personal review notes (interview prep)
+agent-architecture-notes.md
