@@ -25,7 +25,7 @@ import type { ChatModel, Message, ToolInvoker } from '@agent/contracts';
 import { systemMessage, userMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
-import { extractJsonObject } from '../protocol/tool-calling.js';
+import { extractJsonObject } from '@agent/contracts';
 import { DEFAULT_SYSTEM_PROMPT, runAgent, type AgentRunResult, type AgentStopReason, type RunAgentOptions } from './loop.js';
 
 // ── Types ───────────────────────────────────────────────────────────

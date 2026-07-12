@@ -21,6 +21,8 @@
  * here changes.
  */
 
+import { extractJsonObject } from '@agent/contracts';
+
 import type { ToolRegistry } from './tools/registry.js';
 import type { RunState } from './types.js';
 import type { StepContext, WorkflowDef } from './workflow.js';
@@ -108,32 +110,6 @@ export function parseDecision(raw: string): AgentDecision {
     return { action: 'call_tool', tool: d.tool, args: d.args ?? {} };
   }
   throw new Error(`Agent model returned an unrecognized decision: ${json.slice(0, 120)}`);
-}
-
-/** Extract the first balanced {...} JSON object from arbitrary model text. */
-function extractJsonObject(text: string): string | undefined {
-  const cleaned = text.replace(/```(?:json)?/gi, '');
-  const start = cleaned.indexOf('{');
-  if (start === -1) return undefined;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < cleaned.length; i++) {
-    const ch = cleaned[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
-    } else if (ch === '"') {
-      inString = true;
-    } else if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0) return cleaned.slice(start, i + 1);
-    }
-  }
-  return undefined;
 }
 
 function toolInfo(tools: ToolRegistry): AgentToolInfo[] {

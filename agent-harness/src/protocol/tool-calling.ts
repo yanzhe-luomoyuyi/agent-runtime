@@ -16,6 +16,10 @@
  */
 
 import type { ChatResponse, ToolCall, ToolSpec } from '@agent/contracts';
+import { extractJsonObject as _extractJsonObject } from '@agent/contracts';
+
+// Re-export for backward-compat (planner, reflection, tests).
+export { _extractJsonObject as extractJsonObject };
 
 import { formatErrors, validate } from '../schema/validate.js';
 
@@ -71,7 +75,7 @@ export function prepareCall(call: ToolCall, byName: Map<string, ToolSpec>): Prep
  * and a bare `{"tool":..,"args":..}`. Returns `undefined` if nothing parseable.
  */
 export function parseTextToolCall(raw: string, idHint = 'call-1'): ProtocolDecision | undefined {
-  const json = extractJsonObject(raw);
+  const json = _extractJsonObject(raw);
   if (!json) return undefined;
   let parsed: unknown;
   try {
@@ -89,32 +93,6 @@ export function parseTextToolCall(raw: string, idHint = 'call-1'): ProtocolDecis
     const args = 'args' in parsed ? parsed.args : {};
     const call: ToolCall = { id: idHint, name, arguments: args ?? {} };
     return { kind: 'tool_calls', calls: [{ call, valid: true }] };
-  }
-  return undefined;
-}
-
-/** Extract the first balanced `{...}` object from arbitrary text (string-aware). */
-export function extractJsonObject(text: string): string | undefined {
-  const cleaned = text.replace(/```(?:json)?/gi, '');
-  const start = cleaned.indexOf('{');
-  if (start === -1) return undefined;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < cleaned.length; i++) {
-    const ch = cleaned[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
-    } else if (ch === '"') {
-      inString = true;
-    } else if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0) return cleaned.slice(start, i + 1);
-    }
   }
   return undefined;
 }

@@ -36,7 +36,7 @@
  * self-correct (up to `outputRetries` times).
  */
 
-import type { ChatModel, ChatResponse, JSONSchema, Message, StopReason, ToolCall, ToolInvoker, ToolSpec, Usage } from '@agent/contracts';
+import type { ChatModel, ChatResponse, ChatStreamOutput, JSONSchema, Message, StopReason, ToolCall, ToolInvoker, ToolSpec, Usage } from '@agent/contracts';
 import { systemMessage, toolResultMessage, userMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
@@ -271,18 +271,22 @@ async function _prepareTurn(st: LoopState, turn: number): Promise<Message[]> {
 
 async function _callModelBatch(st: LoopState, assembled: Message[], turn: number): Promise<ChatResponse> {
   const key = `${st.prefix}t${turn}`;
+  // When retryBudget is set, use it as the per-call retry cap so the full
+  // budget is usable before the call fails — not just st.retryOpts.retries.
+  const retries = st.retryBudget > 0 ? st.retryBudget : (st.retryOpts?.retries ?? 2);
+  const opts: RetryOptions | undefined = st.retryBudget > 0
+    ? { ...st.retryOpts, retries, onRetry: (_err: unknown, attempt: number, delayMs: number) => { st.retryCount++; st.retryOpts?.onRetry?.(_err, attempt, delayMs); } }
+    : st.retryOpts;
   return withRetry(
     () => st.model.chat({ messages: assembled, tools: st.specs, key }),
-    st.retryBudget > 0
-      ? { ...st.retryOpts, onRetry: (_err: unknown, attempt: number, delayMs: number) => { st.retryCount++; st.retryOpts?.onRetry?.(_err, attempt, delayMs); } }
-      : st.retryOpts,
+    opts,
   );
 }
 
 async function _handleResponse(
   st: LoopState, resp: ChatResponse, turn: number,
   opts: RunAgentOptions, outputRetries: number,
-): Promise<{ done: true; result: AgentRunResult } | { done: false }> {
+): Promise<{ done: true; result: AgentRunResult } | { done: false; calls: PreparedCall[] }> {
   st.convo.push(resp.message);
   opts.hooks?.onModelResponse?.(turn, resp.message);
   const thinking = resp.thinking ?? resp.message.thinking;
@@ -307,14 +311,14 @@ async function _handleResponse(
     if (outputRetries > 0) {
       st.convo.push({ role: 'user', content: `Answer format incorrect. Errors: ${formatErrors(errors)}. Reply with ONLY the corrected answer.` });
       opts.hooks?.onValidationRetry?.(turn, formatErrors(errors));
-      return { done: false };
+      return { done: false, calls: [] };
     }
     const h = opts.errorHandlers?.invalidFinalOutput?.(errorHandlerCtx(st, opts.goal, turn, { answer: decision.answer, validationErrors: errors.map(e => `${e.path} ${e.message}`) }));
     if (h) return { done: true, result: h };
     return { done: true, result: makeResult(st, `Stopped: structured output validation failed. ${formatErrors(errors)}`, false, 'invalid_output', turn) };
   }
 
-  return { done: false };
+  return { done: false, calls: decision.calls };
 }
 
 // ── Tool execution ───────────────────────────────────────────────────
@@ -437,8 +441,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
     const outcome = await _handleResponse(st, resp, turn, opts, outputRetries);
     if (outcome.done) { opts.hooks?.onAgentEnd?.(outcome.result); return outcome.result; }
 
-    const decision = interpretResponse(resp, st.specs) as { kind: 'tool_calls'; calls: PreparedCall[] };
-    const execResult = await _executeTools(st, decision.calls, turn, opts, noop);
+    const execResult = await _executeTools(st, outcome.calls, turn, opts, noop);
     if (execResult.stopResult) { opts.hooks?.onAgentEnd?.(execResult.stopResult); return execResult.stopResult; }
 
     opts.hooks?.onTurnEnd?.(turn);
@@ -485,7 +488,26 @@ export async function* runAgentStreamed(
     let resp: ChatResponse;
 
     if (st.model.chatStream) {
-      const stream = st.model.chatStream({ messages: assembled, tools: st.specs, key: `${st.prefix}t${turn}` });
+      // Retry the initial stream creation (catches 429 / 5xx on connect).
+      let stream: AsyncIterable<ChatStreamOutput>;
+      try {
+        stream = await withRetry(
+          async () => st.model.chatStream!({ messages: assembled, tools: st.specs, key: `${st.prefix}t${turn}` }),
+          st.retryBudget > 0
+            ? { ...st.retryOpts, retries: st.retryBudget, onRetry: (_err: unknown, attempt: number, delayMs: number) => { st.retryCount++; st.retryOpts?.onRetry?.(_err, attempt, delayMs); } }
+            : st.retryOpts,
+        );
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        opts.trace?.endModelCallError(errMsg);
+        opts.hooks?.onModelError?.(turn, errMsg);
+        if (st.retryBudget > 0 && st.retryCount >= st.retryBudget) {
+          const result = makeResult(st, `Stopped: retry budget exhausted. ${errMsg}`, false, 'retry_budget_exhausted', turn);
+          opts.hooks?.onAgentEnd?.(result);
+          yield { type: 'done', result }; return result;
+        }
+        throw e;
+      }
       let content = '';
       const streamToolCalls: ToolCall[] = [];
       let stopReason: StopReason = 'stop';
@@ -541,8 +563,7 @@ export async function* runAgentStreamed(
 
     yield* flush();
 
-    const decision = interpretResponse(resp, st.specs) as { kind: 'tool_calls'; calls: PreparedCall[] };
-    const execResult = await _executeTools(st, decision.calls, turn, opts, emit);
+    const execResult = await _executeTools(st, outcome.calls, turn, opts, emit);
     yield* flush();
     yield { type: 'turn_end', turn };
     opts.hooks?.onTurnEnd?.(turn);

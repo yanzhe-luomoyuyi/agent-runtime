@@ -11,7 +11,7 @@
 import type { ChatModel } from '@agent/contracts';
 import { systemMessage, userMessage } from '@agent/contracts';
 
-import { extractJsonObject } from '../protocol/tool-calling.js';
+import { extractJsonObject } from '@agent/contracts';
 import { runAgent, type AgentRunResult, type RunAgentOptions } from './loop.js';
 
 export interface Critique {

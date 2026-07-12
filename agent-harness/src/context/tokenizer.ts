@@ -13,6 +13,7 @@
  */
 
 import type { Message } from '@agent/contracts';
+import { isCjkCodepoint } from '@agent/contracts';
 
 // ── Interface ──────────────────────────────────────────────────────
 
@@ -60,20 +61,6 @@ export const heuristicTokenizer: Tokenizer = {
  * text gets. Counting these separately keeps the estimate honest for Chinese,
  * Japanese, and Korean content instead of under-counting it ~4×.
  */
-function isCjkCodepoint(cp: number): boolean {
-  return (
-    (cp >= 0x2e80 && cp <= 0x2eff) ||   // CJK radicals
-    (cp >= 0x3000 && cp <= 0x303f) ||   // CJK symbols & punctuation
-    (cp >= 0x3040 && cp <= 0x30ff) ||   // Hiragana + Katakana
-    (cp >= 0x3400 && cp <= 0x4dbf) ||   // CJK Ext A
-    (cp >= 0x4e00 && cp <= 0x9fff) ||   // CJK Unified Ideographs
-    (cp >= 0xac00 && cp <= 0xd7af) ||   // Hangul syllables
-    (cp >= 0xf900 && cp <= 0xfaff) ||   // CJK compatibility ideographs
-    (cp >= 0xff00 && cp <= 0xffef) ||   // Half/full-width forms
-    (cp >= 0x20000 && cp <= 0x2a6df)    // CJK Ext B (astral plane)
-  );
-}
-
 /**
  * A zero-dependency estimator that is meaningfully more accurate than plain
  * `length / 4` on mixed content: CJK characters count as ~1 token each, all
