@@ -36,7 +36,7 @@
  * self-correct (up to `outputRetries` times).
  */
 
-import type { ChatModel, JSONSchema, Message, ToolInvoker } from '@agent/contracts';
+import type { ChatModel, ChatResponse, JSONSchema, Message, StopReason, ToolCall, ToolInvoker, Usage } from '@agent/contracts';
 import { systemMessage, toolResultMessage, userMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
@@ -389,6 +389,263 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
     toolsUsed,
     startTime,
   );
+}
+
+// ── Streaming loop ───────────────────────────────────────────────────
+
+/** Events emitted by `runAgentStreamed` as the agent loop progresses. */
+export type AgentStreamEvent =
+  | { type: 'start'; goal: string }
+  | { type: 'turn_start'; turn: number }
+  | { type: 'model_token'; turn: number; token: string }
+  | { type: 'thinking_token'; turn: number; token: string }
+  | { type: 'tool_call_detected'; turn: number; callId: string; name: string; arguments: unknown }
+  | { type: 'tool_start'; turn: number; callId: string; name: string }
+  | { type: 'tool_done'; turn: number; callId: string; name: string; ok: boolean; output: string }
+  | { type: 'tool_denied'; turn: number; callId: string; name: string; reason: string }
+  | { type: 'loop_detected'; turn: number; message: string }
+  | { type: 'model_refusal'; turn: number; reason: string }
+  | { type: 'validation_retry'; turn: number; errors: string }
+  | { type: 'turn_end'; turn: number }
+  | { type: 'done'; result: AgentRunResult };
+
+/**
+ * Streaming variant of `runAgent`.  Yields typed events as the agent loop
+ * progresses so callers can show real-time progress, stream model tokens,
+ * or abort mid-run by breaking the async iteration.
+ *
+ * If the model implements `chatStream`, tokens and tool calls are emitted as
+ * the model generates them.  Otherwise the batch `chat()` result is replayed
+ * as synthetic events — same API, transparent fallback.
+ *
+ * All other semantics (retry, loop detection, approval, compaction, structured
+ * output) are identical to `runAgent`.
+ */
+export async function* runAgentStreamed(opts: RunAgentOptions): AsyncGenerator<AgentStreamEvent, AgentRunResult, void> {
+  const { model, tools, systemPrompt, context, maxTurns } = resolveAgentOpts(opts);
+  const specs = tools.list();
+  const approver = opts.approver ?? autoApprove;
+  const prefix = opts.keyPrefix ?? '';
+  const detector = new LoopDetector(opts.loopOptions ?? (opts.loopLimit ?? 3));
+  const toolsUsed: string[] = [];
+  const startTime = Date.now();
+  const retryBudget = opts.retryBudget ?? 0;
+  const outputRetries = opts.outputRetries ?? DEFAULT_OUTPUT_RETRIES;
+  const concurrency = opts.toolConcurrency ?? 1;
+  let retryCount = 0;
+
+  const retryOpts: RetryOptions | undefined = opts.trace
+    ? {
+        ...opts.retry,
+        onRetry: (err, attempt, delayMs) => {
+          opts.retry?.onRetry?.(err, attempt, delayMs);
+          opts.trace!.recordRetry(err, attempt);
+        },
+      }
+    : opts.retry;
+
+  const messages: Message[] = [
+    systemMessage(systemPrompt),
+    userMessage(`Goal: ${opts.goal}`),
+  ];
+  let convo: Message[] = messages;
+
+  const handlerCtx = (turns: number): ErrorHandlerContext => ({
+    goal: opts.goal,
+    turns,
+    messages: [...convo],
+  });
+
+  yield { type: 'start', goal: opts.goal };
+
+  for (let turn = 1; turn <= maxTurns; turn++) {
+    yield { type: 'turn_start', turn };
+    opts.hooks?.onTurnStart?.(turn);
+    opts.trace?.startTurn(turn);
+
+    convo = await context.compactIfNeeded(convo, { keyPrefix: prefix, turn });
+
+    const assembled = context.assemble(convo);
+
+    // ── Model call (streaming or batch fallback) ─────────────────────
+    let resp: ChatResponse;
+    opts.trace?.startModelCall();
+
+    if (model.chatStream) {
+      // True streaming: emit tokens + tool calls as they arrive.
+      const stream = model.chatStream({ messages: assembled, tools: specs, key: `${prefix}t${turn}` });
+      let content = '';
+      const streamToolCalls: ToolCall[] = [];
+      let stopReason: StopReason = 'stop';
+      let usage: Usage = { promptTokens: 0, completionTokens: 0 };
+      let refusalReason: string | undefined;
+
+      for await (const chunk of stream) {
+        if ('stopReason' in chunk) {
+          // Final chunk.
+          stopReason = chunk.stopReason;
+          usage = chunk.usage;
+          refusalReason = chunk.refusalReason;
+        } else {
+          if (chunk.thinking) {
+            yield { type: 'thinking_token', turn, token: chunk.thinking };
+          }
+          if (chunk.content) {
+            content += chunk.content;
+            yield { type: 'model_token', turn, token: chunk.content };
+          }
+          if (chunk.toolCall) {
+            streamToolCalls.push(chunk.toolCall);
+            yield { type: 'tool_call_detected', turn, callId: chunk.toolCall.id, name: chunk.toolCall.name, arguments: chunk.toolCall.arguments };
+          }
+        }
+      }
+
+      resp = {
+        message: { role: 'assistant', content: content || undefined, toolCalls: streamToolCalls.length > 0 ? streamToolCalls : undefined },
+        stopReason,
+        usage,
+        refusalReason,
+      };
+      opts.trace?.endModelCall(usage);
+    } else {
+      // Batch fallback: call chat() and reconstruct events.
+      try {
+        resp = await withRetry(
+          () => model.chat({ messages: assembled, tools: specs, key: `${prefix}t${turn}` }),
+          retryBudget > 0 ? { ...retryOpts, onRetry: (err, attempt, delayMs) => { retryCount++; retryOpts?.onRetry?.(err, attempt, delayMs); } } : retryOpts,
+        );
+        opts.trace?.endModelCall(resp.usage);
+      } catch (e) {
+        opts.trace?.endModelCallError(e instanceof Error ? e.message : String(e));
+        if (retryBudget > 0 && retryCount >= retryBudget) {
+          const result = makeResult(
+            `Stopped: retry budget exhausted (${retryBudget} retries). Last error: ${e instanceof Error ? e.message : String(e)}`,
+            false, 'retry_budget_exhausted', turn, convo, toolsUsed, startTime,
+          );
+          yield { type: 'done', result };
+          return result;
+        }
+        throw e;
+      }
+
+      // Reconstruct synthetic events from the batch response.
+      if (resp.message.content) {
+        // Emit the full content as a single token for text-only models.
+        yield { type: 'model_token', turn, token: resp.message.content };
+      }
+      for (const tc of resp.message.toolCalls ?? []) {
+        yield { type: 'tool_call_detected', turn, callId: tc.id, name: tc.name, arguments: tc.arguments };
+      }
+    }
+
+    convo.push(resp.message);
+    opts.hooks?.onModelResponse?.(turn, resp.message);
+
+    const thinking = resp.thinking ?? resp.message.thinking;
+    if (thinking) convo[convo.length - 1]!.thinking = thinking;
+
+    // ── Model refusal ──────────────────────────────────────────────
+    if (resp.stopReason === 'refusal') {
+      const refusalText = resp.refusalReason ?? resp.message.content ?? 'The model refused to answer.';
+      yield { type: 'model_refusal', turn, reason: refusalText };
+      const refusalResult = opts.errorHandlers?.modelRefusal?.({ ...handlerCtx(turn), refusal: refusalText });
+      const result = refusalResult ?? makeResult(refusalText, false, 'model_refusal', turn, convo, toolsUsed, startTime);
+      yield { type: 'done', result };
+      return result;
+    }
+
+    const decision = interpretResponse(resp, specs);
+
+    if (decision.kind === 'final') {
+      const validationResult = await validateAndMaybeRetry(
+        decision.answer, convo, turn, toolsUsed, opts, context, { retriesLeft: outputRetries },
+      );
+      if (validationResult) {
+        yield { type: 'done', result: validationResult };
+        return validationResult;
+      }
+      // Validation failed; continue loop.
+      yield { type: 'validation_retry', turn, errors: 'structured output validation failed — retrying' };
+      continue;
+    }
+
+    // ── Tool execution ────────────────────────────────────────────
+    let tripped = false;
+
+    if (concurrency === 1) {
+      for (const prepared of decision.calls) {
+        yield { type: 'tool_start', turn, callId: prepared.call.id, name: prepared.call.name };
+        const obs = await executeCall(prepared, { tools, approver, detector, prefix, turn, toolsUsed, trace: opts.trace });
+        if (obs.tripped) tripped = true;
+        if (obs.ok) {
+          yield { type: 'tool_done', turn, callId: prepared.call.id, name: prepared.call.name, ok: true, output: obs.text };
+        } else if (obs.text.startsWith('DENIED')) {
+          yield { type: 'tool_denied', turn, callId: prepared.call.id, name: prepared.call.name, reason: obs.text };
+        } else {
+          yield { type: 'tool_done', turn, callId: prepared.call.id, name: prepared.call.name, ok: false, output: obs.text };
+        }
+        convo.push(toolResultMessage(prepared.call, context.truncateObservation(obs.text)));
+        opts.hooks?.onToolResult?.(turn, prepared.call.name, obs.text, obs.ok);
+
+        if (obs.ok && obs.stopOnUse) {
+          const result = makeResult(obs.text, true, 'finished', turn, convo, toolsUsed, startTime);
+          yield { type: 'done', result };
+          return result;
+        }
+      }
+    } else {
+      // Emit tool_start events before launching parallel execution.
+      for (const prepared of decision.calls) {
+        yield { type: 'tool_start', turn, callId: prepared.call.id, name: prepared.call.name };
+      }
+      const results = await Promise.allSettled(
+        decision.calls.map((prepared) =>
+          executeCall(prepared, { tools, approver, detector, prefix, turn, toolsUsed, trace: opts.trace }),
+        ),
+      );
+
+      for (const outcome of results) {
+        const obs = outcome.status === 'fulfilled' ? outcome.value : { text: `ERROR: internal tool dispatch failed: ${String(outcome.reason)}`, ok: false, tripped: false };
+        if (obs.tripped) tripped = true;
+        const idx = results.indexOf(outcome);
+        const callInfo = outcome.status === 'fulfilled' ? decision.calls[idx]?.call : undefined;
+        if (obs.ok) {
+          yield { type: 'tool_done', turn, callId: callInfo?.id ?? 'unknown', name: callInfo?.name ?? 'unknown', ok: true, output: obs.text };
+        } else {
+          yield { type: 'tool_done', turn, callId: callInfo?.id ?? 'unknown', name: callInfo?.name ?? 'unknown', ok: false, output: obs.text };
+        }
+        convo.push(toolResultMessage(
+          callInfo ?? { id: 'unknown', name: 'unknown' },
+          context.truncateObservation(obs.text),
+        ));
+
+        if (obs.ok && obs.stopOnUse) {
+          const result = makeResult(obs.text, true, 'finished', turn, convo, toolsUsed, startTime);
+          yield { type: 'done', result };
+          return result;
+        }
+      }
+    }
+
+    yield { type: 'turn_end', turn };
+
+    if (opts.crashAfterTurn === turn) {
+      throw new Error(`__CRASH__ injected after agent turn ${turn}`);
+    }
+
+    if (tripped) {
+      yield { type: 'loop_detected', turn, message: 'the same tool call repeated without progress (possible loop).' };
+      const result = makeResult('Stopped: the same tool call repeated without progress (possible loop).', false, 'loop_detected', turn, convo, toolsUsed, startTime);
+      yield { type: 'done', result };
+      return result;
+    }
+  }
+
+  const maxResult = opts.errorHandlers?.maxTurns?.(handlerCtx(maxTurns));
+  const result = maxResult ?? makeResult(`Stopped after the ${maxTurns}-turn budget without a final answer.`, false, 'max_turns', maxTurns, convo, toolsUsed, startTime);
+  yield { type: 'done', result };
+  return result;
 }
 
 // ── Structured-output validation + retry ─────────────────────────────

@@ -64,4 +64,35 @@ export interface ChatResponse {
 export interface ChatModel {
   readonly name: string;
   chat(req: ChatRequest): Promise<ChatResponse>;
+  /**
+   * Optional streaming variant — emits tokens and completed tool calls as they
+   * arrive instead of waiting for the full response.  When unimplemented,
+   * `runAgentStreamed` falls back to `chat()` and emits the batch result as a
+   * single synthetic stream.
+   */
+  chatStream?(req: ChatRequest): AsyncIterable<ChatStreamOutput>;
 }
+
+// ── Streaming types ──────────────────────────────────────────────────
+
+/** A chunk of a streaming model response — either a token or a completed tool call. */
+export interface ChatStreamChunk {
+  /** Text content token (a few characters, not necessarily a full word). */
+  content?: string;
+  /** A fully-parsed tool call ready for execution. */
+  toolCall?: ToolCall;
+  /** Thinking/reasoning token from models with extended thinking. */
+  thinking?: string;
+}
+
+/** The final chunk of a streaming response, carrying stop + usage info. */
+export interface ChatStreamFinalChunk {
+  stopReason: StopReason;
+  usage: Usage;
+  refusalReason?: string;
+}
+
+/** Union of streaming output types. Discriminate by checking `'stopReason' in chunk`. */
+export type ChatStreamOutput = ChatStreamChunk | ChatStreamFinalChunk;
+
+import type { ToolCall } from './messages.js';

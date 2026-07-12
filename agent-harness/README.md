@@ -140,6 +140,32 @@ const res = await runAgent({
 console.log(res.answer); // 干净的 JSON（自动去掉 markdown fence）
 ```
 
+### Streaming（流式运行）
+
+```ts
+import { runAgentStreamed, type AgentStreamEvent } from '@agent/harness';
+
+// 流式运行 — 实时获得模型 token、工具调用进度等事件
+for await (const event of runAgentStreamed({ goal: 'Fix the login bug', model, tools })) {
+  switch (event.type) {
+    case 'model_token':
+      process.stdout.write(event.token);  // 像打字一样逐字输出
+      break;
+    case 'tool_start':
+      console.log(`\n🔧 Calling ${event.name}...`);
+      break;
+    case 'tool_done':
+      console.log(`✅ ${event.name}: ${event.ok ? 'OK' : 'FAILED'}`);
+      break;
+    case 'done':
+      console.log(`\nFinal answer: ${event.result.answer}`);
+      break;
+  }
+}
+```
+
+> 如果模型实现了 `chatStream`，工具 token 和 tool calls 会随着模型生成实时产生。否则自动回退到 batch `chat()` 并重建事件 —— 同样的 API，透明的 fallback。
+
 ### 工具并行 + 行为控制 + 错误处理
 
 ```ts
