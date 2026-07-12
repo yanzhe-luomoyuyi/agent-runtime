@@ -13,7 +13,7 @@
 | **A** — 工具调用协议 | `src/protocol`, `src/schema` | 把 `ChatResponse` 解释成已校验的工具调用或最终答案。参数在执行**前**按各工具的 `inputSchema` 校验；非法调用变成结构化错误而非崩溃。内置一个为不支持原生 tool-calling 的模型准备的容错文本解析器（`parseTextToolCall`、`extractJsonObject`）。 |
 | **B** — 恢复 / 自愈 | `src/recovery` | 只对**瞬时性**模型/工具失败执行退避重试（`withRetry`），支持 HTTP 状态码分类（429 / 5xx / 超时）→ 结构化 `TransientError` / `HttpError`，遵循 `Retry-After` 头 + 指数退避 + full jitter。**熔断器** `CircuitBreaker`（closed→open→half_open，只对 transient error 跳闸）。**分级模型链** `createResilientModel` 按 tier 顺序尝试模型（每 tier 独立 retry+breaker），包含 escalation ladder（retry→降级→…），作为普通 `ChatModel` 零侵入。**Saga 补偿** `CompensatingToolInvoker`（opt-in 装饰器，LIFO 回滚已提交副作用，best-effort / stopOnError）。把工具抛出的异常转化为模型能理解的 observation；检测无进展的重复调用死循环（`LoopDetector`），不仅检测单次重复调用，还能检测重复序列模式（A→B→A→B），支持按工具维度的调用次数上限。 |
 | **C** — 上下文 / 记忆 | `src/context` | 在 token 预算内组装 prompt + 滚动压缩（保留 system + 近期消息，其余压缩为摘要），observation 截断，重要性加权淘汰（工具错误 > 写入 > 读取），缓存友好排序；**untrusted 输出隔离**——工具结果被隔离标记为“仅数据”，被污染的结果无法劫持 agent。**可插拔 tokenizer**（默认 `cjkAwareTokenizer`：CJK ≈ 1 token/字、其余 ≈ 4 字/token，`fromCounter` 可接 tiktoken），**按模型窗口**（`ContextManager.forModel` + 型号注册表）。**主动压缩** `compactIfNeeded`：跨过预算阈值时把旧消息折叠成一条 **keyed LLM 摘要**（durable replay 安全，默认关闭、opt-in）。**Scratchpad** `ScratchpadToolInvoker`：超大工具输出自动卸载到外部存储，窗口只留指针 + 预览，模型可 `scratchpad_read` 取回（比截断不丢数据）。 |
-| **D** — 控制流 | `src/control` | 核心 `runAgent` 循环。**工具并行执行**（`toolConcurrency` 控制并发度，`Promise.allSettled` 一个失败不影响其他）。**工具使用行为控制**（`ToolSpec.stopOnUse` 工具直接返回输出省一次 LLM 调用）。**Structured output**（`outputSchema` + 自动重试，校验失败反馈给模型自我纠正）。**可插拔错误处理器**（`errorHandlers`：`maxTurns` / `modelRefusal` / `invalidFinalOutput`）。加上 `runPlannedAgent`（先规划后执行，失败时重新规划，每步有 ✓/→/○ 进度标记）、`runReflectiveAgent`（自我批评并修订，每次尝试有独立 key 命名空间 `a0:` / `a1:` …）、`makeSubagentTool`（把子任务委派封装成一个工具，嵌套 key 全局唯一），以及 human-in-the-loop 的 `Approver`（基于模式匹配的审批门控 `deploy*`、`write*`，带过期时间的审批缓存 + 审计时间戳）。 |
+| **D** — 控制流 | `src/control` | 核心 `runAgent` 循环 + `runAgentStreamed`（async generator，13 种类型化事件，`chatStream` 可用时实时流式输出，否则透明 fallback batch）。**工具并行执行**（`toolConcurrency` 控制并发度，`Promise.allSettled` 一个失败不影响其他）。**工具使用行为控制**（`ToolSpec.stopOnUse` 工具直接返回输出省一次 LLM 调用）。**Structured output**（`outputSchema` + 自动重试，校验失败反馈给模型自我纠正）。**可插拔错误处理器**（`errorHandlers`：`maxTurns` / `modelRefusal` / `invalidFinalOutput`）。加上 `runPlannedAgent`（先规划后执行，失败时重新规划，每步有 ✓/→/○ 进度标记）、`runReflectiveAgent`（自我批评并修订，每次尝试有独立 key 命名空间 `a0:` / `a1:` …）、`makeSubagentTool`（把子任务委派封装成一个工具，嵌套 key 全局唯一），以及 human-in-the-loop 的 `Approver`（基于模式匹配的审批门控 `deploy*`、`write*`，带过期时间的审批缓存 + 审计时间戳）。 |
 
 ### 可观测性
 
@@ -165,6 +165,31 @@ for await (const event of runAgentStreamed({ goal: 'Fix the login bug', model, t
 ```
 
 > 如果模型实现了 `chatStream`，工具 token 和 tool calls 会随着模型生成实时产生。否则自动回退到 batch `chat()` 并重建事件 —— 同样的 API，透明的 fallback。
+
+### 使用 Lifecycle Hooks（9 个钩子）
+
+```ts
+import { runAgent } from '@agent/harness';
+
+const res = await runAgent({
+  goal: 'Fix the bug',
+  model,
+  tools,
+  hooks: {
+    onAgentStart: (goal) => console.log('Starting:', goal),
+    onAgentEnd:   (res)  => console.log('Done:', res.stopReason),
+    onTurnStart:  (t)    => console.log('Turn', t),
+    onTurnEnd:    (t)    => console.log('Turn', t, 'done'),
+    onModelStart: (t)    => console.log('Calling LLM...'),
+    onModelEnd:   (t, u) => console.log('LLM done.', u.completionTokens, 'tokens'),
+    onModelError: (t, e) => console.error('LLM failed:', e),
+    onModelResponse: (t, m) => { /* full assistant message */ },
+    onToolStart:  (t, id, name) => console.log('Tool:', name),
+    onToolResult: (t, name, obs, ok) => console.log(ok ? '✅' : '❌', name),
+    onValidationRetry: (t, errors) => console.log('Retry:', errors),
+  },
+});
+```
 
 ### 工具并行 + 行为控制 + 错误处理
 
