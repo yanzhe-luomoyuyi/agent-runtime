@@ -7,6 +7,8 @@
 
 export interface RunInput {
   issue: string;
+  /** Previous conversation turns from earlier runs in the same session. */
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 /**

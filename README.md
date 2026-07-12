@@ -173,8 +173,9 @@ flowchart LR
 | [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏）；拒绝操作记录为 `PolicyDenied` 事件，可观测、可 eval。 |
 | [mcp/](durable-agent-runtime/src/mcp/index.ts) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
 | [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
+| [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |
 | [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；可组合的打分器（含 LLM 裁判）。 |
-| [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace` / `eval`；通过环境变量切换多种执行模式。 |
+| [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace` / `eval` / `chat`；通过环境变量切换多种执行模式。 |
 | [agent-loop.ts](durable-agent-runtime/src/agent-loop.ts) | runtime 内置的模型驱动 Agent 循环（比 harness 更简单，但核心概念相同），封装为单个 durable step。 |
 
 **工作负载 `src/app/`**
@@ -227,11 +228,22 @@ flowchart LR
 
 | 命令 | 作用 |
 | --- | --- |
+| `npm run dev -- run "<issue>"` | 启动一个新的 run |
 | `npm run dev -- resume <run-id>` | 从事件日志恢复并继续未完成的 run |
 | `npm run dev -- status <run-id>` | 查看派生 RunState |
-| `npm run dev -- recover <run-id>` | 修复因乐观并发冲突而卡住的 run |
+| `npm run dev -- recover` | 修复所有因崩溃而中断的 run |
 | `npm run dev -- trace <run-id>` | 查看 span 时间线 + token / 成本 / 延迟汇总 |
 | `npm run dev -- eval` | 跑 eval 场景，回归时非零退出 |
+
+### 多轮对话命令（Session）
+
+| 命令 | 作用 |
+| --- | --- |
+| `npm run dev -- chat` | 启动交互式多轮对话 REPL（新会话） |
+| `npm run dev -- chat "<prompt>"` | 单次对话（启动会话 → 跑首轮 → 打印结果） |
+| `npm run dev -- chat --resume <id>` | 恢复已有会话，继续交互 |
+| `npm run dev -- chat --list` | 列出所有已保存的会话 |
+| `npm run dev -- chat --history <id>` | 查看某个会话的完整对话历史 |
 
 ### 环境变量开关
 

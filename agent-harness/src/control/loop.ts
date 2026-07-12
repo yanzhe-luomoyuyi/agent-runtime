@@ -119,6 +119,12 @@ export interface RunAgentOptions {
   model?: ChatModel;
   tools?: ToolInvoker;
   systemPrompt?: string;
+  /**
+   * Previous conversation turns (user prompts + assistant answers from earlier
+   * runs in the same session). Inserted between the system prompt and the
+   * current goal so the model sees the full conversation context.
+   */
+  conversationHistory?: Message[];
   context?: ContextManager;
   /** Hard cap on turns so a misbehaving model cannot loop forever. Default 12. */
   maxTurns?: number;
@@ -246,7 +252,11 @@ function initLoopState(opts: RunAgentOptions): LoopState {
     approver: opts.approver ?? autoApprove,
     prefix: opts.keyPrefix ?? '',
     detector: new LoopDetector(opts.loopOptions ?? (opts.loopLimit ?? 3)),
-    convo: [systemMessage(systemPrompt), userMessage(`Goal: ${opts.goal}`)],
+    convo: [
+      systemMessage(systemPrompt),
+      ...(opts.conversationHistory ?? []),
+      userMessage(`Goal: ${opts.goal}`)
+    ],
     toolsUsed: [],
     retryCount: 0,
     retryBudget: opts.retryBudget ?? 0,

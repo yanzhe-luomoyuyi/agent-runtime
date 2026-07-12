@@ -19,7 +19,7 @@ import { applyEvent, reduce } from './reducer.js';
 import { readSnapshot, writeSnapshot } from './snapshot.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { buildTrace, type Trace } from './trace.js';
-import type { AgentEvent, RunState } from './types.js';
+import type { AgentEvent, RunInput, RunState } from './types.js';
 import type { StepContext, WorkflowDef } from './workflow.js';
 
 export interface RuntimeOptions {
@@ -51,10 +51,10 @@ export class Runtime {
     this.policy = opts.policy ? new PolicyEnforcer(opts.policy) : undefined;
   }
 
-  async run(issue: string): Promise<RunState> {
+  async run(issue: string, opts?: { conversationHistory?: RunInput['conversationHistory'] }): Promise<RunState> {
     const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const log = new EventLog(runDir(this.opts.baseDir, runId));
-    return this.drive(runId, log, { type: 'RunStarted', runId, input: { issue }, workflow: this.opts.workflow.name, ts: now() });
+    return this.drive(runId, log, { type: 'RunStarted', runId, input: { issue, conversationHistory: opts?.conversationHistory }, workflow: this.opts.workflow.name, ts: now() });
   }
 
   async resume(runId: string): Promise<RunState> {
@@ -142,6 +142,11 @@ export class Runtime {
       this.opts.onEvent?.(event);
       state = applyEvent(state, event);
       if (event.type === 'ModelCalled') spentUsd += event.costUsd;
+
+      // Auto-checkpoint: throttle via snapshotInterval; phases/steps no longer
+      // gate snapshot timing — every N events trigger a write regardless of
+      // workflow structure.  Terminal snapshots still flush unconditionally.
+      lastSnapVersion = this.checkpoint(log.dir, log.version, state, spentUsd, lastSnapVersion);
     };
 
     if (initialEvent) record(initialEvent);
@@ -177,8 +182,6 @@ export class Runtime {
         }
 
         record({ type: 'PhaseCompleted', phase: phase.name, ts: now() });
-        // Checkpoint: snapshot state so the next resume skips all events up to here.
-        lastSnapVersion = this.checkpoint(log.dir, log.version, state, spentUsd, lastSnapVersion);
       }
 
       const summary = this.opts.workflow.summarize ? this.opts.workflow.summarize(state) : buildSummary(state);
@@ -235,7 +238,7 @@ export class Runtime {
   ): StepContext {
     return {
       runId,
-      input: { issue },
+      input: { issue, conversationHistory: getState().input?.conversationHistory },
       get state() {
         return getState();
       },

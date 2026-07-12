@@ -81,7 +81,7 @@ describe('snapshot', () => {
     // Intermediate snapshot from the first phase must exist.
     const snap = readSnapshot(log.dir, log.version);
     expect(snap).toBeDefined();
-    expect(snap!.version).toBeLessThan(log.version); // log grew beyond snapshot
+    expect(snap!.version).toBeLessThanOrEqual(log.version); // snapshot can now catch up
     expect(snap!.state.phases['analyze']?.status).toBe('COMPLETED');
   });
 
@@ -119,7 +119,7 @@ describe('snapshot', () => {
     // A snapshot should exist (written after the first phase completed).
     const snap = readSnapshot(log.dir, log.version);
     expect(snap).toBeDefined();
-    expect(snap!.version).toBeLessThan(log.version); // log has grown beyond the snapshot
+    expect(snap!.version).toBeLessThanOrEqual(log.version); // snapshot can now catch up
 
     // Resuming should succeed and produce the same result as a clean run.
     const resumed = new Runtime({ baseDir: dir, model: makeModel(), tools: makeTools(), workflow: issueWorkflow });

@@ -7,6 +7,11 @@
  *   agent recover                Drive any interrupted runs to completion.
  *   agent trace <runId>          Print the run's timeline + token/cost/replay totals.
  *   agent eval                   Score the demo scenarios (exit 1 on regression).
+ *   agent chat                   Start an interactive multi-turn conversation.
+ *   agent chat --list            List all saved conversations.
+ *   agent chat --history <id>    Print a conversation's full history.
+ *   agent chat --resume <id>     Continue a saved conversation.
+ *   agent chat "<prompt>"        One-shot: start session, run prompt, print result.
  *
  * Set CRASH_AFTER=<stepId> (e.g. CRASH_AFTER=locate.1) to inject a crash and
  * demo resume. Run logs live under AGENT_RUNS_DIR (default: .agent-runs).
@@ -18,6 +23,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import * as readline from 'node:readline';
 
 import { createAgentWorkflow } from './agent-loop.js';
 import { MockAgentModel } from './app/agent-scenario.js';
@@ -37,6 +43,7 @@ import { MockModelProvider } from './model/provider.js';
 import { type Policy, resolveRedactions } from './policy.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { Runtime } from './runtime.js';
+import { SessionManager } from './session.js';
 import { ToolRegistry } from './tools/registry.js';
 import { renderTimeline } from './trace.js';
 import type { AgentEvent, RunState } from './types.js';
@@ -198,9 +205,128 @@ function agentOnEvent(event: AgentEvent): void {
   else if (event.type === 'RunCompleted') process.stderr.write(`\u2713 agent finished\n`);
 }
 
+// ── Chat (multi-turn session) ───────────────────────────────────────
+
+async function handleChat(sessions: SessionManager, args: string[]): Promise<void> {
+  const sub = args[0];
+
+  if (sub === '--list') {
+    const list = sessions.list();
+    if (list.length === 0) { process.stdout.write('No saved conversations.\n'); return; }
+    for (const m of list) {
+      process.stdout.write(`${m.sessionId}  ${m.updatedAt.slice(0, 19)}  ${m.title}\n`);
+    }
+    return;
+  }
+
+  if (sub === '--history') {
+    const id = args[1];
+    if (!id) throw new Error('Usage: agent chat --history <sessionId>');
+    const s = sessions.get(id);
+    if (!s) throw new Error(`Session not found: ${id}`);
+    process.stdout.write(`\n=== Session ${s.manifest.sessionId} ===\n`);
+    process.stdout.write(`Title: ${s.manifest.title}\n\n`);
+    for (const r of s.runs) {
+      process.stdout.write(`[${r.status}] ${r.answer.slice(0, 120)}${r.answer.length > 120 ? '…' : ''}\n`);
+    }
+    return;
+  }
+
+  if (sub === '--resume') {
+    const id = args[1];
+    if (!id) throw new Error('Usage: agent chat --resume <sessionId>');
+    const s = sessions.get(id);
+    if (!s) throw new Error(`Session not found: ${id}`);
+    process.stderr.write(`\u25b6 Resuming session ${id} (${s.runs.length} prior turns)\n`);
+    await chatRepl(sessions, id);
+    return;
+  }
+
+  // `agent chat "prompt"` — one-shot non-interactive.
+  if (sub && !sub.startsWith('--')) {
+    const prompt = args.join(' ');
+    const { sessionId, state } = await sessions.start(prompt);
+    process.stderr.write(`\u25b6 session ${sessionId}\n`);
+    printResult(state);
+    return;
+  }
+
+  // `agent chat` — interactive REPL (new session).
+  await chatRepl(sessions);
+}
+
+async function chatRepl(sessions: SessionManager, sessionId?: string): Promise<void> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const prompt = () => { rl.setPrompt('You: '); rl.prompt(); };
+
+  let sid = sessionId;
+  let turn = 0;
+
+  const header = sid
+    ? `\u250c\u2500 Session ${sid} \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`
+    : `\u250c\u2500 New session \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`;
+  process.stdout.write(`${header}\n\u2502 Type /exit to quit, /history to review.\n\u2514\n`);
+
+  prompt();
+
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) { prompt(); continue; }
+
+    if (trimmed === '/exit') {
+      process.stdout.write(sid ? `Session saved: ${sid}\n` : 'Goodbye.\n');
+      rl.close();
+      return;
+    }
+
+    if (trimmed === '/history') {
+      if (!sid) { process.stdout.write('(no session yet — send a message first)\n'); prompt(); continue; }
+      const s = sessions.get(sid);
+      if (!s) { process.stdout.write('(session not found)\n'); prompt(); continue; }
+      for (let i = 0; i < s.runs.length; i++) {
+        process.stdout.write(`\n  [${i + 1}] ${s.runs[i]!.answer.slice(0, 150)}${s.runs[i]!.answer.length > 150 ? '…' : ''}\n`);
+      }
+      process.stdout.write('\n');
+      prompt();
+      continue;
+    }
+
+    const userPrompt = trimmed;
+    process.stderr.write(`  \u00b7 thinking...\n`);
+
+    try {
+      let result: { sessionId: string; state: import('./types.js').RunState };
+      if (!sid) {
+        result = await sessions.start(userPrompt);
+        sid = result.sessionId;
+        turn = 1;
+      } else {
+        result = await sessions.continue(sid, userPrompt);
+        turn++;
+      }
+
+      const answer = extractChatAnswer(result.state);
+      process.stdout.write(`\nAgent: ${answer}\n\n`);
+    } catch (e) {
+      process.stdout.write(`\n\u2716 Error: ${e instanceof Error ? e.message : String(e)}\n\n`);
+    }
+
+    prompt();
+  }
+}
+
+function extractChatAnswer(state: import('./types.js').RunState): string {
+  const summary = state.summary as { proposal?: string; answer?: string } | undefined;
+  if (summary?.answer) return summary.answer;
+  if (summary?.proposal) return summary.proposal;
+  return state.error ?? '(no answer)';
+}
+
 async function main(): Promise<void> {
-  const [command, arg] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const [command, arg] = args;
   const runtime = await makeRuntime();
+  const sessions = new SessionManager(runtime, BASE_DIR);
 
   switch (command) {
     case 'run': {
@@ -238,8 +364,12 @@ async function main(): Promise<void> {
       process.exitCode = report.allPassed ? 0 : 1;
       break;
     }
+    case 'chat': {
+      await handleChat(sessions, args.slice(1));
+      break;
+    }
     default:
-      process.stdout.write('Usage: agent <run|resume|status|recover|trace|eval> [issue|runId]\n');
+      process.stdout.write('Usage: agent <run|resume|status|recover|trace|eval|chat> [issue|runId]\n');
       process.exit(1);
   }
 }

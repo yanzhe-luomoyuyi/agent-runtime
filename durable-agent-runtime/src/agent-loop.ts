@@ -65,7 +65,15 @@ export interface AgentWorkflowOptions {
 const DEFAULT_MAX_TURNS = 12;
 
 /** Build the prompt the model sees each turn: goal + tools + transcript + protocol. */
-export function buildAgentPrompt(goal: string, tools: AgentToolInfo[], transcript: AgentTurn[]): string {
+export function buildAgentPrompt(
+  goal: string,
+  tools: AgentToolInfo[],
+  transcript: AgentTurn[],
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>,
+): string {
+  const historyBlock = !conversationHistory?.length ? '' :
+    '\n\nPrevious conversation:\n' +
+    conversationHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
   const toolLines = tools
     .map((t) => `- ${t.name}: ${t.description} (input schema: ${JSON.stringify(t.inputSchema)})`)
     .join('\n');
@@ -79,6 +87,7 @@ export function buildAgentPrompt(goal: string, tools: AgentToolInfo[], transcrip
     '[agent] You are a durable, tool-using agent. Achieve the goal by calling tools one at a time.',
     '',
     `Goal: ${goal}`,
+    historyBlock,
     '',
     'Available tools:',
     toolLines,
@@ -117,14 +126,19 @@ function toolInfo(tools: ToolRegistry): AgentToolInfo[] {
 }
 
 /** The agentic loop itself, as a single durable step. */
-async function runAgentLoop(ctx: StepContext, maxTurns: number, crashAfterTurn?: number): Promise<AgentResult> {
+async function runAgentLoop(
+  ctx: StepContext,
+  maxTurns: number,
+  crashAfterTurn?: number,
+): Promise<AgentResult> {
   const tools = toolInfo(ctx.tools);
   const transcript: AgentTurn[] = [];
+  const conversationHistory = ctx.input.conversationHistory;
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     // Per-turn idempotency key: on resume, completed turns replay from the log
     // (same key -> cached result) instead of re-issuing the model/tool call.
-    const prompt = buildAgentPrompt(ctx.input.issue, tools, transcript);
+    const prompt = buildAgentPrompt(ctx.input.issue, tools, transcript, conversationHistory);
     const reply = await ctx.callModel(prompt, { key: `t${turn}` });
     const decision = parseDecision(reply);
 

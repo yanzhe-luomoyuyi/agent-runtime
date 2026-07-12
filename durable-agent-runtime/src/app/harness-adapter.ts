@@ -138,6 +138,7 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
               return runAgent({
                 agent,
                 goal: ctx.input.issue,
+                conversationHistory: ctx.input.conversationHistory as import('@agent/contracts').Message[] | undefined,
                 crashAfterTurn: opts.crashAfterTurn,
               });
             },
