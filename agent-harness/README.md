@@ -13,7 +13,7 @@
 | **A** — 工具调用协议 | `src/protocol`, `src/schema` | 把 `ChatResponse` 解释成已校验的工具调用或最终答案。参数在执行**前**按各工具的 `inputSchema` 校验；非法调用变成结构化错误而非崩溃。内置一个为不支持原生 tool-calling 的模型准备的容错文本解析器（`parseTextToolCall`、`extractJsonObject`）。 |
 | **B** — 恢复 / 自愈 | `src/recovery` | 只对**瞬时性**模型/工具失败执行退避重试（`withRetry`），支持 HTTP 状态码分类（429 / 5xx / 超时）→ 结构化 `TransientError` / `HttpError`，遵循 `Retry-After` 头 + 指数退避 + full jitter。**熔断器** `CircuitBreaker`（closed→open→half_open，只对 transient error 跳闸）。**分级模型链** `createResilientModel` 按 tier 顺序尝试模型（每 tier 独立 retry+breaker），包含 escalation ladder（retry→降级→…），作为普通 `ChatModel` 零侵入。**Saga 补偿** `CompensatingToolInvoker`（opt-in 装饰器，LIFO 回滚已提交副作用，best-effort / stopOnError）。把工具抛出的异常转化为模型能理解的 observation；检测无进展的重复调用死循环（`LoopDetector`），不仅检测单次重复调用，还能检测重复序列模式（A→B→A→B），支持按工具维度的调用次数上限。 |
 | **C** — 上下文 / 记忆 | `src/context` | 在 token 预算内组装 prompt + 滚动压缩（保留 system + 近期消息，其余压缩为摘要），observation 截断，重要性加权淘汰（工具错误 > 写入 > 读取），缓存友好排序；**untrusted 输出隔离**——工具结果被隔离标记为“仅数据”，被污染的结果无法劫持 agent。**可插拔 tokenizer**（默认 `cjkAwareTokenizer`：CJK ≈ 1 token/字、其余 ≈ 4 字/token，`fromCounter` 可接 tiktoken），**按模型窗口**（`ContextManager.forModel` + 型号注册表）。**主动压缩** `compactIfNeeded`：跨过预算阈值时把旧消息折叠成一条 **keyed LLM 摘要**（durable replay 安全，默认关闭、opt-in）。**Scratchpad** `ScratchpadToolInvoker`：超大工具输出自动卸载到外部存储，窗口只留指针 + 预览，模型可 `scratchpad_read` 取回（比截断不丢数据）。 |
-| **D** — 控制流 | `src/control` | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行，失败时重新规划，每步有 ✓/→/○ 进度标记）、`runReflectiveAgent`（自我批评并修订，每次尝试有独立 key 命名空间 `a0:` / `a1:` …）、`makeSubagentTool`（把子任务委派封装成一个工具，嵌套 key 全局唯一），以及 human-in-the-loop 的 `Approver`（基于模式匹配的审批门控 `deploy*`、`write*`，带过期时间的审批缓存 + 审计时间戳）。 |
+| **D** — 控制流 | `src/control` | 核心 `runAgent` 循环。**工具并行执行**（`toolConcurrency` 控制并发度，`Promise.allSettled` 一个失败不影响其他）。**工具使用行为控制**（`ToolSpec.stopOnUse` 工具直接返回输出省一次 LLM 调用）。**Structured output**（`outputSchema` + 自动重试，校验失败反馈给模型自我纠正）。**可插拔错误处理器**（`errorHandlers`：`maxTurns` / `modelRefusal` / `invalidFinalOutput`）。加上 `runPlannedAgent`（先规划后执行，失败时重新规划，每步有 ✓/→/○ 进度标记）、`runReflectiveAgent`（自我批评并修订，每次尝试有独立 key 命名空间 `a0:` / `a1:` …）、`makeSubagentTool`（把子任务委派封装成一个工具，嵌套 key 全局唯一），以及 human-in-the-loop 的 `Approver`（基于模式匹配的审批门控 `deploy*`、`write*`，带过期时间的审批缓存 + 审计时间戳）。 |
 
 ### 可观测性
 
@@ -112,6 +112,73 @@ const res = await runAgent({
 });
 console.log(trace.summary());
 // { turns: 3, modelCalls: 3, toolCalls: 2, totalTokens: 4500, estimatedCostUsd: 0.023, ... }
+```
+
+### Structured output
+
+```ts
+import { runAgent } from '@agent/harness';
+
+// 要求模型返回结构化 JSON
+const res = await runAgent({
+  goal: 'Extract the user name and email',
+  model,
+  tools,
+  outputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      email: { type: 'string' },
+    },
+    required: ['name', 'email'],
+  },
+  outputRetries: 2,  // 校验失败时最多重试 2 次（默认 3 次）
+});
+
+// 如果模型返回的 JSON 不符合 schema，校验错误会反馈给它自我纠正
+// 重试耗尽后触发 errorHandlers.invalidFinalOutput（如果设置了的话）
+console.log(res.answer); // 干净的 JSON（自动去掉 markdown fence）
+```
+
+### 工具并行 + 行为控制 + 错误处理
+
+```ts
+import { runAgent, createAgent } from '@agent/harness';
+
+// stopOnUse: 搜索工具的原始输出直接作为答案，省一次 LLM 调用
+const searchTool = {
+  name: 'search',
+  description: '搜索知识库',
+  inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+  stopOnUse: true,  // ← 新功能
+};
+
+const res = await runAgent({
+  goal: 'What is the capital of France?',
+  model,
+  tools,
+  toolConcurrency: 3,  // ← 新：同 turn 内最多 3 个工具并行
+  errorHandlers: {      // ← 新：可插拔终止处理器
+    maxTurns: (ctx) => ({
+      answer: 'Unable to complete within turn budget.',
+      finished: false,
+      stopReason: 'max_turns',
+      turns: ctx.turns,
+      messages: ctx.messages,
+      toolsUsed: [],
+      durationMs: 0,
+    }),
+    modelRefusal: (ctx) => ({
+      answer: `Model refused: ${ctx.refusal}. Please rephrase your request.`,
+      finished: false,
+      stopReason: 'model_refusal',
+      turns: ctx.turns,
+      messages: ctx.messages,
+      toolsUsed: [],
+      durationMs: 0,
+    }),
+  },
+});
 ```
 
 ## 在持久化运行时上运行（下一步）

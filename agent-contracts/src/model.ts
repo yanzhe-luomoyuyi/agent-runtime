@@ -19,7 +19,7 @@ export interface Usage {
 }
 
 /** Why the model stopped generating this turn. */
-export type StopReason = 'tool_calls' | 'stop' | 'length';
+export type StopReason = 'tool_calls' | 'stop' | 'length' | 'refusal';
 
 /** One chat completion request. */
 export interface ChatRequest {
@@ -53,6 +53,11 @@ export interface ChatResponse {
    * `message.thinking` for convenience.
    */
   thinking?: string;
+  /**
+   * When stopReason is 'refusal', the model's stated reason for refusing
+   * to answer (safety filter, policy violation, etc.).
+   */
+  refusalReason?: string;
 }
 
 /** A tool-calling chat model. Swappable: mock for tests, live provider in prod. */

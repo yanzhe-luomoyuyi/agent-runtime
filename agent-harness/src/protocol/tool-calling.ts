@@ -30,6 +30,8 @@ export interface PreparedCall {
   valid: boolean;
   /** Present iff `valid` is false — a model-readable reason (unknown tool / bad args). */
   error?: string;
+  /** Mirrors `ToolSpec.stopOnUse` so the loop can decide to stop after execution. */
+  stopOnUse?: boolean;
 }
 
 /** Interpret a structured model response into tool calls (validated) or a final answer. */
@@ -59,7 +61,7 @@ export function prepareCall(call: ToolCall, byName: Map<string, ToolSpec>): Prep
   if (errors.length > 0) {
     return { call, valid: false, error: `Invalid arguments for "${call.name}": ${formatErrors(errors)}.` };
   }
-  return { call, valid: true };
+  return { call, valid: true, stopOnUse: spec.stopOnUse };
 }
 
 /**

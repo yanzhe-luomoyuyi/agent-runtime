@@ -29,6 +29,13 @@ export interface ToolSpec {
   name: string;
   description: string;
   inputSchema: JSONSchema;
+  /**
+   * When true, the tool's output is used directly as the final answer — the loop
+   * stops immediately after execution and does NOT feed the result back to the
+   * model for another turn.  Useful for retrieval/calculation tools whose raw
+   * output is already the answer the user wants (saves one LLM round-trip).
+   */
+  stopOnUse?: boolean;
 }
 
 /** Per-call options. `key` is the deterministic idempotency handle (see file header). */
