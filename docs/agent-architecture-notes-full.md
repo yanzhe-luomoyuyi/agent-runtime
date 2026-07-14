@@ -197,6 +197,7 @@ ProtocolDecision =
 - `TraceCollector`：token 用量/成本/每 turn 耗时/retry 次数
 - 可配置 PricingModel（GPT-4o / Claude 等）
 - `formatTraceReport()` 终端友好输出；`compareTraces()` A/B 对比
+- **durable-agent-runtime 侧**：`trace.ts` 从事件日志派生 span 时间线（纯数据模型，不碰 IO）；`otel.ts` 将其桥接成真正的 OpenTelemetry span（`NodeTracerProvider` + `OTLPTraceExporter`）——未配置 collector 时退回 `ConsoleSpanExporter`离线运行，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往 Jaeger/Tempo/Honeycomb 等标准后端。导出层放在 runtime 而非 harness，因为导出是真实网络 IO，harness 保持 host-agnostic。
 
 ### 工业界
 | 工具 | 定位 |
@@ -211,6 +212,7 @@ ProtocolDecision =
 
 ### 要点
 - "tracing 不是事后诸葛亮，是 eval 的输入——生产 trace → 自动评分 → 回归检测"
+- "OTel 导出属于运行时层，不属于 harness——因为它需要真实网络 IO，harness 只产出结构化数据"
 
 ---
 

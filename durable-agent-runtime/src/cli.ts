@@ -6,6 +6,7 @@
  *   agent status <runId>         Print the derived state of a run.
  *   agent recover                Drive any interrupted runs to completion.
  *   agent trace <runId>          Print the run's timeline + token/cost/replay totals.
+ *   agent trace <runId> --otel   Also export the run's spans via OpenTelemetry.
  *   agent eval                   Score the demo scenarios (exit 1 on regression).
  *   agent chat                   Start an interactive multi-turn conversation.
  *   agent chat --list            List all saved conversations.
@@ -20,6 +21,10 @@
  * instead of the fixed demo workflow; AGENT_LOOP_CRASH_TURN=<n> injects a mid-loop crash.
  * Set HARNESS=1 to run the standalone @agent/harness loop over the runtime seam
  * (src/app/harness-adapter.ts); HARNESS_CRASH_TURN=<n> injects a mid-loop crash.
+ * `agent trace <runId> --otel` exports the run's spans via OpenTelemetry. Set
+ * OTEL_EXPORTER_OTLP_ENDPOINT (or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT) to ship
+ * spans to a real collector (Jaeger/Tempo/Honeycomb/...); with neither set,
+ * spans print to stdout via the console exporter so it works fully offline.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -46,6 +51,7 @@ import { Runtime } from './runtime.js';
 import { SessionManager } from './session.js';
 import { ToolRegistry } from './tools/registry.js';
 import { renderTimeline } from './trace.js';
+import { exportTrace, initOtel, shutdownOtel } from './otel.js';
 import type { AgentEvent, RunState } from './types.js';
 
 const BASE_DIR = process.env.AGENT_RUNS_DIR ?? '.agent-runs';
@@ -354,8 +360,15 @@ async function main(): Promise<void> {
       break;
     }
     case 'trace': {
-      if (!arg) throw new Error('Usage: agent trace <runId>');
-      process.stdout.write(renderTimeline(runtime.trace(arg)) + '\n');
+      if (!arg) throw new Error('Usage: agent trace <runId> [--otel]');
+      const trace = runtime.trace(arg);
+      process.stdout.write(renderTimeline(trace) + '\n');
+      if (args.includes('--otel')) {
+        initOtel();
+        exportTrace(trace);
+        await shutdownOtel();
+        process.stdout.write(`Exported ${trace.spans.length} span(s) via OpenTelemetry.\n`);
+      }
       break;
     }
     case 'eval': {
@@ -369,7 +382,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      process.stdout.write('Usage: agent <run|resume|status|recover|trace|eval|chat> [issue|runId]\n');
+      process.stdout.write('Usage: agent <run|resume|status|recover|trace|eval|chat> [issue|runId] [--otel]\n');
       process.exit(1);
   }
 }

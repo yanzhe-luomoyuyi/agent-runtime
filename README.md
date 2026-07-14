@@ -175,7 +175,8 @@ flowchart LR
 | [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
 | [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |
 | [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；可组合的打分器（含 LLM 裁判）。 |
-| [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace` / `eval` / `chat`；通过环境变量切换多种执行模式。 |
+| [otel.ts](durable-agent-runtime/src/otel.ts) | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往标准后端。 |
+| [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace`（含 `--otel`）/ `eval` / `chat`；通过环境变量切换多种执行模式。 |
 | [agent-loop.ts](durable-agent-runtime/src/agent-loop.ts) | runtime 内置的模型驱动 Agent 循环（比 harness 更简单，但核心概念相同），封装为单个 durable step。 |
 
 **工作负载 `src/app/`**
@@ -201,6 +202,7 @@ flowchart LR
     TR --> LOCAL[本地 ToolDef]
     TR --> MADP[MCP adapter] --> SDK["MCP base SDK<br/>JSON-RPC · transport · 共享 token cache"] --> SRV[(MCP servers)]
     RT -.onEvent.-> OBS[["trace: span + token + 成本 + 拒绝"]]
+    OBS -.export.-> OTEL{{"otel.ts<br/>OTel spans"}} --> COLLECTOR[(OTLP collector)]
     LOG -.projection.-> EVAL[["eval: 打分器 + LLM 裁判"]]
 ```
 
@@ -233,6 +235,7 @@ flowchart LR
 | `npm run dev -- status <run-id>` | 查看派生 RunState |
 | `npm run dev -- recover` | 修复所有因崩溃而中断的 run |
 | `npm run dev -- trace <run-id>` | 查看 span 时间线 + token / 成本 / 延迟汇总 |
+| `npm run dev -- trace <run-id> --otel` | 额外把 run 的 span 导出为 OpenTelemetry（无 collector 时打印到终端，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 则发往真实后端） |
 | `npm run dev -- eval` | 跑 eval 场景，回归时非零退出 |
 
 ### 多轮对话命令（Session）

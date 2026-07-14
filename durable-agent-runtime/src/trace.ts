@@ -15,6 +15,10 @@ export interface Span {
   startMs: number; // milliseconds since run start
   durationMs: number;
   depth: number; // nesting level for indentation
+  /** True if this span represents a failed call (tool spans only). */
+  error?: boolean;
+  /** Structured, span-specific data (tool name/call id, model tokens/cost) — consumed by exporters like OTel. */
+  attributes?: Record<string, string | number | boolean>;
 }
 
 export interface PhaseCost {
@@ -47,6 +51,8 @@ export interface TraceTotals {
 
 export interface Trace {
   runId: string;
+  /** Epoch-ms of the first event — the anchor `Span.startMs` offsets are relative to. */
+  startedAtMs: number;
   spans: Span[];
   totals: TraceTotals;
   /** Token/cost breakdown per phase (model usage). */
@@ -78,6 +84,8 @@ export function buildTrace(events: AgentEvent[]): Trace {
   const stepEnd = new Map<string, number>();
   const toolStart = new Map<string, number>();
   const toolEnd = new Map<string, number>();
+  const toolNameByCallId = new Map<string, string>();
+  const failedCallIds = new Set<string>();
   const modelSpans: Span[] = [];
 
   // Durable-replay accounting, derived purely from the existing log:
@@ -122,6 +130,7 @@ export function buildTrace(events: AgentEvent[]): Trace {
         break;
       case 'ToolCallRequested':
         if (!toolStart.has(e.callId)) toolStart.set(e.callId, t);
+        toolNameByCallId.set(e.callId, e.tool);
         break;
       case 'ToolCallSucceeded': {
         toolEnd.set(e.callId, t);
@@ -133,6 +142,7 @@ export function buildTrace(events: AgentEvent[]): Trace {
       case 'ToolCallFailed':
         toolEnd.set(e.callId, t);
         totals.failedToolCalls++;
+        failedCallIds.add(e.callId);
         break;
       case 'ModelCalled': {
         totals.modelCalls++;
@@ -154,7 +164,19 @@ export function buildTrace(events: AgentEvent[]): Trace {
         pc.promptTokens += e.promptTokens;
         pc.completionTokens += e.completionTokens;
         pc.costUsd += e.costUsd;
-        modelSpans.push({ name: 'model', kind: 'model', startMs: t - e.latencyMs - first, durationMs: e.latencyMs, depth: 3 });
+        modelSpans.push({
+          name: 'model',
+          kind: 'model',
+          startMs: t - e.latencyMs - first,
+          durationMs: e.latencyMs,
+          depth: 3,
+          attributes: {
+            'gen_ai.usage.prompt_tokens': e.promptTokens,
+            'gen_ai.usage.completion_tokens': e.completionTokens,
+            'agent.cost_usd': e.costUsd,
+            'agent.cached': Boolean(e.cached),
+          },
+        });
         break;
       }
       case 'PolicyDenied':
@@ -179,7 +201,16 @@ export function buildTrace(events: AgentEvent[]): Trace {
   }
   for (const [callId, start] of toolStart) {
     const end = toolEnd.get(callId) ?? start;
-    spans.push({ name: `tool:${callId.split(':').pop() ?? callId}`, kind: 'tool', startMs: start - first, durationMs: end - start, depth: 3 });
+    const toolName = toolNameByCallId.get(callId) ?? callId.split(':').pop() ?? callId;
+    spans.push({
+      name: `tool:${toolName}`,
+      kind: 'tool',
+      startMs: start - first,
+      durationMs: end - start,
+      depth: 3,
+      error: failedCallIds.has(callId),
+      attributes: { 'agent.tool.name': toolName, 'agent.tool.call_id': callId },
+    });
     totals.toolMs += end - start;
   }
   spans.push(...modelSpans);
@@ -198,7 +229,7 @@ export function buildTrace(events: AgentEvent[]): Trace {
   totals.costUsd = Math.round(totals.costUsd * 1e6) / 1e6; // tidy floating-point drift
   totals.costSavedUsd = Math.round(totals.costSavedUsd * 1e6) / 1e6;
 
-  return { runId, spans, totals, byPhase };
+  return { runId, startedAtMs: first, spans, totals, byPhase };
 }
 
 /** Render a trace as an indented timeline plus a totals summary. */

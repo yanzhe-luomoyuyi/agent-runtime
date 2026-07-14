@@ -37,6 +37,7 @@ flowchart LR
     TR --> ADP[MCP adapter] --> SDK["MCP base SDK<br/>JSON-RPC · transport · 共享 token cache"] --> SRV[(MCP servers)]
     MP --> BASE[Base Model]
     RT -.onEvent.-> OBS[[trace: span + token + 成本 + 拒绝]]
+    OBS -.export.-> OTEL{{otel.ts<br/>OTel spans}} --> COLLECTOR[(OTLP collector<br/>Jaeger / Tempo / Honeycomb)]
     LOG -.project.-> EVAL[[eval: 打分器 + LLM 裁判]]
 ```
 
@@ -57,9 +58,10 @@ flowchart LR
 - **共享 MCP base SDK** ([src/mcp/](src/mcp/)) — 把每个 MCP server 都要重复实现的横切逻辑一次性提取出来：JSON-RPC 框架、可替换 transport、**共享** token cache。adapter 把 server 的工具投影进 `ToolRegistry`，让 N 个 server 共享一个 client + 一个 auth cache，而不是每个 server 各自实现一遍 curl / JSON-RPC / token 缓存。
 - **跨会话记忆** ([src/memory/store.ts](src/memory/store.ts)) — 持久、分 scope、活过单次 run 的知识（事实 / 偏好 / how-to）。与 per-run 事件日志**完全分开**：一个 scope 一个 JSON 文件、原子写（tmp+rename）、**内容哈希 id 保证幂等写**（崩溃重放不产生重复）。记忆以普通工具（`memory_write/search/read`）形式暴露给模型；读写走 `ctx.callTool` 被记日志，所以即使其他会话改了 store，replay 仍确定。
 - **Trace 可观测性** ([src/trace.ts](src/trace.ts)) — 从事件日志派生 span 时间线 + token / 成本 / 延迟汇总。统计持久化重放的关键指标：`replayHitRate`、`cachedModelCalls`、`costSavedUsd`。
+- **OpenTelemetry 导出** ([src/otel.ts](src/otel.ts)) — 把 `trace.ts` 派生出的 span 桥接成真正的 OTel span（父子关系按 `Span.depth` 用栈重建，时间戳锚定在 `Trace.startedAtMs` 上，是历史真实时间而非导出时刻）。没配置 collector 时退回 `ConsoleSpanExporter`，离线也能跑；配置了 `OTEL_EXPORTER_OTLP_ENDPOINT` 就通过 OTLP/HTTP 发到 Jaeger / Tempo / Honeycomb 等任意标准后端。刻意放在运行时而不是 harness——导出是真实网络 IO，harness 只产出结构化数据、不碰 IO。
 - **Eval 框架** ([src/eval.ts](src/eval.ts)) — 可组合打分器（程序化打分 + LLM 裁判）+ runner，对派生出的 RunState / trace 打分；`agent eval` 发现回归时以非零退出码退出。
 - **内置 Agent 循环** ([src/agent-loop.ts](src/agent-loop.ts)) — 运行时内置的模型驱动 Agent 循环（比 harness 更简单，但核心概念相同）。模型每 turn 决定 `call_tool` 或 `finish`。封装为单个 durable workflow step。通过 `AGENT_LOOP=1` 启用。
-- **CLI** ([src/cli.ts](src/cli.ts)) — 命令行入口。命令：`run`、`resume`、`status`、`recover`、`trace`、`eval`。多种执行模式通过环境变量切换：`HARNESS=1`（harness 循环）、`AGENT_LOOP=1`（内置循环）、默认（固定工作流）。
+- **CLI** ([src/cli.ts](src/cli.ts)) — 命令行入口。命令：`run`、`resume`、`status`、`recover`、`trace`（加 `--otel` 导出 OpenTelemetry span）、`eval`。多种执行模式通过环境变量切换：`HARNESS=1`（harness 循环）、`AGENT_LOOP=1`（内置循环）、默认（固定工作流）。
 
 ### Demo 工作负载 — Agent (`src/app/`)
 
@@ -144,6 +146,20 @@ npm run dev -- trace <run-id>
 # 包含重放命中率、缓存节省等持久化统计
 ```
 
+### Demo：导出到 OpenTelemetry
+
+```bash
+# 不配置 collector —— span 打印到 stdout（ConsoleSpanExporter），完全离线可用
+npm run dev -- trace <run-id> --otel
+
+# 配置了标准 OTel 环境变量就会发往真实 collector（Jaeger / Tempo / Honeycomb / ...）
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 npm run dev -- trace <run-id> --otel
+```
+
+`run → phase → step → tool/model` 的嵌套关系被还原成真正的父子 span（`parentId` 链），
+每个 span 带时间戳锚定在事件发生的真实时刻；tool span 带 `agent.tool.name` / 失败状态，
+model span 带 `gen_ai.usage.*` token 计数和 `agent.cost_usd`，根 span 带整个 run 的汇总统计。
+
 ### Demo：恢复损坏的 run
 
 ```bash
@@ -165,6 +181,7 @@ npm run dev -- recover <run-id>
 8. **护栏是声明式层，不是 server 代码。** 工具 allow-list、成本预算、PII 脱敏以*数据*形式作用于统一的工具/模型调用通道，同一策略可组合到任何工作流和任何工具上。每次拒绝都是持久的 `PolicyDenied` 事件——这就是为什么 eval 能验证护栏确实*生效*了，而不只是"配置上了"。
 9. **一个 MCP base SDK；所有 server 共用它。** JSON-RPC、transport、共享 token cache 一次性提取好。新增一个 server 只需"给 client 配置一个 transport"，而不是"每个 server 重新实现一遍 curl + JSON-RPC + token 缓存"——adapter 让远程工具在运行时眼里和本地工具完全一样。
 10. **快照 checkpoint 加速恢复。** 对于长 run，从头重放所有事件可能很慢。运行时会周期性写入派生状态的快照；恢复时优先加载快照，只重放快照之后的事件。快照是纯性能优化——即使损坏或缺失，系统仍可完全从事件日志重建所有状态。
+11. **可观测性数据模型与导出分层。** `trace.ts` 只做"从日志派生 span + 汇总"这一件事，不碰任何 IO；`otel.ts` 是单独一层，负责把这份数据桥接成真正的 OTel span 并发送出去。好处是 `trace.ts` 的输出可以喂给任意导出器（终端时间线、OTel、未来的 Prometheus/StatsD 等），而不用为了"要不要发网络请求"给 trace 派生逻辑加分支。
 
 ---
 
