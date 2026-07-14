@@ -77,7 +77,7 @@
 | `memory/lexical.ts` | 零依赖 mini-BM25 词法打分（含 CJK），确定性检索 |
 | `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟汇总 |
 | `otel.ts` | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出 |
-| `eval.ts` | 可组合打分器（程序化 + LLM 裁判）+ runner |
+| `eval.ts` | 可组合打分器（结果性 + 过程性/轨迹 + 人机协同 + 护栏回归）+ runner；`Scenario.harness`/`approver` 可将场景改路由到 @agent/harness 循环 |
 
 ### 桥接
 | 模块 | 一句话 |

@@ -5,9 +5,14 @@
  * platform stays workload-agnostic. The scorers are composed from the harness.
  */
 
+import { autoApprove, countingApprover, requireApprovalFor } from '@agent/harness';
+
 import {
   costUnderUsd,
   heuristicJudge,
+  heuristicTrajectoryJudge,
+  humanInterventionRequested,
+  humanInterventionsUnder,
   llmJudge,
   noPolicyViolations,
   noToolFailures,
@@ -15,7 +20,10 @@ import {
   proposalContains,
   runCompleted,
   runFailedWith,
+  toolSuccessRate,
   touchedFile,
+  trajectoryJudge,
+  turnsUnder,
   type Scenario,
 } from '../eval.js';
 
@@ -31,6 +39,7 @@ export const demoScenarios: Scenario[] = [
       llmJudge(heuristicJudge, 'the proposal addresses the bug with a concrete, file-specific fix'),
       costUnderUsd(0.01),
       noToolFailures(),
+      toolSuccessRate(1),
       noPolicyViolations(),
     ],
   },
@@ -47,4 +56,31 @@ export const demoScenarios: Scenario[] = [
     policy: { maxCostUsd: 0.000001 },
     checks: [runFailedWith('budget'), policyDenied()],
   },
+  {
+    // Process/trajectory eval: drives the @agent/harness model-driven loop
+    // (not the fixed workflow), so `turnsUnder` and the tool-call SEQUENCE
+    // (not just the final proposal) can be graded.
+    name: 'harness run: bounded turns and a sensible tool trajectory',
+    issue: 'Login page crashes with a null session',
+    harness: true,
+    checks: [
+      runCompleted(),
+      turnsUnder(6),
+      toolSuccessRate(1),
+      trajectoryJudge(heuristicTrajectoryJudge, 'the agent fetches the issue before searching code, with no redundant repeats'),
+    ],
+  },
+  (() => {
+    // Human-in-the-loop metric: gate `searchCode` behind an approver and prove
+    // the gate actually fires — `humanInterventionRequested` reads the live
+    // `ApprovalStats` object populated by THIS scenario's own run.
+    const { approver: countedHuman, stats } = countingApprover(autoApprove);
+    return {
+      name: 'harness run: sensitive tool requires human approval',
+      issue: 'Login page crashes with a null session',
+      harness: true,
+      approver: requireApprovalFor(['searchCode'], countedHuman),
+      checks: [runCompleted(), humanInterventionRequested(stats, 1), humanInterventionsUnder(stats, 1)],
+    } satisfies Scenario;
+  })(),
 ];

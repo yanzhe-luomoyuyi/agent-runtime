@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { MockAgentModel } from '../src/app/agent-scenario.js';
+import { createHarnessWorkflow } from '../src/app/harness-adapter.js';
 import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { demoScenarios } from '../src/app/scenarios.js';
 import { getIssue, searchCode } from '../src/app/tools.js';
@@ -9,14 +11,24 @@ import { Runtime } from '../src/runtime.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 
 function buildRuntimeFactory(canned: Record<string, string>) {
-  return (baseDir: string, scenario: Scenario): Runtime =>
-    new Runtime({
+  return (baseDir: string, scenario: Scenario): Runtime => {
+    if (scenario.harness) {
+      return new Runtime({
+        baseDir,
+        model: new MockAgentModel(),
+        tools: new ToolRegistry().register(getIssue).register(searchCode),
+        workflow: createHarnessWorkflow({ approver: scenario.approver }),
+        policy: scenario.policy,
+      });
+    }
+    return new Runtime({
       baseDir,
       model: new MockModelProvider(canned),
       tools: new ToolRegistry().register(getIssue).register(searchCode),
       workflow: issueWorkflow,
       policy: scenario.policy,
     });
+  };
 }
 
 const goodModel = {

@@ -144,3 +144,49 @@ function stableKey(value: unknown): string {
     return String(value);
   }
 }
+
+// ── Metrics ─────────────────────────────────────────────────────────
+
+/** Running counts of decisions made through a `countingApprover`. */
+export interface ApprovalStats {
+  /** Total `approve()` calls made through the wrapped approver. */
+  requested: number;
+  /** Decisions where `approved` was true. */
+  approved: number;
+  /** Decisions where `approved` was false. */
+  denied: number;
+}
+
+/**
+ * Wrap an approver to track how often it was actually consulted — the
+ * "human intervention rate" metric: how many tool calls needed a real
+ * approval decision, versus running unattended. Returns the wrapped approver
+ * plus a live `stats` object the caller reads after the run (e.g. to fold into
+ * an eval scorer).
+ *
+ * Wrap the INNERMOST delegate — i.e. compose it UNDER `requireApprovalFor` /
+ * `withApprovalCache` — so only calls that actually reach a human are counted,
+ * not the auto-approved pass-through calls for non-sensitive tools:
+ *
+ * ```ts
+ * const { approver: counted, stats } = countingApprover(humanApprover);
+ * const gated = requireApprovalFor(['deploy*'], counted);
+ * await runAgent({ ..., approver: gated });
+ * // stats.requested / stats.approved / stats.denied after the run
+ * ```
+ */
+export function countingApprover(delegate: Approver): { approver: Approver; stats: ApprovalStats } {
+  const stats: ApprovalStats = { requested: 0, approved: 0, denied: 0 };
+  return {
+    stats,
+    approver: {
+      approve: async (req) => {
+        stats.requested++;
+        const decision = await delegate.approve(req);
+        if (decision.approved) stats.approved++;
+        else stats.denied++;
+        return decision;
+      },
+    },
+  };
+}

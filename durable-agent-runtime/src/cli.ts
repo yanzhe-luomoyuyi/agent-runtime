@@ -114,12 +114,27 @@ async function buildTools(): Promise<ToolRegistry> {
  * regression, and they exercise the SAME shared MCP base SDK + declarative policy
  * the CLI uses — so a broken tool path or mis-set guardrail is caught in CI. A
  * scenario may override the policy (e.g. to assert a budget guardrail fires).
+ *
+ * A scenario with `harness: true` is driven through the @agent/harness loop
+ * (not the fixed workflow), optionally with an `approver` wired in, so
+ * human-in-the-loop scorers (`humanInterventionsUnder` / `humanInterventionRequested`)
+ * and the turn-count scorer (`turnsUnder`) have something to read.
  */
 async function buildEvalRuntime(baseDir: string, scenario: Scenario): Promise<Runtime> {
   const tools = new ToolRegistry();
   const tokenCache = new TokenCache(() => ({ token: 'demo-token', expiresAtMs: Date.now() + 3_600_000 }));
   for (const server of demoMcpServers()) {
     await registerMcpServer(tools, new McpClient({ serverName: server.name, transport: new InMemoryTransport(server.handle), tokenCache }));
+  }
+  if (scenario.harness) {
+    return new Runtime({
+      baseDir,
+      model: new MockAgentModel(),
+      tools,
+      workflow: createHarnessWorkflow({ approver: scenario.approver }),
+      pricing: loadPricing(),
+      policy: scenario.policy ?? loadPolicy(),
+    });
   }
   return new Runtime({
     baseDir,

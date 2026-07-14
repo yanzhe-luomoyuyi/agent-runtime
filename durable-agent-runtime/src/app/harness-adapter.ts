@@ -26,7 +26,7 @@ import type {
   ToolInvoker,
   ToolSpec,
 } from '@agent/contracts';
-import { createAgent, ContextManager, createModelSummarizer, parseTextToolCall, runAgent, type AgentConfig, type AgentRunResult } from '@agent/harness';
+import { createAgent, ContextManager, createModelSummarizer, parseTextToolCall, runAgent, type AgentConfig, type AgentRunResult, type Approver } from '@agent/harness';
 
 import type { RunState } from '../types.js';
 import type { StepContext, WorkflowDef } from '../workflow.js';
@@ -99,6 +99,15 @@ export interface HarnessWorkflowOptions {
     /** Fraction of budget (0–1) at which to compact. Default 0.85. */
     threshold?: number;
   };
+  /**
+   * Optional human-in-the-loop approver, consulted before each tool call
+   * (see `@agent/harness`'s `control/human.ts`). Wrap it with `countingApprover`
+   * (and `requireApprovalFor` for pattern-based gating) if you want to assert
+   * on how often a human decision was actually needed — the eval scorers
+   * `humanInterventionsUnder` / `humanInterventionRequested` read the
+   * resulting `ApprovalStats` object directly, not through the run summary.
+   */
+  approver?: Approver;
 }
 
 /**
@@ -140,6 +149,7 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                 goal: ctx.input.issue,
                 conversationHistory: ctx.input.conversationHistory as import('@agent/contracts').Message[] | undefined,
                 crashAfterTurn: opts.crashAfterTurn,
+                approver: opts.approver,
               });
             },
           },

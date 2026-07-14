@@ -59,7 +59,7 @@ flowchart LR
 - **跨会话记忆** ([src/memory/store.ts](src/memory/store.ts)) — 持久、分 scope、活过单次 run 的知识（事实 / 偏好 / how-to）。与 per-run 事件日志**完全分开**：一个 scope 一个 JSON 文件、原子写（tmp+rename）、**内容哈希 id 保证幂等写**（崩溃重放不产生重复）。记忆以普通工具（`memory_write/search/read`）形式暴露给模型；读写走 `ctx.callTool` 被记日志，所以即使其他会话改了 store，replay 仍确定。
 - **Trace 可观测性** ([src/trace.ts](src/trace.ts)) — 从事件日志派生 span 时间线 + token / 成本 / 延迟汇总。统计持久化重放的关键指标：`replayHitRate`、`cachedModelCalls`、`costSavedUsd`。
 - **OpenTelemetry 导出** ([src/otel.ts](src/otel.ts)) — 把 `trace.ts` 派生出的 span 桥接成真正的 OTel span（父子关系按 `Span.depth` 用栈重建，时间戳锚定在 `Trace.startedAtMs` 上，是历史真实时间而非导出时刻）。没配置 collector 时退回 `ConsoleSpanExporter`，离线也能跑；配置了 `OTEL_EXPORTER_OTLP_ENDPOINT` 就通过 OTLP/HTTP 发到 Jaeger / Tempo / Honeycomb 等任意标准后端。刻意放在运行时而不是 harness——导出是真实网络 IO，harness 只产出结构化数据、不碰 IO。
-- **Eval 框架** ([src/eval.ts](src/eval.ts)) — 可组合打分器（程序化打分 + LLM 裁判）+ runner，对派生出的 RunState / trace 打分；`agent eval` 发现回归时以非零退出码退出。
+- **Eval 框架** ([src/eval.ts](src/eval.ts)) — 可组合打分器（结果性：`runCompleted`/`touchedFile`/`proposalContains`、`toolSuccessRate` 连续成功率、`costUnderUsd`；过程性：`turnsUnder`（回合预算）、`trajectoryJudge`（LLM 裁判工具调用序列而非只看最终答案）；人机协同：`humanInterventionRequested`/`humanInterventionsUnder`（读 `countingApprover` 产出的 `ApprovalStats`）；护栏回归：`noPolicyViolations`/`policyDenied`）+ runner，对派生出的 RunState / trace 打分；`agent eval` 发现回归时以非零退出码退出。
 - **内置 Agent 循环** ([src/agent-loop.ts](src/agent-loop.ts)) — 运行时内置的模型驱动 Agent 循环（比 harness 更简单，但核心概念相同）。模型每 turn 决定 `call_tool` 或 `finish`。封装为单个 durable workflow step。通过 `AGENT_LOOP=1` 启用。
 - **CLI** ([src/cli.ts](src/cli.ts)) — 命令行入口。命令：`run`、`resume`、`status`、`recover`、`trace`（加 `--otel` 导出 OpenTelemetry span）、`eval`。多种执行模式通过环境变量切换：`HARNESS=1`（harness 循环）、`AGENT_LOOP=1`（内置循环）、默认（固定工作流）。
 
