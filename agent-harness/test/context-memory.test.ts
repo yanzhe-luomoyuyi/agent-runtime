@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 import { ContextManager, createModelSummarizer } from '../src/context/manager.js';
 import { DEFAULT_CONTEXT_LIMIT, resolveModelLimit } from '../src/context/model-limits.js';
-import { Scratchpad, ScratchpadToolInvoker } from '../src/context/scratchpad.js';
+import { Scratchpad, ScratchpadToolInvoker, createScratchpadSummarizer } from '../src/context/scratchpad.js';
+import type { ContentSummarizer } from '../src/context/scratchpad.js';
 import { cjkAwareTokenizer, heuristicTokenizer } from '../src/context/tokenizer.js';
 import { MockToolInvoker, makeTool } from '../src/testkit/index.js';
 
@@ -248,5 +249,134 @@ describe('ScratchpadToolInvoker', () => {
     const out = await tools.call('bigRead', {});
     expect(out).toBe('X'.repeat(6000)); // returned in full
     expect(tools.store.size).toBe(0);
+  });
+
+  // ── Chunked reading (offset/limit) ──
+
+  it('scratchpad_read with offset/limit returns a chunk result with metadata', async () => {
+    const tools = new ScratchpadToolInvoker(baseTools(6000), { offloadThreshold: 4000 });
+    // Offload the big result.
+    const out = await tools.call('bigRead', {}, { key: 't3:c1' });
+    const id = /id="([^"]+)"/.exec(out as string)![1]!;
+
+    // Read a chunk: offset=100, limit=200.
+    const chunk = await tools.call('scratchpad_read', { id, offset: 100, limit: 200 });
+    expect(chunk).toHaveProperty('content');
+    expect(chunk).toHaveProperty('offset', 100);
+    expect(chunk).toHaveProperty('hasMore', true);
+    expect(chunk).toHaveProperty('totalLength', 6000);
+    expect((chunk as any).content.length).toBe(200);
+    expect((chunk as any).content).toBe('X'.repeat(200));
+  });
+
+  it('chunk at end of content reports hasMore=false', async () => {
+    const tools = new ScratchpadToolInvoker(baseTools(6000), { offloadThreshold: 4000 });
+    const out = await tools.call('bigRead', {}, { key: 't3:c2' });
+    const id = /id="([^"]+)"/.exec(out as string)![1]!;
+
+    // Read last 100 chars.
+    const chunk = await tools.call('scratchpad_read', { id, offset: 5900, limit: 200 });
+    expect((chunk as any).hasMore).toBe(false);
+    expect((chunk as any).length).toBe(100);
+  });
+
+  it('chunk with offset > totalLength clamps to totalLength and returns empty', async () => {
+    const tools = new ScratchpadToolInvoker(baseTools(6000), { offloadThreshold: 4000 });
+    const out = await tools.call('bigRead', {}, { key: 't3:c3' });
+    const id = /id="([^"]+)"/.exec(out as string)![1]!;
+
+    const chunk = await tools.call('scratchpad_read', { id, offset: 99999, limit: 100 });
+    expect((chunk as any).content).toBe('');
+    expect((chunk as any).hasMore).toBe(false);
+    expect((chunk as any).offset).toBe(6000);
+  });
+
+  it('scratchpad_read without offset/limit returns raw string (backward compat)', async () => {
+    const tools = new ScratchpadToolInvoker(baseTools(6000), { offloadThreshold: 4000 });
+    const out = await tools.call('bigRead', {}, { key: 't3:c4' });
+    const id = /id="([^"]+)"/.exec(out as string)![1]!;
+
+    const full = await tools.call('scratchpad_read', { id });
+    expect(typeof full).toBe('string');
+    expect(full).toBe('X'.repeat(6000));
+  });
+
+  // ── Write-time summarisation ──
+
+  it('offloads with summary when a ContentSummarizer is configured', async () => {
+    const summarize: ContentSummarizer = async (content, ctx) => {
+      return `This is a summary of ${ctx.toolName} output (${content.length} chars)`;
+    };
+    const tools = new ScratchpadToolInvoker(baseTools(6000), { offloadThreshold: 4000, summarize });
+    const out = await tools.call('bigRead', {}, { key: 't4:c1' });
+    expect(typeof out).toBe('string');
+    expect(out).toContain('Summary: This is a summary of bigRead output (6000 chars)');
+    expect(out).not.toContain('Preview:');
+
+    // Verify the summary is stored in the entry.
+    const list = tools.store.list();
+    expect(list[0]!.summary).toContain('This is a summary of bigRead output');
+  });
+
+  it('still stores full content alongside the summary', async () => {
+    const summarize: ContentSummarizer = async () => 'short summary';
+    const tools = new ScratchpadToolInvoker(baseTools(6000), { offloadThreshold: 4000, summarize });
+    await tools.call('bigRead', {}, { key: 't4:c2' });
+
+    // Full content retrievable via scratchpad_read.
+    const list = tools.store.list();
+    const id = list[0]!.id;
+    const full = await tools.call('scratchpad_read', { id });
+    expect(full).toBe('X'.repeat(6000));
+  });
+
+  it('falls back to raw preview when summarizer throws', async () => {
+    const summarize: ContentSummarizer = async () => {
+      throw new Error('summarizer down');
+    };
+    const tools = new ScratchpadToolInvoker(baseTools(6000), { offloadThreshold: 4000, summarize });
+    const out = await tools.call('bigRead', {}, { key: 't4:c3' });
+    // Should contain raw preview, not summary.
+    expect(out).toContain('Preview:');
+    expect(out).not.toContain('Summary:');
+    // Full content still stored.
+    expect(tools.store.size).toBe(1);
+  });
+
+  // ── createScratchpadSummarizer factory ──
+
+  it('createScratchpadSummarizer produces a working ContentSummarizer', async () => {
+    const model = summarizerModel('Concise summary of tool output.');
+    const summarize = createScratchpadSummarizer(model);
+
+    const result = await summarize('some tool content here', { key: 'k1', toolName: 'search' });
+    expect(result).toBe('Concise summary of tool output.');
+    expect(model.requests.length).toBe(1);
+    expect(model.requests[0]!.textCompletion).toBe(true);
+    expect(model.requests[0]!.messages[0]!.content).toContain('precise summarizer');
+  });
+
+  it('createScratchpadSummarizer accepts custom instructions', async () => {
+    const model = summarizerModel('custom');
+    const summarize = createScratchpadSummarizer(model, { instructions: 'Be very brief.' });
+
+    await summarize('content', { key: 'k2', toolName: 'ls' });
+    expect(model.requests[0]!.messages[0]!.content).toBe('Be very brief.');
+  });
+
+  it('chunk hint is included for very large results (>8000 chars)', async () => {
+    const big = new MockToolInvoker([
+      makeTool('huge', '', { type: 'object' }, () => 'Y'.repeat(10000)),
+    ]);
+    const tools = new ScratchpadToolInvoker(big, { offloadThreshold: 4000 });
+    const out = await tools.call('huge', {}, { key: 't5:c1' });
+    expect(out).toContain('Hint: use offset/limit');
+    expect(out).toContain('"offset":0,"limit":4000');
+  });
+
+  it('no chunk hint for moderately large results (≤8000 chars)', async () => {
+    const tools = new ScratchpadToolInvoker(baseTools(6000), { offloadThreshold: 4000 });
+    const out = await tools.call('bigRead', {}, { key: 't5:c2' });
+    expect(out).not.toContain('Hint: use offset/limit');
   });
 });
