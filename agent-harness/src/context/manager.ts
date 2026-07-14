@@ -15,10 +15,6 @@
  *    untrusted content is fenced and labelled "data only", and it is NEVER
  *    merged into a system/instruction message.
  *
- * Everything here is deterministic (the default summarizer is a heuristic, not a
- * model call), so runs replay identically — which is what the durable runtime
- * needs.
- *
  * Improvements over the earlier version:
  *  - Pluggable `Tokenizer` (heuristic length/4 by default; swap for tiktoken /
  *    Anthropic / HuggingFace for accurate counts).
@@ -30,6 +26,17 @@
  *  - Cache-friendly output ordering: static content (system, summary) first,
  *    dynamic content (recent turns) last — maximises server-side prompt-cache
  *    hit rates (OpenAI / Anthropic).
+ *
+ * ## Known issue
+ * Eviction/protection decisions (`assemble`'s `trimByImportance` and
+ * `compactIfNeeded`'s importance protection) act on INDIVIDUAL messages, not
+ * on call/response pairs. An `assistant` message that requested tool calls
+ * could in theory be evicted or compacted away while its `tool` result
+ * message(s) survive (or vice versa), producing a transcript where a `tool`
+ * message doesn't immediately follow the `assistant` message carrying the
+ * matching `tool_call_id`. Some chat APIs (e.g. OpenAI) reject that shape.
+ * Not fixed here — flagged as a known gap for a future pass (e.g. group
+ * messages into atomic call/response units before scoring/eviction).
  */
 
 import type { ChatModel, Message } from '@agent/contracts';
@@ -53,7 +60,9 @@ export type AsyncSummarizer = (older: Message[], ctx: { key: string }) => Promis
 export interface ContextManagerOptions {
   /** Token cap for the assembled prompt. Default 64_000（≈ 半窗口，适合 GPT-4o / Claude 128K-200K）. */
   maxPromptTokens?: number;
-  /** Always keep at least this many of the most recent non-system messages. Default 20. */
+  /**
+   * Always keep at least this many of the most recent non-system messages. Default 20.
+   */
   keepRecentMessages?: number;
   /** Cap on a single tool observation's characters. Default 8000. */
   maxObservationChars?: number;
@@ -152,6 +161,31 @@ function messageImportance(m: Message): number {
   // regular user messages
   if (m.role === 'user') return 45;
   return 10;
+}
+
+/**
+ * Importance floor above which `compactIfNeeded` protects an older message
+ * verbatim (keeps it in `recent`) instead of folding it into the LLM summary.
+ * Covers tool errors (80) and write-tool results (55) — the same messages
+ * `assemble`'s importance discount protects during hard-cap eviction — so the
+ * two compaction layers agree on what matters, not just on recency.
+ */
+const IMPORTANCE_PROTECT_THRESHOLD = 55;
+
+/**
+ * At most this fraction of the available prompt budget may be spent keeping
+ * importance-protected older units verbatim in `compactIfNeeded`. Without a
+ * cap, a long history of tool errors could protect so much that compaction
+ * never actually shrinks the transcript — it would just get re-evicted by
+ * `assemble`'s hard cap anyway, defeating the point of proactive compaction.
+ */
+const PROTECTED_BUDGET_FRACTION = 0.25;
+
+/** Marks a message produced by a prior compaction round (see `assemble` / `compactIfNeeded`). */
+const SUMMARY_PREFIX = '[Context summary of';
+
+function isSummaryMessage(m: Message): boolean {
+  return m.role === 'system' && (m.content ?? '').startsWith(SUMMARY_PREFIX);
 }
 
 // ── ContextManager ──────────────────────────────────────────────────
@@ -255,6 +289,10 @@ export class ContextManager {
     // lowest-importance messages from the tail until we're within limits.
     // This is how real systems work — the context window is a physical
     // hard limit, not a soft suggestion.
+    //
+    // KNOWN ISSUE: this operates per-message, so an assistant tool-call
+    // message and its tool result(s) can be split across the keep/evict
+    // boundary — see the module-level "Known issue" note above.
     const tail = nonSystem.slice(tailStart);
     const olderFromScan = nonSystem.slice(0, tailStart);
     const { kept, evicted } = this.importanceScoring && budgetUsed > availableBudget
@@ -268,7 +306,7 @@ export class ContextManager {
     if (older.length > 0) {
       out.push({
         role: 'system',
-        content: `[Context summary of ${older.length} earlier message(s)]\n${this.summarize(older)}`,
+        content: `${SUMMARY_PREFIX} ${older.length} earlier message(s)]\n${this.summarize(older)}`,
       });
     }
     out.push(...goal);
@@ -312,22 +350,48 @@ export class ContextManager {
     if (availableBudget <= 0) return messages;
     if (this.countTokens(messages) < this.compactionThreshold * availableBudget) return messages;
 
-    // Split: keep all system messages (incl. prior summaries) and the goal;
-    // keep the most recent `keepRecentMessages`; everything else is "older".
-    const system = messages.filter((m) => m.role === 'system');
+    // Split system messages into real instructions (kept forever) and any
+    // PRIOR compaction summary. The prior summary is folded back into
+    // `older` below so it gets merged into the new summary instead of
+    // accumulating as an ever-growing, never-evictable system message.
+    const systemAll = messages.filter((m) => m.role === 'system');
+    const priorSummaries = systemAll.filter(isSummaryMessage);
+    const system = systemAll.filter((m) => !isSummaryMessage(m));
     const goalIdx = this.goalProtected ? messages.findIndex((m) => m.role === 'user' && m.content?.includes('Goal:')) : -1;
     const goal = goalIdx >= 0 ? [messages[goalIdx]!] : [];
     const rest = messages.filter((m) => m.role !== 'system' && m !== goal[0]);
     const keepN = Math.min(this.keepRecentMessages, rest.length);
-    const recent = rest.slice(rest.length - keepN);
-    const older = rest.slice(0, rest.length - keepN);
+    const positionalRecent = rest.slice(rest.length - keepN);
+    const candidateOlder = rest.slice(0, rest.length - keepN);
+
+    // Importance-weighted protection, budget-capped: a high-value message
+    // (tool error, write result) outside the positional window stays verbatim
+    // in `recent` rather than being folded into prose — aligning with the
+    // importance scoring `assemble` uses for its own hard-cap eviction.
+    // Capped by `PROTECTED_BUDGET_FRACTION` so a long history of errors can't
+    // prevent compaction from actually shrinking the transcript (it would
+    // just get re-evicted by assemble's hard cap anyway).
+    //
+    // KNOWN ISSUE: protection/selection is per-message, so a protected `tool`
+    // result can end up verbatim in `recent` without the `assistant` message
+    // that requested it (or vice versa) — see the module-level "Known issue" note above.
+    const protectedBudget = Math.floor(availableBudget * PROTECTED_BUDGET_FRACTION);
+    const importantOlder = this.importanceScoring
+      ? candidateOlder.filter((m) => messageImportance(m) >= IMPORTANCE_PROTECT_THRESHOLD)
+      : [];
+    const protectedOlder = selectByBudget(importantOlder, protectedBudget, this.tokenizer, messageImportance);
+    const protectedSet = new Set(protectedOlder);
+    const older = [...priorSummaries, ...candidateOlder.filter((m) => !protectedSet.has(m))];
     if (older.length === 0) return messages;
+
+    const recentSet = new Set([...protectedOlder, ...positionalRecent]);
+    const recent = rest.filter((m) => recentSet.has(m));
 
     const key = `${opts.keyPrefix ?? ''}compact-t${opts.turn}`;
     const summary = await this.modelSummarize(older, { key });
     const summaryMsg: Message = {
       role: 'system',
-      content: `[Context summary of ${older.length} earlier message(s)]\n${summary}`,
+      content: `${SUMMARY_PREFIX} ${older.length} earlier message(s)]\n${summary}`,
     };
     return [...system, summaryMsg, ...goal, ...recent];
   }
@@ -388,6 +452,31 @@ function applyImportanceDiscount(cost: number, importance: number): number {
   // Map importance 0–100 to discount factor 1.0–0.05 using an exponential curve.
   const factor = 0.05 + 0.95 * Math.exp(-importance / 25);
   return Math.max(1, Math.round(cost * factor));
+}
+
+/**
+ * Greedily select messages to protect verbatim, highest-importance (then
+ * most recent) first, until `budget` is exhausted. Messages that don't fit
+ * are left out entirely (they fall back to being folded into the summary).
+ */
+function selectByBudget(
+  candidates: Message[],
+  budget: number,
+  tokenizer: Tokenizer,
+  score: (m: Message) => number,
+): Message[] {
+  if (budget <= 0 || candidates.length === 0) return [];
+  const indexed = candidates.map((m, i) => ({ m, i, score: score(m), cost: tokenizer.countMessage(m) }));
+  const sorted = [...indexed].sort((a, b) => b.score - a.score || b.i - a.i);
+
+  let used = 0;
+  const kept: Message[] = [];
+  for (const item of sorted) {
+    if (used + item.cost > budget) continue;
+    used += item.cost;
+    kept.push(item.m);
+  }
+  return kept;
 }
 
 /**
