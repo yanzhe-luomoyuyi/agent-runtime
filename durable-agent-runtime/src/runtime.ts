@@ -84,6 +84,16 @@ export class Runtime {
   }
 
   /**
+   * Plain text completion — for auxiliary tasks like session-history
+   * summarisation that happen outside a run and don't need durability.
+   * Delegates directly to the configured ModelProvider.
+   */
+  async completeText(prompt: string): Promise<string> {
+    const { text } = await this.opts.model.complete(prompt);
+    return text;
+  }
+
+  /**
    * Find every interrupted run (status still "running") under baseDir and resume
    * it. If another worker is concurrently driving a run, our append loses the
    * optimistic-concurrency race (ConflictError) and we skip it rather than

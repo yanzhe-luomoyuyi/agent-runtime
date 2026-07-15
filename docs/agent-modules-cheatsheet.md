@@ -46,7 +46,7 @@
 | `eventlog.ts` | Append-only 事件日志；每个事件独占文件；乐观并发（wx + ConflictError） |
 | `reducer.ts` | 纯函数 fold：`(state, event) => state`；State 永远派生，不落盘 |
 | `snapshot.ts` | 周期性状态快照，tmp+rename 原子写，加速 resume |
-| `session.ts` | 多轮对话 `SessionManager`：把多个 run 串联为对话线程，后续 run 自动携带上文 conversationHistory；JSON manifest 存储 |
+| `session.ts` | 多轮对话 `SessionManager`：串联 run→对话线程，两种 history 模式（`qa-pairs` / `full-summary` 增量 LLM 摘要缓存）；JSON manifest + `runSummaries`；`createConversationSummarizer` 工厂 |
 | `types.ts` | `AgentEvent`（13 种 discriminated union）+ 派生态 `RunState` |
 | `workflow.ts` | `WorkflowDef/PhaseDef/StepDef/StepContext` — 工作流契约 |
 

@@ -172,6 +172,28 @@ function summarizeHarnessRun(state: RunState): unknown {
   };
 }
 
+/**
+ * Extract the full message transcript from a harness RunState as plain text.
+ * Suitable for passing to `SessionManager`'s `extractMessages` option when
+ * `historyMode` is `'full-summary'`. Returns `undefined` if the run didn't
+ * produce a harness result (e.g. failed before the agent step completed).
+ */
+export function extractHarnessMessages(state: RunState): string | undefined {
+  const result = state.stepOutputs['agent.1'] as AgentRunResult | undefined;
+  if (!result?.messages?.length) return undefined;
+  return result.messages
+    .map((m) => {
+      const role = m.role.toUpperCase();
+      const content = m.content ?? '';
+      const toolCalls = m.toolCalls?.length
+        ? `\n[tool_calls: ${m.toolCalls.map((tc) => `${tc.name}(${JSON.stringify(tc.arguments)})`).join(', ')}]`
+        : '';
+      const toolName = m.name ? ` (${m.name})` : '';
+      return `[${role}${toolName}] ${content}${toolCalls}`;
+    })
+    .join('\n\n');
+}
+
 /** Render the transcript to a text prompt a text model (or the mock brain) understands. */
 function renderPrompt(messages: Message[], tools: ToolSpec[]): string {
   // Prefer the "Goal:" message (set by the harness loop), falling back to

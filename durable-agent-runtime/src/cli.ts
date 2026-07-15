@@ -32,7 +32,7 @@ import * as readline from 'node:readline';
 
 import { createAgentWorkflow } from './agent-loop.js';
 import { MockAgentModel } from './app/agent-scenario.js';
-import { createHarnessWorkflow } from './app/harness-adapter.js';
+import { createHarnessWorkflow, extractHarnessMessages } from './app/harness-adapter.js';
 import { issueWorkflow } from './app/issue-workflow.js';
 import { demoMcpServers } from './app/mcp-servers.js';
 import { cannedResponses } from './app/responses.js';
@@ -48,7 +48,7 @@ import { MockModelProvider } from './model/provider.js';
 import { type Policy, resolveRedactions } from './policy.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { Runtime } from './runtime.js';
-import { SessionManager } from './session.js';
+import { SessionManager, createConversationSummarizer, type HistoryMode, type SessionManagerOptions } from './session.js';
 import { ToolRegistry } from './tools/registry.js';
 import { renderTimeline } from './trace.js';
 import { exportTrace, initOtel, shutdownOtel } from './otel.js';
@@ -347,7 +347,27 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const [command, arg] = args;
   const runtime = await makeRuntime();
-  const sessions = new SessionManager(runtime, BASE_DIR);
+  const sessionOpts: SessionManagerOptions = {};
+  // SESSION_HISTORY_MODE controls what prior-run context is passed to each run:
+  //   'qa-pairs' (default) — user prompt + assistant answer per prior run.
+  //   'full-summary'      — full message transcripts summarised via LLM, cached incrementally.
+  // When 'full-summary', also set SESSION_VERBATIM_MODE=full-messages to keep the most
+  // recent run's full transcript verbatim (default: qa).
+  const historyMode = (process.env.SESSION_HISTORY_MODE ?? 'qa-pairs') as HistoryMode;
+  if (historyMode === 'full-summary') {
+    sessionOpts.historyMode = 'full-summary';
+    sessionOpts.summarizeHistory = createConversationSummarizer(
+      (prompt) => runtime.completeText(prompt),
+    );
+    sessionOpts.keepRecentRunsVerbatim = numFromEnv('SESSION_KEEP_RECENT') ?? 1;
+    sessionOpts.verbatimMode = (process.env.SESSION_VERBATIM_MODE as 'qa' | 'full-messages') ?? 'qa';
+    // When harness mode is active, wire full-message extraction so the summarizer
+    // sees tool calls, tool results, and the agent's reasoning chain.
+    if (process.env.HARNESS === '1') {
+      sessionOpts.extractMessages = extractHarnessMessages;
+    }
+  }
+  const sessions = new SessionManager(runtime, BASE_DIR, sessionOpts);
 
   switch (command) {
     case 'run': {

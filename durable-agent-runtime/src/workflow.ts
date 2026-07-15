@@ -28,7 +28,7 @@ export interface CallOptions {
 
 export interface StepContext {
   runId: string;
-  input: { issue: string; conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }> };
+  input: { issue: string; conversationHistory?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> };
   state: RunState;
   tools: ToolRegistry;
   /** Call a tool with automatic, deterministic idempotency across resumes. */
