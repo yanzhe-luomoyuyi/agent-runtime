@@ -19,7 +19,35 @@
 
 | 模块 | 做什么 |
 | --- | --- |
-| [tracing/collector.ts](src/tracing/collector.ts) | 结构化的 per-run 指标：token 用量统计（`TokenUsage`）、每次模型调用的成本估算（`ModelCallTrace`）、工具调用 trace（`ToolCallTrace`）、每 turn 决策 trace（`TurnTrace`）、完整 agent trace（`AgentTrace`）。`TraceCollector` 在循环的关键埋点处挂载。可配置定价模型（`PricingModel`、`DEFAULT_PRICING`、`FALLBACK_PRICING`）。 |
+| [tracing/collector.ts](src/tracing/collector.ts) | 结构化的 per-run 指标：token 用量统计、成本估算、每 turn 耗时、retry 次数、A/B 对比。`TraceCollector` 在循环的关键埋点处挂载，loop 通过 `hooks` / 直接调用驱动。可配置定价模型。 |
+
+#### Trace 数据结构
+
+```
+AgentTrace                    ← 一次 run 的完整可观测指标
+├── runDurationMs             ← 总耗时
+├── totalTurns                ← 总轮次
+├── totalRetries              ← 模型调用重试总次数
+├── totalToolCalls            ← 工具调用总数
+├── toolOk / toolFail         ← 工具成功 / 失败数
+├── toolSuccessRate           ← 工具成功率（0–1）
+│
+├── 经济指标:
+│   ├── totalPromptTokens
+│   ├── totalCompletionTokens
+│   ├── totalCachedPromptTokens     ← 服务端缓存命中的 token 数
+│   ├── estimatedCostUsd            ← 费用估算
+│   └── pricingModel                ← 使用的定价模型
+│
+└── turns: TurnTrace[]
+    └── per turn:
+        ├── turn
+        ├── model: ModelCallTrace
+        │   ├── retries / ok / durationMs / error
+        │   └── usage?: { promptTokens, completionTokens, cachedPromptTokens, costUsd }
+        └── tools: ToolCallTrace[]
+            ├── tool / args / ok / durationMs / error
+```
 
 ## 缝与持久化
 

@@ -66,6 +66,31 @@ flowchart LR
 - **Session（多轮对话）** ([src/session.ts](src/session.ts)) — `SessionManager` 把多个 `run` 串联为持久对话线程。支持两种 history 模式：`qa-pairs`（默认，每轮传递 user↔assistant Q&A 对，零 LLM 开销）和 `full-summary`（LLM 摘要 prior runs 的全量 message transcript，摘要结果缓存在 manifest 中增量复用、不重复计算）。`createConversationSummarizer` 工厂 + `harness-adapter` 的 `extractHarnessMessages` 无缝对接。详见 `SESSION_HISTORY_MODE` / `SESSION_VERBATIM_MODE` 环境变量。
 - **CLI** ([src/cli.ts](src/cli.ts)) — 命令行入口。命令：`run`、`resume`、`status`、`recover`、`trace`（加 `--otel` 导出 OpenTelemetry span）、`eval`、`chat`（多轮对话 REPL）。多种执行模式通过环境变量切换：`HARNESS=1`（harness 循环）、`AGENT_LOOP=1`（内置循环）、默认（固定工作流）。Session 支持两种 history 模式：`SESSION_HISTORY_MODE=qa-pairs`（默认，逐字传递 Q&A）和 `SESSION_HISTORY_MODE=full-summary`（LLM 摘要历史，增量缓存不复算）。`SESSION_VERBATIM_MODE=full-messages` 控制最近 run 是否保留全量 message transcript。
 
+---
+
+### 可观测性与 Tracing
+
+运行时有两层 trace，互相独立但共享 token/成本数据：
+
+#### 1. 事件日志派生 Trace（`trace.ts`）——事后投影，零运行时开销
+
+`buildTrace(events)` 从已有的 `AgentEvent[]` 中派生 span 时间线和汇总指标。它纯数据、不碰 IO，能做出来完全因为有事件溯源。
+
+**总计指标（`TraceTotals`）：**
+
+| 指标 | 说明 |
+|---|---|
+| `wallMs` / `modelMs` / `toolMs` | 总墙上时间 / 模型耗时 / 工具耗时 |
+| `promptTokens` / `completionTokens` | token 消耗 |
+| `costUsd` | 费用总计（直接从事件中累加 `ModelCalled.costUsd`） |
+| `modelCalls` / `toolCalls` / `failedToolCalls` | 调用计数 |
+| `policyDenials` | 被声明式策略层拒绝的调用数 |
+| `replayedCalls` / `replayHitRate` | **持久化回放**节省的调用数和命中率（step 重入 → calls 重放） |
+| `cachedModelCalls` / `costSavedUsd` | **内容缓存**命中数 + 节省的费用 |
+| `byPhase` | `Record<string, { promptTokens, completionTokens, costUsd }>` 按阶段分解 |
+
+**渲染：** `renderTimeline(trace)` 以缩进时间线 + 汇总统计的格式打印。
+
 ### Demo 工作负载 — Agent (`src/app/`)
 
 - **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。`createHarnessWorkflow()` 把 `runAgent` 封装为单个 durable step。启用方式：`HARNESS=1`。
