@@ -41,6 +41,7 @@ export * from './control/loop.js';
 export * from './control/planner.js';
 export * from './control/reflection.js';
 export * from './control/subagent.js';
+export * from './control/aggregate.js';
 
 // Tracing / observability
 export * from './tracing/collector.js';

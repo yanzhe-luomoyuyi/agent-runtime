@@ -293,7 +293,8 @@ ProtocolDecision =
 ## 八、Reflection（反思）
 
 ### 本项目实现
-- pass/fail 循环：跑完 loop → 模型自评 → 不满意重来
+- ✅ 已升级到 L2 结构化诊断：`Critique` 不再只是 pass/fail，新增 `rootCause`（为什么没达标）/ `correctionStrategy`（怎么修）/ `whatWorked`（哪些部分已经对了，不用重做）
+- `buildRevisedGoal()` 把结构化诊断编织进下一轮 goal；对只返回 L1 形状的 critique 自动降级为纯 feedback 拼接，向后兼容
 - `maxReflections` + 独立 key 命名空间（`a0:` / `a1:`）
 
 ### 工业界 & 前沿
@@ -304,8 +305,38 @@ ProtocolDecision =
 | **验证工具集成** | 跑实际 test suite 而非模型自我判断 |
 | **反思记忆** | 上次反思的教训跨 run 保留 |
 
+### 工业界成熟度分层
+
+Reflection 的实现可以分成五个递进层次，从最小可行版本到研究前沿：
+
+```
+L1: Pass/Fail 二元反思        ← 本项目升级前的实现
+L2: 结构化诊断反思 (Reflexion)  ← 本项目当前实现 ✅
+L3: 多维度评分反思
+L4: 工具验证反思（不靠模型自评）
+L5: 反思记忆化 + 跨 run 复用
+```
+
+| 层级 | 做法 | 工业界采用率 | 代表 |
+|------|------|-------------|------|
+| **L1** | Pass/fail + 自由文本反馈 | ⭐⭐⭐⭐⭐ 极高 | 多数生产 agent 的起点 |
+| **L2** | 结构化诊断（root cause + correction strategy + what worked） | ⭐⭐⭐ 中 | 本项目、Reflexion 论文、部分代码 agent |
+| **L3** | 多维度评分（correctness / completeness / safety / clarity） | ⭐⭐⭐ 中 | Constitutional AI、企业 RAG |
+| **L4** | 工具验证（跑测试 / 执行 SQL / 符号计算，而非 LLM 自评） | ⭐⭐⭐⭐ 高（限代码/数学/SQL 领域） | SWE-agent、Devin、AlphaCode |
+| **L5** | 反思记忆跨任务复用（embedding 检索历史失败教训） | ⭐ 低，多在研究阶段 | Reflexion 论文、Generative Agents |
+
+**为什么工业界对 L4/L5 仍谨慎：**
+- 成本：每加一层反思至少多一次 LLM 调用，L4 还要真实执行（编译/跑测试），latency 和费用叠加
+- 反思质量不稳定：LLM 自我诊断"我错在哪"有时是编造的，缺乏 actionable 信息
+- 无限循环风险：critic 一直不满意就要靠 `maxReflections` 硬顶
+- 记忆漂移（L5）：跨任务检索到不相关的历史反思反而误导当前任务
+- 自我评审的天花板悖论：critic 和 answerer 是同一能力水平，模型给不出正确答案时，评审自己的答案往往也判断不准
+
+**下一步升级方向（若任务领域有确定性验证器）：** 优先做 L4——例如涉及代码修改的任务，跑测试判断正确性比 LLM 自评可靠得多；L5 的跨任务记忆检索噪声问题目前业界也没有很好的解法，建议观望。
+
 ### 要点
 - "Reflexion 的核心不是'重试'，而是'解释哪里出错并修正策略'"
+- "L4 工具验证 > L1-L3 模型自评——只要任务领域有编译器/测试框架/执行环境，就该用它代替 LLM 自评"
 
 ---
 
@@ -313,7 +344,8 @@ ProtocolDecision =
 
 ### 本项目实现
 - 子 agent 封装为 tool：`delegate({goal: "sub-goal"})`
-- Durable key namespace 嵌套：父 `t1:call_1:` → 子 `t1:call_1:sub:`
+- Durable key namespace 嵌套：父调用 key（如 `t1:p1`）作为子 loop 的 `keyPrefix` → 子 key 形如 `t1:p1:t1:s1`
+- ❌ 当前无深度限制：`delegate` 若出现在子 agent 的工具集里可无限递归，直到 `maxTurns`/token 预算耗尽才停
 
 ### 工业界 & 前沿
 | 做法 | 说明 |
@@ -322,80 +354,20 @@ ProtocolDecision =
 | **超时 + 深度限制** | 防止无限套娃 |
 | **LangGraph subgraph** | 独立状态、工具、interrupt 点 |
 | **上下文隔离** | 明确子 agent 信息访问边界，不污染父 agent 窗口 |
+| **Handoff（transfer-and-forget）** | OpenAI Agents SDK / AutoGen / Swarm：控制权彻底转移给另一个 agent，原 agent 不再等待结果——区别于 delegate 的"call-and-return" |
+| **Orchestrator-Worker** | Anthropic 多智能体研究系统：主 agent 只做规划+综合，worker 并行独立执行、各自独立上下文窗口，orchestrator 动态决定 worker 数量和每个的任务预算 |
+| **Supervisor 路由模式** | LangGraph 推荐范式：supervisor 不参与任务分解，只做"这个问题该交给谁"的路由决策，每个 sub-agent 是完整独立的专家 |
+| **Budget 传播** | 父 agent 的 token/时间预算按比例分给子 agent，防止子 agent 无限制消耗拖垮父 agent 自身的预算 |
+| **结果聚合策略** | Map-Reduce（结构化合并而非文本拼接）/ 投票共识（类 Self-Consistency）/ 分层合并（避免子结果一次性塞爆父窗口） |
 
 ### 要点
 - "子 agent 的价值是上下文隔离——繁重子任务不污染主 agent 的窗口"
+- "Delegate 和 Handoff 是互补的：delegate 适合'完成后要汇总'，handoff 适合'对话主导权转移'"
+- "多智能体系统最大的隐藏成本不是 token，是调试——没有 trace 传播机制（parent_span_id 关联），出错了根本不知道是哪个子 agent 的哪一步"
 
 ---
 
 ## 十、Session（多轮用户对话）
-
-> 核心命题：让 agent 不只是"一次 prompt → 一次完成"，而是支持用户反复追问、迭代 refine 的真实对话体验。
-
-### 问题
-
-agent-harness 的 `runAgent(goal)` 和 durable-agent-runtime 的 `runtime.run(issue)` 都是**单次执行模型**：
-一次 prompt 进去 → agent 内部多轮 think/tool → 返回结果 → 结束。用户不满意结果时，没有任何机制
-能在保留上下文的前提下追加新的 prompt。
-
-### 本项目的实现
-
-```
-Session (session.ts)
-  ├─ Run₁: 用户 "修登录bug"  →  agent 推理 →  结果₁
-  ├─ Run₂: 用户 "加测试"    →  带上文推理 →  结果₂
-  └─ Run₃: 用户 "换个方案"  →  带全部上文 →  结果₃
-```
-
-**两层改动：**
-
-| 层 | 改动 | 文件 |
-|------|------|------|
-| harness | `RunAgentOptions` 新增 `conversationHistory?: Message[]`；`initLoopState` 在 system prompt 和 goal 之间插入历史；支持 `'system'` role 承载摘要 | `agent-harness/src/control/loop.ts` |
-| runtime | `RunInput` 新增 `conversationHistory`（role 扩展为 `'user'\|'assistant'\|'system'`）；`runtime.run()` 签名扩展；`runtime.completeText()` 暴露文本补全入口供摘要使用；`makeContext` / harness-adapter / agent-loop 全线透传 | `types.ts` · `runtime.ts` · `workflow.ts` · `harness-adapter.ts` · `agent-loop.ts` |
-| session | **新模块** `SessionManager`：JSON manifest 存储 session→runIds 映射 + `runSummaries` 缓存；`start()` / `continue()` / `list()` / `get()`；两种 history 模式 | `durable-agent-runtime/src/session.ts` |
-| summarizer | `ConversationSummarizer` 类型 + `createConversationSummarizer()` 工厂；`harness-adapter` 导出 `extractHarnessMessages()` 提取全量 message transcript | `session.ts` · `harness-adapter.ts` |
-| CLI | `agent chat` REPL + `--list` / `--history` / `--resume` 子命令；`SESSION_HISTORY_MODE` / `SESSION_VERBATIM_MODE` 环境变量控制摘要行为 | `cli.ts` |
-
-**两种 History 模式：**
-
-| 模式 | 环境变量 | 行为 |
-|------|---------|------|
-| `qa-pairs`（默认） | `SESSION_HISTORY_MODE=qa-pairs` | 每个 prior run → user prompt + assistant answer 对，全量 verbatim。零 LLM 开销 |
-| `full-summary` | `SESSION_HISTORY_MODE=full-summary` | 每个 older run 的**全量 message transcript**（含 tool calls/results）通过 LLM 摘要为一段 system message；最近 N 个 run 保持 verbatim（QA 或 full messages）。摘要结果缓存在 `SessionManifest.runSummaries` 中，**每个 run 最多摘要一次，跨 continue() 调用不重复** |
-
-**核心数据流（`continue`）：**
-```
-// Mode 1: qa-pairs（默认）
-SessionManager.continue(sessionId, newPrompt)
-  → 遍历 session.runIds，对每个 run 调 runtime.status() 取 (user prompt + assistant answer)
-  → 组装 conversationHistory: [{role:'user',...}, {role:'assistant',...}, ...]
-  → runtime.run(newPrompt, { conversationHistory })
-    → workflow step → harness-adapter
-      → runAgent({ goal, conversationHistory })
-        → initLoopState: [system, ...history, user(goal)]
-
-// Mode 2: full-summary（增量缓存）
-SessionManager.continue(sessionId, newPrompt)
-  → 遍历 olderRunIds，检查 manifest.runSummaries[runId]：
-    - 有缓存 → 跳过（不重复调 LLM）
-    - 无缓存 → 调 extractMessages(run) 取全量 transcript → 批处理调 LLM 摘要
-      → 缓存到 manifest.runSummaries[每个 runId]
-  → 累积所有缓存摘要 → 拼成一条 system message
-  → 最近 N 个 run 的 verbatim context（QA 或 full messages）
-  → runtime.run(newPrompt, { conversationHistory })
-```
-
-**存储设计：**
-```
-.agent-runs/
-  sessions/
-    <sessionId>.json   ← { sessionId, runIds[], title, createdAt, updatedAt }
-  runs/
-    <runId>/           ← 现有事件日志（完全不变）
-```
-
-Session 不事件溯源——它是轻量指针结构，JSON manifest 足够简单、可内省、可修复。
 
 ### 工业界对照
 

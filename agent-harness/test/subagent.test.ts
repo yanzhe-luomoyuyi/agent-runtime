@@ -45,4 +45,35 @@ describe('sub-agent delegation', () => {
     // nested key = parent call key (t1:p1) + sub loop key (t1:s1)
     expect(subTools.calls[0]!.key).toBe('t1:p1:t1:s1');
   });
+
+  it('surfaces a parsed `structured` result when outputSchema is set and the answer validates', async () => {
+    const tools = new MockToolInvoker([]);
+    const model = new ScriptedChatModel([finalResponse('{"dimension":"frontend","severity":"high"}')]);
+
+    const subagent = makeSubagentTool({
+      model,
+      tools,
+      outputSchema: {
+        type: 'object',
+        properties: { dimension: { type: 'string' }, severity: { type: 'string' } },
+        required: ['dimension', 'severity'],
+      },
+    });
+
+    const result = await subagent.run({ goal: 'analyze frontend' });
+
+    expect(result.finished).toBe(true);
+    expect(result.structured).toEqual({ dimension: 'frontend', severity: 'high' });
+  });
+
+  it('leaves `structured` undefined when no outputSchema is supplied', async () => {
+    const tools = new MockToolInvoker([]);
+    const model = new ScriptedChatModel([finalResponse('plain text answer')]);
+    const subagent = makeSubagentTool({ model, tools });
+
+    const result = await subagent.run({ goal: 'do something' });
+
+    expect(result.answer).toBe('plain text answer');
+    expect(result.structured).toBeUndefined();
+  });
 });

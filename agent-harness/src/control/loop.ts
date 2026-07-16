@@ -44,7 +44,7 @@ import { ContextManager } from '../context/manager.js';
 import { interpretResponse, type PreparedCall } from '../protocol/tool-calling.js';
 import { callSignature, LoopDetector, type LoopDetectorOptions } from '../recovery/loop-detector.js';
 import { withRetry, type RetryOptions } from '../recovery/retry.js';
-import { validate, formatErrors } from '../schema/validate.js';
+import { validate, formatErrors, type ValidationError } from '../schema/validate.js';
 import { type TraceCollector } from '../tracing/collector.js';
 import { autoApprove, type Approver } from './human.js';
 
@@ -315,7 +315,7 @@ async function _handleResponse(
     if (!opts.outputSchema) return { done: true, result: makeResult(st, decision.answer, true, 'finished', turn) };
 
     const cleaned = stripMarkdownFences(decision.answer);
-    const errors = validate(cleaned, opts.outputSchema);
+    const errors = validateStructuredAnswer(cleaned, opts.outputSchema);
     if (errors.length === 0) return { done: true, result: makeResult(st, cleaned, true, 'finished', turn) };
 
     if (outputRetries > 0) {
@@ -605,5 +605,22 @@ function stripMarkdownFences(text: string): string {
   const prefix = trimmed.startsWith('```json') ? trimmed.slice(7) : trimmed.startsWith('```') ? trimmed.slice(3) : trimmed;
   const end = prefix.lastIndexOf('```');
   return end > -1 ? prefix.slice(0, end).trim() : prefix.trim();
+}
+
+/**
+ * Validate a cleaned final answer against `outputSchema`. A plain `{type:
+ * 'string'}` schema validates the text as-is (e.g. a constrained free-text
+ * answer); any other schema is expected to describe JSON, so the text is
+ * parsed first — a parse failure is reported as a validation error (fed back
+ * to the model) rather than validated against the raw string, which would
+ * always fail for object/array schemas.
+ */
+function validateStructuredAnswer(cleaned: string, schema: JSONSchema): ValidationError[] {
+  if (schema.type === 'string') return validate(cleaned, schema);
+  try {
+    return validate(JSON.parse(cleaned), schema);
+  } catch (e) {
+    return [{ path: '$', message: `must be valid JSON: ${e instanceof Error ? e.message : String(e)}` }];
+  }
 }
 
