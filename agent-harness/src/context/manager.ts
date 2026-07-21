@@ -493,10 +493,12 @@ function trimByImportance(
   tokenizer: Tokenizer,
   score: (m: Message) => number,
 ): { kept: Message[]; evicted: Message[] } {
-  // Sort by importance (ascending) so we evict the least valuable first,
-  // but preserve original order among kept messages.
+  // Sort by importance (descending) so the most valuable messages claim the
+  // budget first — whatever doesn't fit by the time we reach the
+  // lowest-importance items is what gets evicted. (Mirrors `selectByBudget`'s
+  // ordering.) Preserve original order among kept messages.
   const indexed = tail.map((m, i) => ({ m, i, score: score(m) }));
-  const sorted = [...indexed].sort((a, b) => a.score - b.score);
+  const sorted = [...indexed].sort((a, b) => b.score - a.score);
 
   let used = 0;
   const evictSet = new Set<number>();
