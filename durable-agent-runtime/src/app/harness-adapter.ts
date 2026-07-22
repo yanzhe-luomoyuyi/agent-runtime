@@ -222,11 +222,19 @@ function renderPrompt(messages: Message[], tools: ToolSpec[]): string {
   // assistant tool call with its result message (correlated by tool-call id).
   // Untrusted tool output is fenced so injected instructions cannot hijack the
   // agent (defence in depth — the system prompt also warns about this).
+  //
+  // Assistant `thinking` (extended reasoning from o1/o3, Claude, DeepSeek-R1)
+  // is also rendered into the transcript so the model can see its prior
+  // chain-of-thought on subsequent turns.
   const argsById = new Map<string, unknown>();
   const nameById = new Map<string, string>();
   const lines: string[] = [];
   let turn = 0;
   for (const m of messages) {
+    // Render assistant thinking before tool call results for this turn.
+    if (m.role === 'assistant' && m.thinking) {
+      lines.push(`(turn ${turn + 1}) thinking: ${m.thinking}`);
+    }
     if (m.role === 'assistant' && m.toolCalls) {
       for (const c of m.toolCalls) {
         argsById.set(c.id, c.arguments);
