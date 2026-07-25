@@ -175,6 +175,85 @@ describe('ContextManager.compactIfNeeded', () => {
     // A prompt-reformatting bridge keys off this to avoid mangling the summary.
     expect(model.requests[0]!.textCompletion).toBe(true);
   });
+
+  it('protects an important older tool-call as a whole unit (assistant + result)', async () => {
+    const model = summarizerModel('folded history');
+    // Char-length tokenizer. Protected budget = 25% of 400 = 100 — enough for
+    // the compact error unit, not a license to keep everything older.
+    const charLen = (m: Message) => {
+      const parts: string[] = [m.role, m.content ?? ''];
+      if (m.toolCalls?.length) parts.push(JSON.stringify(m.toolCalls));
+      if (m.name) parts.push(m.name);
+      return parts.join(' ').length;
+    };
+    const cm = new ContextManager({
+      maxPromptTokens: 400,
+      outputReserveTokens: 0,
+      keepRecentMessages: 2,
+      compactionThreshold: 0.1,
+      importanceScoring: true,
+      goalProtected: true,
+      modelSummarize: createModelSummarizer(model),
+      tokenizer: {
+        count: (t) => t.length,
+        countMessage: charLen,
+        countMessages: (ms) => ms.reduce((s, m) => s + charLen(m), 0),
+      },
+    });
+    const msgs: Message[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Goal: ship' },
+      {
+        role: 'assistant',
+        toolCalls: [{ id: 'd1', name: 'deploy', arguments: {} }],
+      },
+      {
+        role: 'tool',
+        name: 'deploy',
+        toolCallId: 'd1',
+        content: 'ERROR: x',
+        untrusted: true,
+      },
+      {
+        role: 'assistant',
+        toolCalls: [{ id: 'r1', name: 'read', arguments: {} }],
+      },
+      {
+        role: 'tool',
+        name: 'read',
+        toolCallId: 'r1',
+        content: 'file-body-'.repeat(8),
+        untrusted: true,
+      },
+      { role: 'assistant', content: 'recent-a' },
+      { role: 'user', content: 'recent-u' },
+    ];
+    const out = await cm.compactIfNeeded(msgs, { turn: 1 });
+    expect(model.requests.length).toBe(1);
+
+    const hasErrTool = out.some((m) => m.role === 'tool' && m.toolCallId === 'd1');
+    const hasErrAssistant = out.some(
+      (m) => m.role === 'assistant' && m.toolCalls?.some((c) => c.id === 'd1'),
+    );
+    // Error unit is above the protect threshold — both halves stay verbatim.
+    expect(hasErrTool).toBe(true);
+    expect(hasErrAssistant).toBe(true);
+
+    // No orphan tool in the non-summary transcript.
+    let open: Set<string> | null = null;
+    for (const m of out) {
+      if (m.role === 'system') continue;
+      if (m.role === 'assistant' && m.toolCalls?.length) {
+        open = new Set(m.toolCalls.map((c) => c.id));
+      } else if (m.role === 'tool') {
+        expect(open?.has(m.toolCallId!)).toBe(true);
+        open!.delete(m.toolCallId!);
+      } else {
+        expect(!open || open.size === 0).toBe(true);
+        open = null;
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

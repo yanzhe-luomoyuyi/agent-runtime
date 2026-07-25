@@ -95,10 +95,12 @@ ProtocolDecision =
 
 | 模块 | 职责 |
 |------|------|
-| 预算 + 硬顶装配 | `maxPromptTokens` − output/tool 预留；system 在前（cache 友好）；goal 保护；重要性加权淘汰 + 硬顶裁剪 |
+| 预算 + 硬顶装配 | `maxPromptTokens` − output/tool 预留；system 在前（cache 友好）；goal 保护；重要性折扣扩窗 + 硬顶裁剪 |
+| 原子 tool-call 单元 | `assistant(toolCalls)` 与匹配的 `tool` 结果整组计分/淘汰/保护，不拆 call/response（API 合法 transcript） |
+| 近期窗口钉住 | `keepRecentMessages` 对齐 unit 后 **pin**：hard-cap 只裁扩出来的 grown 段，最新 user 指令不会输给更老的高分 tool error |
 | CJK-aware tokenizer | CJK ≈ 1 token/字、其余 ≈ 4 字/token；`fromCounter` 可接 tiktoken |
 | 按模型窗口 | `ContextManager.forModel(name)`，128K/200K/1M 注册表 |
-| 主动压缩 | `compactIfNeeded`：keyed LLM 摘要，有状态（压一次固化），durable replay 安全 |
+| 主动压缩 | `compactIfNeeded`：keyed LLM 摘要，有状态（压一次固化），durable replay 安全；重要 older **unit** 可 verbatim 保护（预算封顶 25%） |
 | Untrusted 隔离 | 工具输出围栏成"data only"，绝不并入 system（prompt-injection 防御） |
 | Scratchpad | 超大工具输出卸载到外部存储，窗口留指针+预览 |
 | 跨会话记忆 | **runtime** `memory/store.ts`：分 scope、内容哈希幂等写，读写走 `ctx.callTool` 被记日志 |
@@ -115,11 +117,14 @@ ProtocolDecision =
 | **Mem0** 自动提炼 | ❌ | 刻意不做——自动提炼高危，留人工闸门 |
 | **Zep / Graphiti** 知识图谱 | ❌ | 时序图谱 + 实体消解 |
 
-#### 压缩 / 摘要
+#### 压缩 / 摘要 / 淘汰正确性
 | 做法 | 本项目 | 说明 |
 |------|--------|------|
 | 模型驱动摘要 | ✅ | keyed callModel，durable-safe |
 | 自动压缩阈值 | ✅ | 0.85 触发，留一 turn 余量 |
+| 原子 call/response 淘汰 | ✅ | 按 unit，不按单条 message（修 API 拆对风险） |
+| 近期 pin + 重要性 | ✅ | recency 硬约束（pinned window）+ type 启发式（grown 段）；不做连续时间衰减 |
+| 压缩/淘汰决策可观测 | ❌ | 下一步：structured decision + TraceCollector + ablation fixture |
 | **LLMLingua-2 / LongLLMLingua** | ❌ | 小模型评估每条消息信息贡献度 → 按贡献裁剪，非按位置 |
 | **LLM 自摘要用便宜模型** | 🟡 | 可换 GPT-4o-mini 降成本 |
 | **Cognition 结构化交接** | ❌ | 固定 schema 传递，不摘要（更抗信息丢失） |
@@ -127,7 +132,7 @@ ProtocolDecision =
 #### 检索 / Prompt 缓存
 | 做法 | 本项目 | 说明 |
 |------|--------|------|
-| 重要性评分 | ✅ | tool error > write > read |
+| 重要性评分 | ✅ | tool error > write > read；单位是 atomic unit（max 成员分） |
 | 词法检索 | ✅ | 零依赖 mini-BM25（含 CJK） |
 | 语义/embedding 检索 | ❌ | seam 已留 |
 | 静态前缀排序 | ✅ | OpenAI 前缀缓存直接受益 |
@@ -136,6 +141,8 @@ ProtocolDecision =
 ### 架构决策
 - **操作 transcript → harness**（tokenizer、压缩、scratchpad、untrusted 围栏）。无状态、per-run。
 - **跨 run 持久化 → runtime**。记忆读必须走 `ctx.callTool` 被记日志，否则 replay 读到已变 store。
+- **正确性优先于启发式**：淘汰原子单位是 tool-call group；`keepRecent` 是 pin，不是可被重要性推翻的软提示。
+- **暂缓 `score × recencyDecay`**：与 pin 语义重叠、缺 telemetry 前无法证伪；先观测再平滑。
 - "Context engineering 核心矛盾：窗口有限 vs 信息无限 → 解法是信息密度最大化"
 - "LLMLingua 思路：用便宜模型先评估贡献度再决定保留/丢弃——比 LRU 更聪明"
 

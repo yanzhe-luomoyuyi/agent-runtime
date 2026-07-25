@@ -23,7 +23,7 @@
 ### C — 上下文层
 | 模块 | 一句话 |
 |------|--------|
-| `context/manager.ts` | Token 预算硬顶 + 重要性加权淘汰 + untrusted 输出隔离 + keyed LLM 主动压缩 |
+| `context/manager.ts` | Token 预算硬顶；atomic tool-call 单元淘汰；近期 pin + 重要性折扣扩窗；untrusted 隔离；keyed LLM 主动压缩 |
 | `context/tokenizer.ts` | CJK ≈ 1 token/字估算；`fromCounter` 可接 tiktoken |
 | `context/scratchpad.ts` | 超大工具输出卸载到外部存储，窗口留指针 |
 

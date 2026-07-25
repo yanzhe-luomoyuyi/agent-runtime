@@ -27,16 +27,12 @@
  *    dynamic content (recent turns) last — maximises server-side prompt-cache
  *    hit rates (OpenAI / Anthropic).
  *
- * ## Known issue
- * Eviction/protection decisions (`assemble`'s `trimByImportance` and
- * `compactIfNeeded`'s importance protection) act on INDIVIDUAL messages, not
- * on call/response pairs. An `assistant` message that requested tool calls
- * could in theory be evicted or compacted away while its `tool` result
- * message(s) survive (or vice versa), producing a transcript where a `tool`
- * message doesn't immediately follow the `assistant` message carrying the
- * matching `tool_call_id`. Some chat APIs (e.g. OpenAI) reject that shape.
- * Not fixed here — flagged as a known gap for a future pass (e.g. group
- * messages into atomic call/response units before scoring/eviction).
+ * ## Atomic tool-call units
+ * Eviction/protection decisions act on atomic units: an `assistant` message
+ * that carries `toolCalls` is grouped with the immediately following `tool`
+ * result message(s) that match its `toolCallId`s. Units are scored, admitted,
+ * and trimmed as a whole so the assembled transcript never splits a call from
+ * its results (chat APIs such as OpenAI reject that shape).
  */
 
 import type { ChatModel, Message } from '@agent/contracts';
@@ -241,12 +237,14 @@ export class ContextManager {
    *   1. Reserve output + tool-def tokens from the budget.
    *   2. System messages always come first (maximises prompt-cache hits).
    *   3. Goal message is protected — never compacted.
-   *   4. From the tail backwards, keep recent messages while budget allows.
-   *      Importance-scored messages get a lower effective cost for the
-   *      inclusion *decision*, so they survive farther back.
+   *   4. Group non-system messages into atomic tool-call units, then from the
+   *      tail backwards keep recent units while budget allows. Importance-
+   *      scored units get a lower effective cost for the inclusion *decision*,
+   *      so they survive farther back.
    *   5. If importance decisions cause the hard budget to be exceeded, trim
-   *      the lowest-importance messages from the tail until the cap is met
-   *      (industry-standard hard cap — models reject prompts over the limit).
+   *      the lowest-importance *grown* units until the cap is met — the
+   *      positional recent window is pinned so a fresh user instruction is
+   *      never evicted in favour of an older high-score tool error.
    *   6. Everything older + anything trimmed is compacted into a summary.
    *   7. Final order: [system…, summary, goal, …recent dynamic]
    */
@@ -261,43 +259,49 @@ export class ContextManager {
     const goalIdx = this.goalProtected ? messages.findIndex((m) => m.role === 'user' && m.content?.includes('Goal:')) : -1;
     const goal = goalIdx >= 0 ? [messages[goalIdx]!] : [];
     const nonSystem = messages.filter((m) => m.role !== 'system' && !(this.goalProtected && m === goal[0]));
+    const units = groupAtomicUnits(nonSystem);
 
     // Budget consumed by mandatory-keep messages.
     const mandatoryTokens = this.countTokens(system) + this.countTokens(goal);
     let budgetUsed = mandatoryTokens;
 
-    // Start with the guaranteed-recent tail, then grow backwards while budget
-    // allows. Importance-scored messages get a discounted cost for the
-    // keep/cut decision; the REAL cost is always tracked in budgetUsed.
+    // Guaranteed-recent: last keepN *messages*, snapped back to the start of
+    // whichever atomic unit contains the cut — never keep a tool result without
+    // its assistant (or vice versa). These pinned units outrank importance
+    // scoring: a brand-new user instruction (score 45) must not lose the hard-
+    // cap race to an older tool ERROR (score 80).
     const keepN = Math.min(this.keepRecentMessages, nonSystem.length);
-    let tailStart = nonSystem.length - keepN;
-    budgetUsed += this.countTokens(nonSystem.slice(tailStart));
+    const msgStart = nonSystem.length - keepN;
+    const pinnedUnitStart = unitIndexContaining(units, msgStart);
+    let unitStart = pinnedUnitStart;
+    budgetUsed += units.slice(unitStart).reduce((s, u) => s + unitCost(u, this.tokenizer), 0);
 
-    while (tailStart > 0) {
-      const candidate = nonSystem[tailStart - 1]!;
-      const rawCost = this.tokenizer.countMessage(candidate);
+    // Grow backwards by whole units. Importance-scored units get a discounted
+    // cost for the keep/cut decision; the REAL cost is always tracked in budgetUsed.
+    while (unitStart > 0) {
+      const candidate = units[unitStart - 1]!;
+      const rawCost = unitCost(candidate, this.tokenizer);
       const effectiveCost = this.importanceScoring
-        ? applyImportanceDiscount(rawCost, messageImportance(candidate))
+        ? applyImportanceDiscount(rawCost, unitImportance(candidate, messageImportance))
         : rawCost;
       if (budgetUsed + effectiveCost > availableBudget) break;
-      tailStart--;
+      unitStart--;
       budgetUsed += rawCost;
     }
 
     // ── Hard-cap enforcement ──────────────────────────────────────
-    // If importance discounts let us overshoot the budget, trim the
-    // lowest-importance messages from the tail until we're within limits.
-    // This is how real systems work — the context window is a physical
-    // hard limit, not a soft suggestion.
-    //
-    // KNOWN ISSUE: this operates per-message, so an assistant tool-call
-    // message and its tool result(s) can be split across the keep/evict
-    // boundary — see the module-level "Known issue" note above.
-    const tail = nonSystem.slice(tailStart);
-    const olderFromScan = nonSystem.slice(0, tailStart);
+    // Discounted growth can overshoot the real budget. Trim only the *grown*
+    // (non-pinned) units by importance; the positional recent window stays
+    // intact so the latest user turns always reach the model. If the pinned
+    // window alone exceeds the budget, fall back to dropping its oldest units
+    // (recency), never its newest.
+    const grownUnits = units.slice(unitStart, pinnedUnitStart);
+    const pinnedUnits = units.slice(pinnedUnitStart);
+    const olderFromScan = flattenUnits(units.slice(0, unitStart));
+    const tailBudget = availableBudget - mandatoryTokens;
     const { kept, evicted } = this.importanceScoring && budgetUsed > availableBudget
-      ? trimByImportance(tail, availableBudget - mandatoryTokens, this.tokenizer, messageImportance)
-      : { kept: tail, evicted: [] as Message[] };
+      ? trimPreservingPinned(grownUnits, pinnedUnits, tailBudget, this.tokenizer, messageImportance)
+      : { kept: flattenUnits([...grownUnits, ...pinnedUnits]), evicted: [] as Message[] };
 
     const older = [...olderFromScan, ...evicted];
 
@@ -360,31 +364,38 @@ export class ContextManager {
     const goalIdx = this.goalProtected ? messages.findIndex((m) => m.role === 'user' && m.content?.includes('Goal:')) : -1;
     const goal = goalIdx >= 0 ? [messages[goalIdx]!] : [];
     const rest = messages.filter((m) => m.role !== 'system' && m !== goal[0]);
+    const units = groupAtomicUnits(rest);
+    // Positional recent: last keepN messages, snapped to atomic unit boundaries.
     const keepN = Math.min(this.keepRecentMessages, rest.length);
-    const positionalRecent = rest.slice(rest.length - keepN);
-    const candidateOlder = rest.slice(0, rest.length - keepN);
+    const recentUnitStart = unitIndexContaining(units, rest.length - keepN);
+    const positionalRecentUnits = units.slice(recentUnitStart);
+    const candidateOlderUnits = units.slice(0, recentUnitStart);
 
-    // Importance-weighted protection, budget-capped: a high-value message
-    // (tool error, write result) outside the positional window stays verbatim
-    // in `recent` rather than being folded into prose — aligning with the
-    // importance scoring `assemble` uses for its own hard-cap eviction.
+    // Importance-weighted protection, budget-capped: a high-value *unit*
+    // (tool error / write result, scored as max over the unit) outside the
+    // positional window stays verbatim in `recent` rather than being folded
+    // into prose — aligning with assemble's hard-cap eviction. Whole units
+    // only, so a protected tool result never appears without its assistant.
     // Capped by `PROTECTED_BUDGET_FRACTION` so a long history of errors can't
-    // prevent compaction from actually shrinking the transcript (it would
-    // just get re-evicted by assemble's hard cap anyway).
-    //
-    // KNOWN ISSUE: protection/selection is per-message, so a protected `tool`
-    // result can end up verbatim in `recent` without the `assistant` message
-    // that requested it (or vice versa) — see the module-level "Known issue" note above.
+    // prevent compaction from actually shrinking the transcript.
     const protectedBudget = Math.floor(availableBudget * PROTECTED_BUDGET_FRACTION);
-    const importantOlder = this.importanceScoring
-      ? candidateOlder.filter((m) => messageImportance(m) >= IMPORTANCE_PROTECT_THRESHOLD)
+    const importantOlderUnits = this.importanceScoring
+      ? candidateOlderUnits.filter((u) => unitImportance(u, messageImportance) >= IMPORTANCE_PROTECT_THRESHOLD)
       : [];
-    const protectedOlder = selectByBudget(importantOlder, protectedBudget, this.tokenizer, messageImportance);
-    const protectedSet = new Set(protectedOlder);
-    const older = [...priorSummaries, ...candidateOlder.filter((m) => !protectedSet.has(m))];
+    const protectedOlderUnits = selectUnitsByBudget(
+      importantOlderUnits,
+      protectedBudget,
+      this.tokenizer,
+      messageImportance,
+    );
+    const protectedSet = new Set(flattenUnits(protectedOlderUnits));
+    const older = [
+      ...priorSummaries,
+      ...flattenUnits(candidateOlderUnits).filter((m) => !protectedSet.has(m)),
+    ];
     if (older.length === 0) return messages;
 
-    const recentSet = new Set([...protectedOlder, ...positionalRecent]);
+    const recentSet = new Set([...protectedSet, ...flattenUnits(positionalRecentUnits)]);
     const recent = rest.filter((m) => recentSet.has(m));
 
     const key = `${opts.keyPrefix ?? ''}compact-t${opts.turn}`;
@@ -454,56 +465,126 @@ function applyImportanceDiscount(cost: number, importance: number): number {
   return Math.max(1, Math.round(cost * factor));
 }
 
+/** One atomic eviction/protection unit: singleton message, or assistant+tools. */
+interface AtomicUnit {
+  messages: Message[];
+  /** Inclusive start index into the flat non-system message list. */
+  start: number;
+  /** Exclusive end index. */
+  end: number;
+}
+
 /**
- * Greedily select messages to protect verbatim, highest-importance (then
- * most recent) first, until `budget` is exhausted. Messages that don't fit
- * are left out entirely (they fall back to being folded into the summary).
+ * Group a flat transcript into atomic units. An assistant that requested tool
+ * calls is glued to the immediately following `tool` messages whose
+ * `toolCallId`s match — those must live or die together for API validity.
+ * Everything else (user, plain assistant, orphan tool) is a singleton unit.
  */
-function selectByBudget(
-  candidates: Message[],
+function groupAtomicUnits(messages: Message[]): AtomicUnit[] {
+  const units: AtomicUnit[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i]!;
+    if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+      const ids = new Set(m.toolCalls.map((c) => c.id));
+      const group: Message[] = [m];
+      let j = i + 1;
+      while (j < messages.length) {
+        const t = messages[j]!;
+        if (t.role !== 'tool' || !t.toolCallId || !ids.has(t.toolCallId)) break;
+        group.push(t);
+        j++;
+      }
+      units.push({ messages: group, start: i, end: j });
+      i = j;
+    } else {
+      units.push({ messages: [m], start: i, end: i + 1 });
+      i++;
+    }
+  }
+  return units;
+}
+
+/**
+ * Index of the unit that contains message-index `msgIndex` (snaps cut points
+ * back to the unit start). Returns `units.length` when `msgIndex` is past the
+ * end (e.g. keepRecentMessages=0 → empty positional tail).
+ */
+function unitIndexContaining(units: AtomicUnit[], msgIndex: number): number {
+  if (units.length === 0) return 0;
+  const lastEnd = units[units.length - 1]!.end;
+  if (msgIndex >= lastEnd) return units.length;
+  if (msgIndex <= 0) return 0;
+  for (let u = 0; u < units.length; u++) {
+    const unit = units[u]!;
+    if (msgIndex >= unit.start && msgIndex < unit.end) return u;
+  }
+  return units.length;
+}
+
+function flattenUnits(units: AtomicUnit[]): Message[] {
+  return units.flatMap((u) => u.messages);
+}
+
+function unitCost(unit: AtomicUnit, tokenizer: Tokenizer): number {
+  return unit.messages.reduce((s, m) => s + tokenizer.countMessage(m), 0);
+}
+
+/** Unit score = max member score — an ERROR tool result protects its assistant too. */
+function unitImportance(unit: AtomicUnit, score: (m: Message) => number): number {
+  let best = 0;
+  for (const m of unit.messages) best = Math.max(best, score(m));
+  return best;
+}
+
+/**
+ * Greedily select atomic units to protect verbatim, highest-importance (then
+ * most recent) first, until `budget` is exhausted. Units that don't fit fall
+ * back to being folded into the summary.
+ */
+function selectUnitsByBudget(
+  candidates: AtomicUnit[],
   budget: number,
   tokenizer: Tokenizer,
   score: (m: Message) => number,
-): Message[] {
+): AtomicUnit[] {
   if (budget <= 0 || candidates.length === 0) return [];
-  const indexed = candidates.map((m, i) => ({ m, i, score: score(m), cost: tokenizer.countMessage(m) }));
+  const indexed = candidates.map((u, i) => ({
+    u,
+    i,
+    score: unitImportance(u, score),
+    cost: unitCost(u, tokenizer),
+  }));
   const sorted = [...indexed].sort((a, b) => b.score - a.score || b.i - a.i);
 
   let used = 0;
-  const kept: Message[] = [];
+  const kept: AtomicUnit[] = [];
   for (const item of sorted) {
     if (used + item.cost > budget) continue;
     used += item.cost;
-    kept.push(item.m);
+    kept.push(item.u);
   }
   return kept;
 }
 
 /**
- * Trim the lowest-importance messages from `tail` until the total token count
- * of `kept` fits within `budget`.  Evicted messages are returned so they can
- * be folded into the summary instead of lost entirely.
- *
- * This guarantees a HARD cap — the assembled prompt never exceeds the model's
- * physical context-window limit, which is how real systems work.
+ * Trim the lowest-importance *units* from `tail` until `kept` fits within
+ * `budget`. Evicted messages are returned so they can be folded into the
+ * summary. Guarantees a HARD cap without splitting assistant/tool pairs.
  */
-function trimByImportance(
-  tail: Message[],
+function trimUnitsByImportance(
+  tail: AtomicUnit[],
   budget: number,
   tokenizer: Tokenizer,
   score: (m: Message) => number,
 ): { kept: Message[]; evicted: Message[] } {
-  // Sort by importance (descending) so the most valuable messages claim the
-  // budget first — whatever doesn't fit by the time we reach the
-  // lowest-importance items is what gets evicted. (Mirrors `selectByBudget`'s
-  // ordering.) Preserve original order among kept messages.
-  const indexed = tail.map((m, i) => ({ m, i, score: score(m) }));
-  const sorted = [...indexed].sort((a, b) => b.score - a.score);
+  const indexed = tail.map((u, i) => ({ u, i, score: unitImportance(u, score) }));
+  const sorted = [...indexed].sort((a, b) => b.score - a.score || b.i - a.i);
 
   let used = 0;
   const evictSet = new Set<number>();
   for (const item of sorted) {
-    const cost = tokenizer.countMessage(item.m);
+    const cost = unitCost(item.u, tokenizer);
     if (used + cost <= budget) {
       used += cost;
     } else {
@@ -515,12 +596,51 @@ function trimByImportance(
   const evicted: Message[] = [];
   for (const item of indexed) {
     if (evictSet.has(item.i)) {
-      evicted.push(item.m);
+      evicted.push(...item.u.messages);
     } else {
-      kept.push(item.m);
+      kept.push(...item.u.messages);
     }
   }
   return { kept, evicted };
+}
+
+/**
+ * Hard-cap trim that treats the positional recent window as sticky.
+ *
+ * 1. Pin `pinned` first (recency contract from `keepRecentMessages`).
+ * 2. Spend leftover budget on `grown` by importance (older errors/writes may
+ *    still beat older low-value reads — but never beat the latest user turns).
+ * 3. If `pinned` alone exceeds `budget`, drop its oldest units until it fits
+ *    (last-resort recency trim — still never prefers an older ERROR over the
+ *    newest user message inside the pinned window).
+ */
+function trimPreservingPinned(
+  grown: AtomicUnit[],
+  pinned: AtomicUnit[],
+  budget: number,
+  tokenizer: Tokenizer,
+  score: (m: Message) => number,
+): { kept: Message[]; evicted: Message[] } {
+  const pinnedCost = pinned.reduce((s, u) => s + unitCost(u, tokenizer), 0);
+
+  if (pinnedCost <= budget) {
+    const grownTrim = trimUnitsByImportance(grown, budget - pinnedCost, tokenizer, score);
+    return {
+      kept: [...grownTrim.kept, ...flattenUnits(pinned)],
+      evicted: grownTrim.evicted,
+    };
+  }
+
+  // Pinned window alone is over budget: keep the newest units, drop oldest.
+  const evicted: Message[] = [...flattenUnits(grown)];
+  let used = pinnedCost;
+  let cut = 0;
+  while (cut < pinned.length && used > budget) {
+    used -= unitCost(pinned[cut]!, tokenizer);
+    evicted.push(...pinned[cut]!.messages);
+    cut++;
+  }
+  return { kept: flattenUnits(pinned.slice(cut)), evicted };
 }
 
 /** Serialised form used for token counting. */
