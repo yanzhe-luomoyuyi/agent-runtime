@@ -230,6 +230,7 @@ interface Policy {
   allowedTools?: string[];      // 工具白名单
   maxCostUsd?: number;          // 累计成本上限
   redactions?: RedactionRule[]; // PII 脱敏规则
+  rateLimits?: Record<string, RateLimitRule>; // 按工具的 token-bucket 限流
 }
 ```
 
@@ -243,6 +244,7 @@ interface Policy {
 | **内容安全** | `checkContent(text)` → async | **新增**：pre-model 有害内容检测 |
 | **越狱检测** | `checkJailbreak(text)` → async | **新增**：prompt injection / DAN 攻击检测 |
 | **输出安全** | `checkOutput(text, context?)` → async | **新增**：post-model 有害/非基于事实的输出检测 |
+| **Token-bucket 限流** | `checkRateLimit(tool)` | **新增**：按工具的经典 token bucket（突发容量 `capacity` + 每秒回填 `refillPerSec`），超限拒绝并返回 `retryAfterMs`。故意不进事件源化——限流针对的是真实墙钟流量，重放历史不应该重新触发限流判断（对比成本预算是对着已落盘的累计花费重放，因此必须事件源化）。代价：进程重启后 bucket 重置满额。 |
 
 #### 内容安全 Provider（可插拔）
 
@@ -299,7 +301,6 @@ prompt 进入 callModel
 | **受保护材料检测** | 检测响应是否包含受版权保护的文本 | Azure Protected Material Detection |
 | **人机审批 (HITL)** | 高风险操作暂停等待人类批准（而非直接拒绝） | `requireApproval: true` 配置 + 审批队列 |
 | **动态/上下文感知策略** | 基于 role、phase、content 决定是否允许 | 将静态 `allowedTools` 扩展为 `(ctx) => boolean` |
-| **速率限制** | 限制每个工具的调用频率 | `rateLimit: "100/min"` |
 | **JSON schema 输出校验** | 验证模型输出是否符合预期结构 | Zod / Pydantic validation |
 
 ### Policy 设计原则

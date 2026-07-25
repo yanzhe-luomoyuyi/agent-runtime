@@ -25,13 +25,32 @@
  * Contrast with hardcoding guardrails inside one server (e.g. a checkpoint
  * server): that couples policy to a single integration and can't be reused.
  * Here the policy is a standalone, declarative, composable middleware.
+ *
+ * ## Rate limiting (per-tool token bucket)
+ *
+ * `rateLimits` caps how often each tool may be called, independent of the
+ * (durable, event-sourced) cost budget above. Deliberately kept OUT of the
+ * event-sourced state: a cost budget must replay consistently (it's checked
+ * against durably-recorded spend, so re-deriving it from the log on resume is
+ * correct and required), but a rate limit is about pacing REAL wall-clock
+ * traffic — replaying history should never re-enforce a rate limit against
+ * events that already happened. So token-bucket state lives only on the
+ * `PolicyEnforcer` instance (in memory, reset on process restart), the same
+ * way a real API gateway's rate limiter is a runtime concern, not a ledger
+ * entry.
  */
 
 import type { ContentSafetyProvider } from './policy/content-safety.js';
 import { NoOpContentSafety } from './policy/content-safety.js';
 import type { ContentCheckResult, JailbreakResult, OutputCheckResult } from './policy/content-safety.js';
 
-export type PolicyViolationCode = 'tool_not_allowed' | 'budget_exceeded' | 'content_safety' | 'jailbreak' | 'output_safety';
+export type PolicyViolationCode =
+  | 'tool_not_allowed'
+  | 'budget_exceeded'
+  | 'rate_limited'
+  | 'content_safety'
+  | 'jailbreak'
+  | 'output_safety';
 
 /** Raised when a call is refused by the policy. Carries a machine-readable code. */
 export class PolicyViolationError extends Error {
@@ -52,6 +71,14 @@ export interface RedactionRule {
   pattern: RegExp;
 }
 
+/** Token-bucket parameters for one rate-limited tool. */
+export interface RateLimitRule {
+  /** Max burst size — tokens available with no prior calls. */
+  capacity: number;
+  /** Tokens added back per second (fractional refill is fine — e.g. 0.5 = one call per 2s). */
+  refillPerSec: number;
+}
+
 export interface Policy {
   /** Tool allow-list. `undefined` means "no restriction" (every tool allowed). */
   allowedTools?: string[];
@@ -59,6 +86,43 @@ export interface Policy {
   maxCostUsd?: number;
   /** PII patterns masked before a prompt leaves the runtime. */
   redactions?: RedactionRule[];
+  /** Per-tool token-bucket rate limits, keyed by tool name. A tool absent here is unlimited. */
+  rateLimits?: Record<string, RateLimitRule>;
+}
+
+/**
+ * Classic token bucket: starts full (`capacity`), refills continuously at
+ * `refillPerSec`, never exceeds `capacity`. `clock` is injected so tests don't
+ * need real timers — refill is computed from elapsed wall-clock time between
+ * calls, not a background timer.
+ */
+class TokenBucket {
+  private tokens: number;
+  private lastRefillMs: number;
+
+  constructor(
+    private readonly rule: RateLimitRule,
+    private readonly clock: () => number,
+  ) {
+    this.tokens = rule.capacity;
+    this.lastRefillMs = clock();
+  }
+
+  /** Try to consume one token. Rejects (rather than blocking) when the bucket is empty. */
+  tryConsume(): { allowed: true } | { allowed: false; retryAfterMs: number } {
+    const now = this.clock();
+    const elapsedSec = Math.max(0, now - this.lastRefillMs) / 1000;
+    this.tokens = Math.min(this.rule.capacity, this.tokens + elapsedSec * this.rule.refillPerSec);
+    this.lastRefillMs = now;
+
+    if (this.tokens >= 1) {
+      this.tokens -= 1;
+      return { allowed: true };
+    }
+    const deficit = 1 - this.tokens;
+    const retryAfterMs = Math.ceil((deficit / this.rule.refillPerSec) * 1000);
+    return { allowed: false, retryAfterMs };
+  }
 }
 
 /**
@@ -83,10 +147,13 @@ export function resolveRedactions(names: string[]): RedactionRule[] {
 
 export class PolicyEnforcer {
   private readonly contentSafety: ContentSafetyProvider;
+  /** Per-tool token buckets. In-memory only — deliberately not event-sourced (see module doc). */
+  private readonly buckets = new Map<string, TokenBucket>();
 
   constructor(
     private readonly policy: Policy,
     contentSafety?: ContentSafetyProvider,
+    private readonly clock: () => number = Date.now,
   ) {
     this.contentSafety = contentSafety ?? new NoOpContentSafety();
   }
@@ -101,6 +168,30 @@ export class PolicyEnforcer {
     const allow = this.policy.allowedTools;
     if (allow && !allow.includes(tool)) {
       throw new PolicyViolationError('tool_not_allowed', 'tool', tool, `Tool "${tool}" is not on the allow-list`);
+    }
+  }
+
+  /**
+   * Throw if `tool`'s token bucket is empty (burst capacity exhausted faster
+   * than its refill rate). No configured rule => unlimited. Each tool gets its
+   * own bucket, created lazily on first use.
+   */
+  checkRateLimit(tool: string): void {
+    const rule = this.policy.rateLimits?.[tool];
+    if (!rule) return;
+    let bucket = this.buckets.get(tool);
+    if (!bucket) {
+      bucket = new TokenBucket(rule, this.clock);
+      this.buckets.set(tool, bucket);
+    }
+    const result = bucket.tryConsume();
+    if (!result.allowed) {
+      throw new PolicyViolationError(
+        'rate_limited',
+        'tool',
+        tool,
+        `Rate limit exceeded for "${tool}" — retry after ${result.retryAfterMs}ms`,
+      );
     }
   }
 

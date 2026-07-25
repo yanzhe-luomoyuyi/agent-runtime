@@ -34,6 +34,7 @@ export * from './recovery/loop-detector.js';
 export * from './recovery/circuit-breaker.js';
 export * from './recovery/fallback.js';
 export * from './recovery/compensation.js';
+export * from './recovery/dead-letter.js';
 
 // D — control flow
 export * from './control/human.js';

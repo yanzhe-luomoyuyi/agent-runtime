@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { cosineSimilarity, HashingEmbeddingProvider, reciprocalRankFusion, type EmbeddingProvider } from '../src/memory/embedding.js';
 import { FileMemoryStore, InMemoryStore, type MemoryStore } from '../src/memory/store.js';
 
 function stores(): Array<[string, () => MemoryStore]> {
@@ -76,5 +77,96 @@ describe('FileMemoryStore persistence', () => {
     // A malicious scope must not escape the base dir; it just becomes a safe filename.
     expect(() => s.write('../../etc/passwd', 'x')).not.toThrow();
     expect(s.list('../../etc/passwd').length).toBe(1);
+  });
+});
+
+describe('HashingEmbeddingProvider (deterministic, zero-dependency embedding seam)', () => {
+  it('is deterministic: same text always yields the same vector', () => {
+    const p = new HashingEmbeddingProvider();
+    expect(p.embed('restart the database service')).toEqual(p.embed('restart the database service'));
+  });
+
+  it('produces a unit-length (L2-normalized) vector so cosine similarity is a plain dot product', () => {
+    const p = new HashingEmbeddingProvider();
+    const vec = p.embed('some memory text with several tokens');
+    const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0));
+    expect(norm).toBeCloseTo(1, 5);
+  });
+
+  it('ranks texts with more token overlap higher via cosine similarity', () => {
+    const p = new HashingEmbeddingProvider();
+    const query = p.embed('database connection timeout error');
+    const close = p.embed('the database connection timed out with an error');
+    const far = p.embed('user prefers dark mode in the UI');
+    expect(cosineSimilarity(query, close)).toBeGreaterThan(cosineSimilarity(query, far));
+  });
+
+  it('is honest about its limits: no learned synonymy, so unrelated wording scores near zero', () => {
+    // This is the documented trade-off of feature-hashing vs. a real embedding model —
+    // it has no notion that "automobile" and "car" are related.
+    const p = new HashingEmbeddingProvider();
+    const a = p.embed('automobile');
+    const b = p.embed('car');
+    expect(cosineSimilarity(a, b)).toBe(0);
+  });
+});
+
+describe('reciprocalRankFusion', () => {
+  it('boosts an item ranked highly in multiple lists over one that only appears in one', () => {
+    const fused = reciprocalRankFusion([['a', 'b', 'c'], ['b', 'a', 'd']], (x) => x, 4);
+    // 'a' and 'b' each appear near the top of both lists; 'c'/'d' only once each.
+    expect(fused.slice(0, 2).sort()).toEqual(['a', 'b']);
+  });
+
+  it('preserves single-ranking order when only one ranking is given', () => {
+    expect(reciprocalRankFusion([['x', 'y', 'z']], (s) => s, 3)).toEqual(['x', 'y', 'z']);
+  });
+});
+
+describe('MemoryStore semantic / hybrid search modes', () => {
+  function makeStoreWithEmbeddings(provider: EmbeddingProvider = new HashingEmbeddingProvider()): MemoryStore {
+    return new InMemoryStore(provider);
+  }
+
+  it('mode "lexical" (default) is unaffected by an embedding provider being configured', () => {
+    const s = makeStoreWithEmbeddings();
+    s.write('u', 'user prefers dark mode');
+    s.write('u', 'the api base url is https://api.example.com');
+    expect(s.search('u', 'dark mode preference')[0]!.text).toContain('dark mode');
+  });
+
+  it('mode "semantic" ranks by embedding cosine similarity instead of exact-token overlap', () => {
+    const s = makeStoreWithEmbeddings();
+    s.write('u', 'the database connection timed out with an error');
+    s.write('u', 'user prefers dark mode in the UI');
+    const results = s.search('u', 'database connection timeout error', { mode: 'semantic' });
+    expect(results[0]!.text).toContain('database');
+  });
+
+  it('mode "semantic" without a configured embedding provider falls back to lexical (no crash)', () => {
+    const s = new InMemoryStore(); // no provider
+    s.write('u', 'user prefers dark mode');
+    expect(s.search('u', 'dark mode', { mode: 'semantic' })[0]!.text).toContain('dark mode');
+  });
+
+  it('mode "hybrid" surfaces a match that only the lexical scorer would find highly relevant', () => {
+    const s = makeStoreWithEmbeddings();
+    s.write('u', 'deploy pipeline failed at step 3: docker build error');
+    s.write('u', 'remember to water the office plants on Fridays');
+    const results = s.search('u', 'docker build error', { mode: 'hybrid', limit: 1 });
+    expect(results[0]!.text).toContain('docker build error');
+  });
+
+  it('a custom EmbeddingProvider can be injected (dependency injection over the concrete hashing default)', () => {
+    // A stub provider that makes two specific memories identical in embedding space,
+    // proving the store actually delegates ranking to the injected provider.
+    const stub: EmbeddingProvider = {
+      embed: (text) => (text.includes('MATCH') ? [1, 0] : [0, 1]),
+    };
+    const s = makeStoreWithEmbeddings(stub);
+    s.write('u', 'unrelated MATCH memory');
+    s.write('u', 'totally different note');
+    const results = s.search('u', 'MATCH', { mode: 'semantic' });
+    expect(results[0]!.text).toContain('MATCH');
   });
 });

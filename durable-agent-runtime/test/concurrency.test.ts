@@ -50,11 +50,14 @@ describe('concurrency & recovery', () => {
 
     const a = new EventLog(runDir(dir, runId)); // version 1
     const b = new EventLog(runDir(dir, runId)); // version 1 (stale the moment `a` writes)
-    const phaseEvent: AgentEvent = { type: 'PhaseStarted', phase: 'analyze', ts: now };
+    // Must be a CRITICAL event — relaxed events (e.g. PhaseStarted) are buffered
+    // in memory and never touch disk synchronously, so they wouldn't exercise
+    // the exclusive-create collision path this test is checking.
+    const criticalEvent: AgentEvent = { type: 'ToolCallSucceeded', callId: 'c1', tool: 'getIssue', result: {}, ts: now };
 
-    a.append(phaseEvent); // claims version 1
+    a.append(criticalEvent); // claims version 1
     // b still thinks the next version is 1 — but `a` already took it.
-    expect(() => b.append(phaseEvent)).toThrow(ConflictError);
+    expect(() => b.append(criticalEvent)).toThrow(ConflictError);
   });
 
   it('recover() finds an interrupted run and drives it to completion', async () => {

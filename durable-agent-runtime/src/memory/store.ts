@@ -29,11 +29,24 @@
  * Every operation takes a `scope` (e.g. a user or project id). Scoping is
  * enforced here (one file per sanitised scope) rather than trusted to callers,
  * so memories cannot leak across users.
+ *
+ * ## Search modes: lexical (default) / semantic / hybrid
+ *
+ * `search()` defaults to `lexical.ts`'s zero-dependency exact-token scorer —
+ * deterministic, no model call. Passing an `EmbeddingProvider` (see
+ * `embedding.ts`) to the constructor unlocks `mode: 'semantic'` (rank by
+ * cosine similarity) and `mode: 'hybrid'` (fuse both rankings via Reciprocal
+ * Rank Fusion — exact-term precision from lexical, token-overlap tolerance
+ * from the embedding). With no provider configured, `semantic`/`hybrid`
+ * silently fall back to lexical — this is an additive, opt-in upgrade, not a
+ * breaking change to existing callers.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { EmbeddingProvider } from './embedding.js';
+import { rankByEmbedding, reciprocalRankFusion } from './embedding.js';
 import { rankByRelevance } from './lexical.js';
 
 export type MemoryKind = 'semantic' | 'episodic' | 'procedural';
@@ -58,6 +71,8 @@ export interface MemoryQueryOptions {
   limit?: number;
   tags?: string[];
   kind?: MemoryKind;
+  /** Ranking strategy for `search()`. Default 'lexical'. See the module doc comment above. */
+  mode?: 'lexical' | 'semantic' | 'hybrid';
 }
 
 /** The persistence seam. Every op is scoped so memories cannot cross users. */
@@ -82,6 +97,9 @@ function contentId(text: string): string {
 
 /** Shared query/write logic; subclasses provide load/persist. */
 abstract class BaseMemoryStore implements MemoryStore {
+  /** Optional semantic-recall backend. Undefined => 'semantic'/'hybrid' modes fall back to lexical. */
+  constructor(protected readonly embeddings?: EmbeddingProvider) {}
+
   protected abstract load(scope: string): MemoryRecord[];
   protected abstract persist(scope: string, records: MemoryRecord[]): void;
 
@@ -102,7 +120,22 @@ abstract class BaseMemoryStore implements MemoryStore {
 
   search(scope: string, query: string, opts: MemoryQueryOptions = {}): MemoryRecord[] {
     const pool = filterRecords(this.load(scope), opts);
-    return rankByRelevance(query, pool, (r) => `${r.text} ${r.tags.join(' ')}`, opts.limit ?? 5).map((s) => s.item);
+    const limit = opts.limit ?? 5;
+    const textOf = (r: MemoryRecord) => `${r.text} ${r.tags.join(' ')}`;
+    const embeddings = this.embeddings;
+    const mode = opts.mode ?? 'lexical';
+
+    if (mode === 'lexical' || !embeddings) {
+      return rankByRelevance(query, pool, textOf, limit).map((s) => s.item);
+    }
+    if (mode === 'semantic') {
+      return rankByEmbedding(query, pool, textOf, limit, embeddings).map((s) => s.item);
+    }
+    // hybrid: fuse both rankings via RRF instead of averaging raw scores, which
+    // live on incomparable scales (lexical overlap count vs. cosine similarity).
+    const lexical = rankByRelevance(query, pool, textOf, pool.length).map((s) => s.item);
+    const semantic = rankByEmbedding(query, pool, textOf, pool.length, embeddings).map((s) => s.item);
+    return reciprocalRankFusion([lexical, semantic], (r) => r.id, limit);
   }
 
   list(scope: string, opts: MemoryQueryOptions = {}): MemoryRecord[] {
@@ -138,8 +171,11 @@ export class InMemoryStore extends BaseMemoryStore {
 
 /** Disk-backed store: one JSON file per scope, written atomically (tmp + rename). */
 export class FileMemoryStore extends BaseMemoryStore {
-  constructor(private readonly baseDir: string) {
-    super();
+  constructor(
+    private readonly baseDir: string,
+    embeddings?: EmbeddingProvider,
+  ) {
+    super(embeddings);
   }
 
   private file(scope: string): string {

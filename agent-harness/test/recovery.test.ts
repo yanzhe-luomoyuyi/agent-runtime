@@ -6,9 +6,11 @@ import {
   HttpError,
   isTransientError,
   parseRetryAfter,
+  RetryingToolInvoker,
   TransientError,
   withRetry,
 } from '../src/recovery/retry.js';
+import { makeTool, MockToolInvoker } from '../src/testkit/index.js';
 
 const noSleep = () => Promise.resolve();
 
@@ -114,6 +116,54 @@ describe('withRetry', () => {
       ),
     ).rejects.toThrow();
     expect(delays[0]).toBe(500);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RetryingToolInvoker (ToolInvoker decorator over withRetry)
+// ---------------------------------------------------------------------------
+describe('RetryingToolInvoker', () => {
+  function flakyTools(failTimes: number) {
+    let calls = 0;
+    return new MockToolInvoker([
+      makeTool('flaky', '', { type: 'object' }, () => {
+        calls++;
+        if (calls <= failTimes) throw new TransientError(`boom #${calls}`);
+        return { ok: true, calls };
+      }),
+    ]);
+  }
+
+  it('retries a transient failure and returns the eventual success', async () => {
+    const tools = new RetryingToolInvoker(flakyTools(2), { retries: 2, sleep: noSleep });
+    const result = await tools.call('flaky', {});
+    expect(result).toEqual({ ok: true, calls: 3 });
+  });
+
+  it('gives up and rethrows once retries are exhausted', async () => {
+    const tools = new RetryingToolInvoker(flakyTools(99), { retries: 2, sleep: noSleep });
+    await expect(tools.call('flaky', {})).rejects.toThrow('boom #3');
+  });
+
+  it('does not retry a non-transient error', async () => {
+    let calls = 0;
+    const inner = new MockToolInvoker([
+      makeTool('bad', '', { type: 'object' }, () => {
+        calls++;
+        throw new Error('bad request'); // not a TransientError, not classified as retryable
+      }),
+    ]);
+    const tools = new RetryingToolInvoker(inner, { retries: 2, sleep: noSleep });
+    await expect(tools.call('bad', {})).rejects.toThrow('bad request');
+    expect(calls).toBe(1); // no retry attempted
+  });
+
+  it('passes through list() and forwards CallOptions (key) unchanged', async () => {
+    const inner = new MockToolInvoker([makeTool('flaky', 'desc', { type: 'object' }, () => 'ok')]);
+    const tools = new RetryingToolInvoker(inner, { sleep: noSleep });
+    expect(tools.list()).toEqual(inner.list());
+    await tools.call('flaky', { x: 1 }, { key: 't1:c1' });
+    expect(inner.calls[0]).toEqual({ name: 'flaky', args: { x: 1 }, key: 't1:c1' });
   });
 });
 

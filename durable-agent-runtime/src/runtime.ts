@@ -11,6 +11,8 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { deadLetterId, type DeadLetterQueue } from '@agent/harness';
+
 import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
 import type { ModelProvider } from './model/provider.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
@@ -33,7 +35,7 @@ export interface RuntimeOptions {
   onEvent?: (event: AgentEvent) => void;
   /** Token cost model. Defaults to DEFAULT_PRICING; the CLI loads it from agent.config.json. */
   pricing?: ModelPricing;
-  /** Declarative guardrails (tool allow-list / cost budget / PII redaction). Optional. */
+  /** Declarative guardrails (tool allow-list / cost budget / rate limits / PII redaction). Optional. */
   policy?: Policy;
   /**
    * Minimum number of NEW events between snapshots. Snapshots are still taken
@@ -42,6 +44,15 @@ export interface RuntimeOptions {
    * always written regardless. Default: 20.
    */
   snapshotInterval?: number;
+  /**
+   * Durable last-resort record for tool calls that still fail after reaching
+   * this funnel (see `dead-letter-store.ts`'s `FileDeadLetterQueue` for a
+   * disk-backed implementation). A run still fails normally when a tool
+   * throws — queuing is a side channel for human triage/replay
+   * (`retryDeadLetter` from `@agent/harness`), not a substitute for that.
+   * Optional; with none configured, failures behave exactly as before.
+   */
+  deadLetterQueue?: DeadLetterQueue;
 }
 
 export class Runtime {
@@ -307,8 +318,12 @@ export class Runtime {
         // Idempotency: a completed tool call is replayed from the log, never re-run.
         if (callId in state.toolResults) return state.toolResults[callId] as R;
 
-        // Policy funnel: refuse any tool that is not on the allow-list.
+        // Policy funnel: refuse any tool that is not on the allow-list, then
+        // check its rate limit (allow-list is a static/cheap check, so it goes
+        // first; rate limiting is stateful and only worth paying for once the
+        // tool is actually permitted).
         this.enforceToolAllowed(tool, record);
+        this.enforceRateLimit(tool, record);
 
         record({ type: 'ToolCallRequested', callId, tool, args, ts: now() });
         try {
@@ -316,11 +331,37 @@ export class Runtime {
           record({ type: 'ToolCallSucceeded', callId, tool, result, ts: now() });
           return result as R;
         } catch (e) {
-          record({ type: 'ToolCallFailed', callId, tool, error: e instanceof Error ? e.message : String(e), ts: now() });
+          const message = e instanceof Error ? e.message : String(e);
+          record({ type: 'ToolCallFailed', callId, tool, error: message, ts: now() });
+          if (this.opts.deadLetterQueue) {
+            await this.enqueueDeadLetter(this.opts.deadLetterQueue, tool, args, message, callId);
+          }
           throw e;
         }
       },
     };
+  }
+
+  /**
+   * Durably record a tool call that failed even after reaching this funnel.
+   * Content-addressed by tool+args (via the SAME `deadLetterId` helper the
+   * harness's `DeadLetterToolInvoker` uses) so repeated failures of the exact
+   * same call upsert (incrementing `attempts`) instead of piling up duplicates.
+   */
+  private async enqueueDeadLetter(queue: DeadLetterQueue, tool: string, args: unknown, error: string, callId: string): Promise<void> {
+    const id = deadLetterId(tool, args);
+    const nowIso = now();
+    const prior = queue.get(id);
+    await queue.push({
+      id,
+      tool,
+      args,
+      error,
+      attempts: (prior?.attempts ?? 0) + 1,
+      firstFailedAt: prior?.firstFailedAt ?? nowIso,
+      lastFailedAt: nowIso,
+      key: callId,
+    });
   }
 
   /** Deny a tool that is not on the policy allow-list (records the denial first). */
@@ -328,6 +369,19 @@ export class Runtime {
     if (!this.policy) return;
     try {
       this.policy.checkTool(tool);
+    } catch (e) {
+      if (e instanceof PolicyViolationError) {
+        record({ type: 'PolicyDenied', scope: 'tool', target: tool, code: e.code, reason: e.message, ts: now() });
+      }
+      throw e;
+    }
+  }
+
+  /** Deny a tool call once its token bucket is exhausted (records the denial first). */
+  private enforceRateLimit(tool: string, record: (event: AgentEvent) => void): void {
+    if (!this.policy) return;
+    try {
+      this.policy.checkRateLimit(tool);
     } catch (e) {
       if (e instanceof PolicyViolationError) {
         record({ type: 'PolicyDenied', scope: 'tool', target: tool, code: e.code, reason: e.message, ts: now() });

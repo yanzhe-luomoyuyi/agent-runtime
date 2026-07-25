@@ -45,7 +45,7 @@ import { InMemoryTransport } from './mcp/transport.js';
 import { TokenCache } from './mcp/token-cache.js';
 import { CachingModelProvider, FileResponseCache } from './model/caching.js';
 import { MockModelProvider } from './model/provider.js';
-import { type Policy, resolveRedactions } from './policy.js';
+import { type Policy, type RateLimitRule, resolveRedactions } from './policy.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { Runtime } from './runtime.js';
 import { SessionManager, createConversationSummarizer, type HistoryMode, type SessionManagerOptions } from './session.js';
@@ -76,13 +76,14 @@ function loadPolicy(): Policy | undefined {
   if (!existsSync(path)) return undefined;
   try {
     const cfg = JSON.parse(readFileSync(path, 'utf8')) as {
-      policy?: { allowedTools?: string[]; maxCostUsd?: number; redactions?: string[] };
+      policy?: { allowedTools?: string[]; maxCostUsd?: number; redactions?: string[]; rateLimits?: Record<string, RateLimitRule> };
     };
     if (!cfg.policy) return undefined;
     return {
       allowedTools: cfg.policy.allowedTools,
       maxCostUsd: cfg.policy.maxCostUsd,
       redactions: cfg.policy.redactions ? resolveRedactions(cfg.policy.redactions) : undefined,
+      rateLimits: cfg.policy.rateLimits,
     };
   } catch {
     return undefined; // malformed config — run without a policy rather than crash

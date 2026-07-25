@@ -15,13 +15,53 @@
  * sub-agent's `keyPrefix`, so nested model/tool keys stay globally unique
  * (`t1:call_2:t1`, `t1:call_2:t1:s1`, …) and the whole tree replays
  * deterministically.
+ *
+ * ## Depth limit (recursion guard)
+ *
+ * Nothing stops a sub-agent's own toolset from including a `delegate` tool
+ * (its own, or another one built the same way) — that's what lets delegation
+ * nest at all. Left unchecked, a model that keeps deciding to delegate
+ * recurses until `maxTurns`/the token budget is exhausted at EVERY nesting
+ * level, which is slow, expensive, and easy to trigger by accident (a sub-
+ * agent whose instructions loosely resemble its parent's).
+ *
+ * Depth is tracked with `AsyncLocalStorage` rather than threaded through
+ * `CallOptions`/`keyPrefix`: it needs to follow the actual async call chain
+ * (parent `runAgent` → tool execution → nested `delegate` handler → nested
+ * `runAgent` → ...) regardless of how many independent `makeSubagentTool`
+ * instances are involved, and it must stay correctly isolated across
+ * concurrent, unrelated delegation chains in the same process — exactly the
+ * problem `AsyncLocalStorage` (the same primitive Node's own diagnostics
+ * channel / OpenTelemetry SDK use for context propagation) solves.
  */
+
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { CallOptions, ChatModel, JSONSchema, ToolInvoker, ToolSpec } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
 import { ContextManager } from '../context/manager.js';
 import { runAgent } from './loop.js';
+
+/** Default nested-delegation ceiling when `SubagentToolOptions.maxDepth` is unset. */
+const DEFAULT_MAX_DEPTH = 5;
+
+interface DelegationContext {
+  depth: number;
+}
+
+const delegationContext = new AsyncLocalStorage<DelegationContext>();
+
+/** Raised (and turned into an ordinary tool-error observation by the loop) when delegation nests past `maxDepth`. */
+export class DelegationDepthExceededError extends Error {
+  constructor(
+    readonly depth: number,
+    readonly maxDepth: number,
+  ) {
+    super(`Sub-agent delegation depth ${depth} exceeds maxDepth ${maxDepth} — refusing to delegate further (probable infinite recursion)`);
+    this.name = 'DelegationDepthExceededError';
+  }
+}
 
 export interface SubagentToolOptions {
   /** Tool name the parent uses to delegate. Default 'delegate'. */
@@ -48,6 +88,12 @@ export interface SubagentToolOptions {
    * `mapReduce` / `aggregateVotes` instead of concatenating raw text.
    */
   outputSchema?: JSONSchema;
+  /**
+   * Max nested `delegate()` depth before refusing further delegation (the
+   * refusal surfaces as a normal `ERROR: ...` tool observation fed back to the
+   * model, not a crash — see the module doc comment). Default 5.
+   */
+  maxDepth?: number;
 }
 
 export interface SubagentResult {
@@ -87,19 +133,27 @@ export function makeSubagentTool(options: SubagentToolOptions): SubagentTool {
   return {
     spec,
     run: async (args, opts) => {
+      const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
+      const depth = (delegationContext.getStore()?.depth ?? 0) + 1;
+      if (depth > maxDepth) {
+        throw new DelegationDepthExceededError(depth, maxDepth);
+      }
+
       const goal = isRecord(args) && typeof args.goal === 'string' ? args.goal : String(args ?? '');
       const prefix = opts?.key ? `${opts.key}:` : `${name}:`;
-      const result = await runAgent({
-        goal,
-        agent: options.agent,
-        model: options.model,
-        tools: options.tools,
-        maxTurns: options.maxTurns,
-        context: options.context,
-        systemPrompt: options.systemPrompt,
-        outputSchema: options.outputSchema,
-        keyPrefix: prefix,
-      });
+      const result = await delegationContext.run({ depth }, () =>
+        runAgent({
+          goal,
+          agent: options.agent,
+          model: options.model,
+          tools: options.tools,
+          maxTurns: options.maxTurns,
+          context: options.context,
+          systemPrompt: options.systemPrompt,
+          outputSchema: options.outputSchema,
+          keyPrefix: prefix,
+        }),
+      );
       let structured: unknown;
       if (options.outputSchema && result.finished) {
         try {

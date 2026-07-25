@@ -17,7 +17,23 @@ declare function setTimeout(fn: () => void, ms: number): unknown;
  *    service's suggested wait rather than guessing.
  *  - Structured error classification: checks HTTP status codes and error type
  *    fields before falling back to regex heuristics.
+ *
+ * `RetryingToolInvoker` wraps `withRetry` as a `ToolInvoker` DECORATOR (same
+ * pattern as `CompensatingToolInvoker` / `DeadLetterToolInvoker`), so tool
+ * calls — not just model calls — get transient-failure retry. Compose it
+ * INSIDE (closer to the base invoker than) a `DeadLetterToolInvoker`:
+ *
+ *   const tools = new DeadLetterToolInvoker(
+ *     new RetryingToolInvoker(baseTools, { retries: 2 }),
+ *     queue,
+ *   );
+ *
+ * so only a call that has already exhausted every retry attempt gets queued —
+ * a single transient blip is absorbed by the retry layer and never reaches
+ * the dead-letter queue at all.
  */
+
+import type { CallOptions, ToolInvoker, ToolSpec } from '@agent/contracts';
 
 /** Marker error tests (and callers) can throw to force the "transient" path. */
 export class TransientError extends Error {
@@ -111,6 +127,27 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       opts.onRetry?.(err, attempt, delay);
       await sleep(delay);
     }
+  }
+}
+
+/**
+ * `ToolInvoker` decorator: retries a failed call with `withRetry` before
+ * giving up. `list()` passes through unchanged; only `call()` is wrapped.
+ * See the module doc comment for how to compose this with
+ * `DeadLetterToolInvoker` so only exhausted failures get queued.
+ */
+export class RetryingToolInvoker implements ToolInvoker {
+  constructor(
+    private readonly inner: ToolInvoker,
+    private readonly opts: RetryOptions = {},
+  ) {}
+
+  list(): ToolSpec[] {
+    return this.inner.list();
+  }
+
+  call(name: string, args: unknown, callOpts?: CallOptions): Promise<unknown> {
+    return withRetry(() => this.inner.call(name, args, callOpts), this.opts);
   }
 }
 

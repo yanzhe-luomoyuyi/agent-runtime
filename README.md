@@ -162,7 +162,7 @@ flowchart LR
 
 | 模块 | 职责 |
 | --- | --- |
-| [eventlog.ts](durable-agent-runtime/src/eventlog.ts) | append-only；每个事件一个独占创建的文件（乐观并发）。 |
+| [eventlog.ts](durable-agent-runtime/src/eventlog.ts) | append-only；乐观并发（`wx` 独占创建）。**分级持久化**：`critical` 事件（会导致 resume 算错的状态转换）同步落盘，`relaxed` 事件（无状态转换，或可从静态 `WorkflowDef` 无损重算，如 `PhaseStarted`/`StepStarted`）先缓存、与下一个 critical 事件合并成一次写——真实工作流 benchmark 实测减少 ~49% 写入。 |
 | [reducer.ts](durable-agent-runtime/src/reducer.ts) | 纯函数 `(state, event) => state`，唯一构建状态的途径。 |
 | [runtime.ts](durable-agent-runtime/src/runtime.ts) | 驱动工作流、追加事件、从日志恢复，用确定性 `callId` 让工具调用幂等。 |
 | [workflow.ts](durable-agent-runtime/src/workflow.ts) | `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 契约——描述工作流长什么样。 |
@@ -170,7 +170,8 @@ flowchart LR
 | [model/provider.ts](durable-agent-runtime/src/model/provider.ts) · [model/caching.ts](durable-agent-runtime/src/model/caching.ts) | 可换的模型 provider + 内容寻址的响应缓存装饰器。 |
 | [pricing.ts](durable-agent-runtime/src/pricing.ts) | 配置驱动（`agent.config.json`）的 token 定价，供成本核算使用。 |
 | [tools/registry.ts](durable-agent-runtime/src/tools/registry.ts) | 遵循 MCP 规范的 `ToolDef` / `ToolRegistry`——本地工具和远程 MCP 工具在 runtime 眼里一模一样。 |
-| [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏）；拒绝操作记录为 `PolicyDenied` 事件，可观测、可 eval。 |
+| [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏 · 按工具 token-bucket 限流）；拒绝操作记录为 `PolicyDenied` 事件，可观测、可 eval。限流状态故意不事件源化（进程内存，重启重置）。 |
+| [dead-letter-store.ts](durable-agent-runtime/src/dead-letter-store.ts) | `FileDeadLetterQueue`：实现 `@agent/harness` 的 `DeadLetterQueue` 接口，工具调用最终失败时内容寻址记录，供人工复盘/`retryDeadLetter()` 重放。 |
 | [mcp/](durable-agent-runtime/src/mcp/index.ts) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
 | [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
 | [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |

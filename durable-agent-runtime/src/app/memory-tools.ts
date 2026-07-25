@@ -50,17 +50,24 @@ export function memoryToolDefs(store: MemoryStore, scope: string): ToolDef[] {
           limit: { type: 'integer', description: 'Max results. Default 5.' },
           kind: { type: 'string', enum: ['semantic', 'episodic', 'procedural'] },
           tags: { type: 'array', items: { type: 'string' } },
+          mode: {
+            type: 'string',
+            enum: ['lexical', 'semantic', 'hybrid'],
+            description:
+              'Ranking strategy. "lexical" matches exact terms (default). "semantic" tolerates paraphrasing/reordering via embeddings. "hybrid" combines both. Falls back to lexical if no embedding provider is configured.',
+          },
         },
         required: ['query'],
       },
       run: (args: unknown) => {
-        const a = (args ?? {}) as { query?: unknown; limit?: unknown; kind?: unknown; tags?: unknown };
+        const a = (args ?? {}) as { query?: unknown; limit?: unknown; kind?: unknown; tags?: unknown; mode?: unknown };
         if (typeof a.query !== 'string') return 'ERROR: memory_search requires a string "query".';
         const limit = typeof a.limit === 'number' && a.limit > 0 ? a.limit : 5;
         const kind = a.kind === 'semantic' || a.kind === 'episodic' || a.kind === 'procedural' ? a.kind : undefined;
         const tags = Array.isArray(a.tags) ? a.tags.filter((t): t is string => typeof t === 'string') : undefined;
+        const mode = a.mode === 'lexical' || a.mode === 'semantic' || a.mode === 'hybrid' ? a.mode : undefined;
         return store
-          .search(scope, a.query, { limit, kind, tags })
+          .search(scope, a.query, { limit, kind, tags, mode })
           .map((r) => ({ id: r.id, text: r.text, tags: r.tags, kind: r.kind }));
       },
     },

@@ -6,6 +6,9 @@
   "policy": {
     "allowedTools": ["getIssue", "searchCode"],
     "maxCostUsd": 0.01,
-    "redactions": ["email", "phone", "secret"]
+    "redactions": ["email", "phone", "secret"],
+    "rateLimits": {
+      "searchCode": { "capacity": 5, "refillPerSec": 1 }
+    }
   }
 }

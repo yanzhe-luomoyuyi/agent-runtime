@@ -57,11 +57,12 @@ ProtocolDecision =
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 瞬时重试 | `retry.ts` | 指数退避 + full-jitter，分层错误分类（HTTP status→type→regex），`Retry-After` 优先。✅ `retryBudget` 运行级熔断 |
+| 瞬时重试 | `retry.ts` | 指数退避 + full-jitter，分层错误分类（HTTP status→type→regex），`Retry-After` 优先。✅ `retryBudget` 运行级熔断。✅ `RetryingToolInvoker`：`ToolInvoker` 装饰器，把同一套重试逻辑用到工具调用（不只是模型调用） |
 | 循环检测 | `loop-detector.ts` | 滑动窗口 + 序列模式（A→B→A→B）+ per-tool limits |
 | 熔断器 | `circuit-breaker.ts` | closed→open→half_open 三态；仅 transient error 跳闸 |
 | 分级模型链 | `fallback.ts` | 按 tier 尝试（每 tier 独立 retry+breaker）+ escalation ladder，零侵入 `ChatModel` |
 | Saga 补偿 | `compensation.ts` | opt-in 装饰器，LIFO 回滚，best-effort / stopOnError |
+| 死信队列 | `dead-letter.ts` | `DeadLetterToolInvoker`（`ToolInvoker` 装饰器）+ `DeadLetterQueue` 接口 + `retryDeadLetter()`；内容寻址去重（同一 tool+args 重复失败 upsert `attempts` 而非堆叠）。持久化实现见 durable-agent-runtime 的 `FileDeadLetterQueue` |
 
 ### 工业界对照
 
@@ -72,10 +73,10 @@ ProtocolDecision =
 | Provider/Model Fallback | ✅ `createResilientModel` | 多 tier + escalation ladder |
 | Saga / Compensation | ✅ | LIFO 回滚（业界罕见） |
 | Loop 检测（序列模式） | ✅ 强于多数框架 | A→B→A→B 序列检测 |
+| Dead-Letter Queue | ✅ `DeadLetterToolInvoker` + `retryDeadLetter` | 组合在 `RetryingToolInvoker` 外层，只有耗尽重试的调用才入队；持久化版本见 runtime 的 `FileDeadLetterQueue` |
 | Hedged Requests | ❌ | 慢尾延迟并发请求 |
-| Token-bucket 限流 | ❌ | 主动限速 |
+| Token-bucket 限流（工具级 ToolInvoker） | ❌ | agent-harness 层暂无；runtime 的 `policy.ts` 已实现（按工具的进程内 token bucket，见 runtime-caching-and-policy.md） |
 | Activity Heartbeat + Timeout | ❌ | 长任务心跳 |
-| Dead-Letter Queue | ❌ | 死信人工介入 |
 
 ### 要点
 - "Retry 不够——需要 Circuit Breaker 防止对已挂服务持续打压，需要 Fallback 保证可用性，需要 Saga 回滚已提交副作用"
@@ -345,7 +346,7 @@ L5: 反思记忆化 + 跨 run 复用
 ### 本项目实现
 - 子 agent 封装为 tool：`delegate({goal: "sub-goal"})`
 - Durable key namespace 嵌套：父调用 key（如 `t1:p1`）作为子 loop 的 `keyPrefix` → 子 key 形如 `t1:p1:t1:s1`
-- ❌ 当前无深度限制：`delegate` 若出现在子 agent 的工具集里可无限递归，直到 `maxTurns`/token 预算耗尽才停
+- ✅ 深度限制：`AsyncLocalStorage` 跟踪跨异步调用链的真实嵌套深度（`maxDepth`，默认 5），超限抛 `DelegationDepthExceededError` —— 被 loop.ts 现有的 try/catch 自动转成普通 ERROR 工具观测反馈给模型，不需要特殊处理。选 `AsyncLocalStorage` 而非在 `CallOptions`/`keyPrefix` 里传参，是因为它能跨多个独立的 `makeSubagentTool` 实例、且能在并发的、互不相关的委派链之间保持隔离（同一进程内两条并发链不会互相污染 depth）
 
 ### 工业界 & 前沿
 | 做法 | 说明 |

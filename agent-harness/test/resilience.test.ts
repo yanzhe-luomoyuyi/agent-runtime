@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CircuitBreaker, CircuitOpenError } from '../src/recovery/circuit-breaker.js';
 import { CompensatingToolInvoker, CompensationError } from '../src/recovery/compensation.js';
+import { DeadLetterToolInvoker, InMemoryDeadLetterQueue, retryDeadLetter } from '../src/recovery/dead-letter.js';
 import { createResilientModel } from '../src/recovery/fallback.js';
-import { HttpError, TransientError } from '../src/recovery/retry.js';
+import { HttpError, RetryingToolInvoker, TransientError } from '../src/recovery/retry.js';
 import { finalResponse, MockToolInvoker, makeTool } from '../src/testkit/index.js';
 
 const noSleep = () => Promise.resolve();
@@ -278,5 +279,154 @@ describe('CompensatingToolInvoker', () => {
     const outcomes = await tools.compensate();
     expect(outcomes).toEqual([]);
     expect(undo).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DeadLetterToolInvoker (durable last-resort for exhausted failures)
+// ---------------------------------------------------------------------------
+describe('DeadLetterToolInvoker', () => {
+  function flakyTools(failTimes: number) {
+    let calls = 0;
+    return new MockToolInvoker([
+      makeTool('flaky', '', { type: 'object' }, () => {
+        calls++;
+        if (calls <= failTimes) throw new Error(`boom #${calls}`);
+        return { ok: true };
+      }),
+      makeTool('good', '', { type: 'object' }, () => 'fine'),
+    ]);
+  }
+
+  it('rethrows the original error so the loop still turns it into a normal ERROR observation', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const tools = new DeadLetterToolInvoker(flakyTools(99), queue);
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow('boom #1');
+  });
+
+  it('queues a durable record of the failed call, keyed by tool+args', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const tools = new DeadLetterToolInvoker(flakyTools(99), queue);
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow();
+
+    const letters = queue.list();
+    expect(letters).toHaveLength(1);
+    expect(letters[0]).toMatchObject({ tool: 'flaky', args: { x: 1 }, error: 'boom #1', attempts: 1 });
+  });
+
+  it('does not queue a call that succeeds', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const tools = new DeadLetterToolInvoker(flakyTools(0), queue);
+    await tools.call('good', {});
+    expect(queue.list()).toEqual([]);
+  });
+
+  it('dedupes repeated failures of the identical call by incrementing `attempts` instead of duplicating', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const tools = new DeadLetterToolInvoker(flakyTools(99), queue);
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow();
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow();
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow();
+
+    const letters = queue.list();
+    expect(letters).toHaveLength(1);
+    expect(letters[0]!.attempts).toBe(3);
+    expect(letters[0]!.firstFailedAt).toBe(letters[0]!.firstFailedAt); // unchanged across requeues
+  });
+
+  it('different args for the same tool get independent dead letters', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const tools = new DeadLetterToolInvoker(flakyTools(99), queue);
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow();
+    await expect(tools.call('flaky', { x: 2 })).rejects.toThrow();
+    expect(queue.list()).toHaveLength(2);
+  });
+
+  it('shouldQueue lets the caller exclude certain failures (e.g. bad-request errors) from the queue', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const tools = new DeadLetterToolInvoker(flakyTools(99), queue, {
+      shouldQueue: (err) => !(err instanceof Error && err.message.includes('boom')),
+    });
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow('boom #1');
+    expect(queue.list()).toEqual([]); // excluded by the predicate
+  });
+
+  it('fires onQueued for observability', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const seen: string[] = [];
+    const tools = new DeadLetterToolInvoker(flakyTools(99), queue, { onQueued: (l) => seen.push(l.id) });
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow();
+    expect(seen).toHaveLength(1);
+  });
+
+  it('retryDeadLetter replays a queued call and removes it from the queue on success', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const inner = flakyTools(1); // fails once, then succeeds
+    const tools = new DeadLetterToolInvoker(inner, queue);
+
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow('boom #1');
+    const [letter] = queue.list();
+    expect(letter).toBeDefined();
+
+    // A human fixes the underlying issue, then replays through the ORIGINAL (undecorated) invoker.
+    const result = await retryDeadLetter(queue, inner, letter!.id);
+    expect(result).toEqual({ ok: true });
+    expect(queue.list()).toEqual([]); // resolved, removed from the queue
+  });
+
+  it('retryDeadLetter leaves the letter queued if the replay fails again', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const inner = flakyTools(99); // never succeeds
+    const tools = new DeadLetterToolInvoker(inner, queue);
+    await expect(tools.call('flaky', { x: 1 })).rejects.toThrow();
+    const [letter] = queue.list();
+
+    await expect(retryDeadLetter(queue, inner, letter!.id)).rejects.toThrow();
+    expect(queue.list()).toHaveLength(1); // still there
+  });
+
+  it('retryDeadLetter throws for an unknown id', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    await expect(retryDeadLetter(queue, flakyTools(0), 'no-such-id')).rejects.toThrow(/no dead letter/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RetryingToolInvoker + DeadLetterToolInvoker composed (the intended layering)
+// ---------------------------------------------------------------------------
+describe('RetryingToolInvoker composed with DeadLetterToolInvoker', () => {
+  // Distinct from the plain-Error `flakyTools` helper above: withRetry only
+  // retries errors `isTransientError` classifies as such, so this needs a
+  // REAL TransientError to prove the retry layer actually engages.
+  function flakyTransientTools(failTimes: number) {
+    let calls = 0;
+    return new MockToolInvoker([
+      makeTool('flaky', '', { type: 'object' }, () => {
+        calls++;
+        if (calls <= failTimes) throw new TransientError(`boom #${calls}`);
+        return { ok: true };
+      }),
+    ]);
+  }
+
+  it('a transient blip that succeeds on retry NEVER reaches the dead-letter queue', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const tools = new DeadLetterToolInvoker(new RetryingToolInvoker(flakyTransientTools(2), { retries: 2, sleep: async () => {} }), queue);
+
+    const result = await tools.call('flaky', {});
+
+    expect(result).toEqual({ ok: true });
+    expect(queue.list()).toEqual([]); // absorbed entirely by the retry layer
+  });
+
+  it('a call that exhausts every retry attempt lands in the dead-letter queue exactly once', async () => {
+    const queue = new InMemoryDeadLetterQueue();
+    const tools = new DeadLetterToolInvoker(new RetryingToolInvoker(flakyTransientTools(99), { retries: 2, sleep: async () => {} }), queue);
+
+    await expect(tools.call('flaky', {})).rejects.toThrow();
+
+    const letters = queue.list();
+    expect(letters).toHaveLength(1);
+    expect(letters[0]!.attempts).toBe(1); // one DLQ entry, even though retry made 3 underlying attempts
   });
 });
