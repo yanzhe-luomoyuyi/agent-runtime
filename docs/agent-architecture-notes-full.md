@@ -124,7 +124,7 @@ ProtocolDecision =
 | 自动压缩阈值 | ✅ | 0.85 触发，留一 turn 余量 |
 | 原子 call/response 淘汰 | ✅ | 按 unit，不按单条 message（修 API 拆对风险） |
 | 近期 pin + 重要性 | ✅ | recency 硬约束（pinned window）+ type 启发式（grown 段）；不做连续时间衰减 |
-| 压缩/淘汰决策可观测 | ❌ | 下一步：structured decision + TraceCollector + ablation fixture |
+| 压缩/淘汰决策可观测 | ✅ | `assembleDetailed` / `compactIfNeededDetailed` → `TraceCollector`；ablation 见 `test/context-ablation.test.ts`；对照文档 `docs/observability-trace-and-eval.md` |
 | **LLMLingua-2 / LongLLMLingua** | ❌ | 小模型评估每条消息信息贡献度 → 按贡献裁剪，非按位置 |
 | **LLM 自摘要用便宜模型** | 🟡 | 可换 GPT-4o-mini 降成本 |
 | **Cognition 结构化交接** | ❌ | 固定 schema 传递，不摘要（更抗信息丢失） |

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { ContextManager } from '../src/context/manager.js';
 import { runAgent } from '../src/control/loop.js';
 import {
   MockToolInvoker,
@@ -10,6 +11,7 @@ import {
   toolCall,
   toolCallResponse,
 } from '../src/testkit/index.js';
+import { FALLBACK_PRICING, TraceCollector } from '../src/tracing/collector.js';
 
 const getIssue = makeTool(
   'getIssue',
@@ -38,6 +40,31 @@ describe('agent loop', () => {
     expect(res.turns).toBe(3);
     expect(res.toolsUsed).toEqual(['getIssue', 'searchCode']);
     expect(res.answer).toContain('login.ts');
+  });
+
+  it('records assemble/compact decisions on the trace collector', async () => {
+    const tools = new MockToolInvoker([getIssue]);
+    const model = new ScriptedChatModel([finalResponse('done')]);
+    const trace = new TraceCollector(FALLBACK_PRICING);
+    await runAgent({
+      goal: 'x',
+      model,
+      tools,
+      trace,
+      // Tiny budget so assemble is forced to do real work (not passthrough).
+      context: new ContextManager({
+        maxPromptTokens: 40,
+        outputReserveTokens: 0,
+        keepRecentMessages: 2,
+        goalProtected: true,
+        importanceScoring: true,
+      }),
+    });
+    const snap = trace.snapshot(1);
+    expect(snap.turns.length).toBeGreaterThanOrEqual(1);
+    expect(snap.turns[0]!.context?.compact).toBeDefined();
+    expect(snap.turns[0]!.context?.assemble).toBeDefined();
+    expect(snap.turns[0]!.context?.compact?.reason).toBe('no_summarizer');
   });
 
   it('passes deterministic durable keys to the model and tools', async () => {

@@ -73,14 +73,17 @@
 | `mcp/token-cache.ts` | 共享 token 缓存，多 server 复用认证 |
 
 ### 记忆 & 可观测
+> 两套 trace + eval 字段对照见 [`observability-trace-and-eval.md`](./observability-trace-and-eval.md)。
+
 | 模块 | 一句话 |
 |------|--------|
 | `memory/store.ts` | 跨会话持久记忆：分 scope + 内容哈希幂等写；FileMemoryStore 原子写；`mode: lexical/semantic/hybrid` 可选检索策略 |
 | `memory/lexical.ts` | 零依赖 mini-BM25 词法打分（含 常见 CJK），确定性检索 |
 | `memory/embedding.ts` | `EmbeddingProvider` 可插拔接口 + `HashingEmbeddingProvider`（feature-hashing 词袋向量，零依赖、确定性）+ `reciprocalRankFusion`（RRF 混合检索） |
-| `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟汇总 |
+| harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策 / token 估价（非 event-log） |
+| `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟/replay/policy/cache 汇总 |
 | `otel.ts` | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出 |
-| `eval.ts` | 可组合打分器（结果性 + 过程性/轨迹 + 人机协同 + 护栏回归）+ runner；`Scenario.harness`/`approver` 可将场景改路由到 @agent/harness 循环 |
+| `eval.ts` | 可组合打分器（结果性 + 过程性/轨迹 + 人机协同 + 护栏回归）+ runner；读 runtime Trace + RunState；`Scenario.harness`/`approver` 可改路由到 harness 循环 |
 
 ### 桥接
 | 模块 | 一句话 |

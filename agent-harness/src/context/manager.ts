@@ -125,6 +125,51 @@ export interface ContextManagerOptions {
   estimateTokens?: (text: string) => number;
 }
 
+/**
+ * Auditable outcome of one `assemble` call. Suitable for TraceCollector /
+ * ablation fixtures — answers "what was kept, what was folded, why".
+ */
+export interface AssembleDecision {
+  outcome: 'passthrough' | 'assembled';
+  inputTokens: number;
+  outputTokens: number;
+  availableBudget: number;
+  keptMessages: number;
+  summarizedMessages: number;
+  /** Subset of summarized that were dropped by hard-cap trim (not merely older-than-cut). */
+  hardCapEvictedMessages: number;
+  pinnedUnits: number;
+  grownUnitsAdmitted: number;
+  hardCapTrimmed: boolean;
+  importanceScoring: boolean;
+  /** Machine-readable tags, e.g. `under_budget`, `hard_cap_trim`, `pinned_recent`. */
+  reasons: string[];
+}
+
+/**
+ * Auditable outcome of one `compactIfNeeded` call.
+ */
+export interface CompactDecision {
+  outcome: 'noop' | 'compacted';
+  reason: 'no_summarizer' | 'under_threshold' | 'nothing_to_fold' | 'no_budget' | 'compacted';
+  inputTokens: number;
+  outputTokens: number;
+  protectedUnits: number;
+  summarizedMessages: number;
+  /** Durable model key when a summary was produced. */
+  key?: string;
+}
+
+export interface AssembleResult {
+  messages: Message[];
+  decision: AssembleDecision;
+}
+
+export interface CompactResult {
+  messages: Message[];
+  decision: CompactDecision;
+}
+
 // ── Importance scores (0–100) ──────────────────────────────────────
 
 const TOOL_ERROR_PATTERN = /(ERROR|FAILED|DENIED|error|failed|denied)/;
@@ -232,6 +277,15 @@ export class ContextManager {
 
   /**
    * Produce the message list to actually send to the model.
+   * Prefer `assembleDetailed` when you need an auditable decision record.
+   */
+  assemble(messages: Message[]): Message[] {
+    return this.assembleDetailed(messages).messages;
+  }
+
+  /**
+   * Same as `assemble`, plus a structured `AssembleDecision` for tracing /
+   * ablation (kept vs summarized counts, pin/hard-cap flags, reason tags).
    *
    * Strategy (cache-friendly ordering, HARD cap):
    *   1. Reserve output + tool-def tokens from the budget.
@@ -248,11 +302,49 @@ export class ContextManager {
    *   6. Everything older + anything trimmed is compacted into a summary.
    *   7. Final order: [system…, summary, goal, …recent dynamic]
    */
-  assemble(messages: Message[]): Message[] {
+  assembleDetailed(messages: Message[]): AssembleResult {
     const availableBudget = this.maxPromptTokens - this.outputReserve - this.toolDefReserve;
-    if (availableBudget <= 0) return [...messages]; // degenerate — let the caller deal
+    const inputTokens = this.countTokens(messages);
 
-    if (this.countTokens(messages) <= availableBudget) return [...messages];
+    if (availableBudget <= 0) {
+      return {
+        messages: [...messages],
+        decision: {
+          outcome: 'passthrough',
+          inputTokens,
+          outputTokens: inputTokens,
+          availableBudget,
+          keptMessages: messages.length,
+          summarizedMessages: 0,
+          hardCapEvictedMessages: 0,
+          pinnedUnits: 0,
+          grownUnitsAdmitted: 0,
+          hardCapTrimmed: false,
+          importanceScoring: this.importanceScoring,
+          reasons: ['no_budget'],
+        },
+      };
+    }
+
+    if (inputTokens <= availableBudget) {
+      return {
+        messages: [...messages],
+        decision: {
+          outcome: 'passthrough',
+          inputTokens,
+          outputTokens: inputTokens,
+          availableBudget,
+          keptMessages: messages.length,
+          summarizedMessages: 0,
+          hardCapEvictedMessages: 0,
+          pinnedUnits: 0,
+          grownUnitsAdmitted: 0,
+          hardCapTrimmed: false,
+          importanceScoring: this.importanceScoring,
+          reasons: ['under_budget'],
+        },
+      };
+    }
 
     // Separate system, goal, and the rest.
     const system = messages.filter((m) => m.role === 'system');
@@ -299,7 +391,8 @@ export class ContextManager {
     const pinnedUnits = units.slice(pinnedUnitStart);
     const olderFromScan = flattenUnits(units.slice(0, unitStart));
     const tailBudget = availableBudget - mandatoryTokens;
-    const { kept, evicted } = this.importanceScoring && budgetUsed > availableBudget
+    const hardCapTrimmed = this.importanceScoring && budgetUsed > availableBudget;
+    const { kept, evicted } = hardCapTrimmed
       ? trimPreservingPinned(grownUnits, pinnedUnits, tailBudget, this.tokenizer, messageImportance)
       : { kept: flattenUnits([...grownUnits, ...pinnedUnits]), evicted: [] as Message[] };
 
@@ -315,7 +408,29 @@ export class ContextManager {
     }
     out.push(...goal);
     out.push(...kept);
-    return out;
+
+    const reasons = ['over_budget', 'pinned_recent'];
+    if (this.importanceScoring) reasons.push('importance_growth');
+    if (hardCapTrimmed) reasons.push('hard_cap_trim');
+    if (older.length > 0) reasons.push('heuristic_summary');
+
+    return {
+      messages: out,
+      decision: {
+        outcome: 'assembled',
+        inputTokens,
+        outputTokens: this.countTokens(out),
+        availableBudget,
+        keptMessages: kept.length + goal.length,
+        summarizedMessages: older.length,
+        hardCapEvictedMessages: evicted.length,
+        pinnedUnits: pinnedUnits.length,
+        grownUnitsAdmitted: grownUnits.length,
+        hardCapTrimmed,
+        importanceScoring: this.importanceScoring,
+        reasons,
+      },
+    };
   }
 
   /** Truncate an oversized tool observation, noting how much was dropped. */
@@ -327,32 +442,68 @@ export class ContextManager {
 
   /**
    * Proactive, stateful, model-driven compaction (opt-in via `modelSummarize`).
-   *
-   * Unlike `assemble` — which is a synchronous, per-turn, hard-cap safety net
-   * that recomputes a cheap heuristic view every call — `compactIfNeeded`
-   * REPLACES history once: when usage crosses `compactionThreshold`, it folds
-   * the older messages into a single high-quality LLM summary and returns a new,
-   * shorter transcript that the caller should keep using. Because compaction is
-   * done once and written back, subsequent turns don't re-summarize.
-   *
-   * ## Durable replay
-   *
-   * The summary is produced by the configured `modelSummarize`, which forwards
-   * the deterministic `key` (`<prefix>compact-t<turn>`) to the underlying model.
-   * On a durable resume the host replays the recorded summary for that key — no
-   * new LLM call — so the non-deterministic summary becomes deterministic once
-   * recorded. The trigger itself is a pure token-count comparison, so it fires at
-   * the same turn on replay and the key lines up.
-   *
-   * No-op (returns `messages` unchanged) when `modelSummarize` is unset, when
-   * under threshold, or when there is nothing older to fold.
+   * Prefer `compactIfNeededDetailed` when you need an auditable decision record.
    */
   async compactIfNeeded(messages: Message[], opts: { keyPrefix?: string; turn: number }): Promise<Message[]> {
-    if (!this.modelSummarize) return messages;
+    return (await this.compactIfNeededDetailed(messages, opts)).messages;
+  }
+
+  /**
+   * Same as `compactIfNeeded`, plus a structured `CompactDecision`.
+   *
+   * Unlike `assemble` — a synchronous hard-cap safety net — this REPLACES
+   * history once when usage crosses `compactionThreshold`. Durable hosts
+   * replay the summary via the deterministic `key`.
+   *
+   * No-op when `modelSummarize` is unset, under threshold, or nothing to fold.
+   */
+  async compactIfNeededDetailed(
+    messages: Message[],
+    opts: { keyPrefix?: string; turn: number },
+  ): Promise<CompactResult> {
+    const inputTokens = this.countTokens(messages);
+
+    if (!this.modelSummarize) {
+      return {
+        messages,
+        decision: {
+          outcome: 'noop',
+          reason: 'no_summarizer',
+          inputTokens,
+          outputTokens: inputTokens,
+          protectedUnits: 0,
+          summarizedMessages: 0,
+        },
+      };
+    }
 
     const availableBudget = this.maxPromptTokens - this.outputReserve - this.toolDefReserve;
-    if (availableBudget <= 0) return messages;
-    if (this.countTokens(messages) < this.compactionThreshold * availableBudget) return messages;
+    if (availableBudget <= 0) {
+      return {
+        messages,
+        decision: {
+          outcome: 'noop',
+          reason: 'no_budget',
+          inputTokens,
+          outputTokens: inputTokens,
+          protectedUnits: 0,
+          summarizedMessages: 0,
+        },
+      };
+    }
+    if (inputTokens < this.compactionThreshold * availableBudget) {
+      return {
+        messages,
+        decision: {
+          outcome: 'noop',
+          reason: 'under_threshold',
+          inputTokens,
+          outputTokens: inputTokens,
+          protectedUnits: 0,
+          summarizedMessages: 0,
+        },
+      };
+    }
 
     // Split system messages into real instructions (kept forever) and any
     // PRIOR compaction summary. The prior summary is folded back into
@@ -393,18 +544,42 @@ export class ContextManager {
       ...priorSummaries,
       ...flattenUnits(candidateOlderUnits).filter((m) => !protectedSet.has(m)),
     ];
-    if (older.length === 0) return messages;
+    if (older.length === 0) {
+      return {
+        messages,
+        decision: {
+          outcome: 'noop',
+          reason: 'nothing_to_fold',
+          inputTokens,
+          outputTokens: inputTokens,
+          protectedUnits: protectedOlderUnits.length,
+          summarizedMessages: 0,
+        },
+      };
+    }
 
     const recentSet = new Set([...protectedSet, ...flattenUnits(positionalRecentUnits)]);
     const recent = rest.filter((m) => recentSet.has(m));
 
     const key = `${opts.keyPrefix ?? ''}compact-t${opts.turn}`;
-    const summary = await this.modelSummarize(older, { key });
+    const summary = await this.modelSummarize!(older, { key });
     const summaryMsg: Message = {
       role: 'system',
       content: `${SUMMARY_PREFIX} ${older.length} earlier message(s)]\n${summary}`,
     };
-    return [...system, summaryMsg, ...goal, ...recent];
+    const out = [...system, summaryMsg, ...goal, ...recent];
+    return {
+      messages: out,
+      decision: {
+        outcome: 'compacted',
+        reason: 'compacted',
+        inputTokens,
+        outputTokens: this.countTokens(out),
+        protectedUnits: protectedOlderUnits.length,
+        summarizedMessages: older.length,
+        key,
+      },
+    };
   }
 
   /**

@@ -112,6 +112,40 @@ describe('TraceCollector', () => {
     expect(trace.turns[0]!.model.usage).toBeUndefined();
     expect(trace.turns[0]!.tools[0]!.args).toBeUndefined();
   });
+
+  it('attaches buffered assemble/compact decisions to the turn', () => {
+    const t = new TraceCollector(FALLBACK_PRICING);
+    t.startTurn(1);
+    t.recordCompact({
+      outcome: 'noop',
+      reason: 'no_summarizer',
+      inputTokens: 200,
+      outputTokens: 200,
+      protectedUnits: 0,
+      summarizedMessages: 0,
+    });
+    t.recordAssemble({
+      outcome: 'assembled',
+      inputTokens: 200,
+      outputTokens: 80,
+      availableBudget: 100,
+      keptMessages: 3,
+      summarizedMessages: 4,
+      hardCapEvictedMessages: 1,
+      pinnedUnits: 1,
+      grownUnitsAdmitted: 2,
+      hardCapTrimmed: true,
+      importanceScoring: true,
+      reasons: ['over_budget', 'pinned_recent', 'hard_cap_trim'],
+    });
+    t.startModelCall();
+    t.endModelCall({ promptTokens: 80, completionTokens: 10 });
+
+    const turn = t.snapshot(1000).turns[0]!;
+    expect(turn.context?.compact?.reason).toBe('no_summarizer');
+    expect(turn.context?.assemble?.hardCapTrimmed).toBe(true);
+    expect(turn.context?.assemble?.reasons).toContain('pinned_recent');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -130,6 +164,31 @@ describe('formatTraceReport', () => {
     expect(report).toContain('Agent Trace Report');
     expect(report).toContain('Token Economics');
     expect(report).toContain('search');
+  });
+
+  it('includes context decision lines when present', () => {
+    const t = new TraceCollector(FALLBACK_PRICING);
+    t.startTurn(1);
+    t.recordAssemble({
+      outcome: 'passthrough',
+      inputTokens: 10,
+      outputTokens: 10,
+      availableBudget: 1000,
+      keptMessages: 2,
+      summarizedMessages: 0,
+      hardCapEvictedMessages: 0,
+      pinnedUnits: 0,
+      grownUnitsAdmitted: 0,
+      hardCapTrimmed: false,
+      importanceScoring: true,
+      reasons: ['under_budget'],
+    });
+    t.startModelCall();
+    t.endModelCall({ promptTokens: 10, completionTokens: 5 });
+
+    const report = formatTraceReport(t.snapshot(1000));
+    expect(report).toContain('ctx assemble passthrough');
+    expect(report).toContain('under_budget');
   });
 });
 

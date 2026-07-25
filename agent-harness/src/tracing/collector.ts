@@ -12,9 +12,12 @@
  *  - Token tracking per model call (prompt / completion / cached → cost).
  *  - Pluggable pricing model so cost estimates stay accurate per provider.
  *  - Decision trace: what tool was called + its arguments.
+ *  - Context decisions: assemble / compactIfNeeded keep·evict·summarize audit.
  *  - `formatTraceReport()` for human-readable summaries.
  *  - `compareTraces()` for A/B / eval comparison.
  */
+
+import type { AssembleDecision, CompactDecision } from '../context/manager.js';
 
 // ── Pricing ────────────────────────────────────────────────────────
 
@@ -90,10 +93,18 @@ export interface ToolCallTrace {
   error?: string;
 }
 
+/** Context-layer decisions recorded for this turn (before the model call). */
+export interface ContextTurnTrace {
+  assemble?: AssembleDecision;
+  compact?: CompactDecision;
+}
+
 export interface TurnTrace {
   turn: number;
   model: ModelCallTrace;
   tools: ToolCallTrace[];
+  /** Present when the loop recorded assemble / compact decisions this turn. */
+  context?: ContextTurnTrace;
 }
 
 export interface AgentTrace {
@@ -125,6 +136,8 @@ export class TraceCollector {
   private retryCount = 0;
   private retriesThisCall = 0;
   private pricing: PricingModel;
+  /** Buffered until `endModelCall` / `endModelCallError` creates the turn row. */
+  private pendingContext: ContextTurnTrace | undefined;
 
   // Accumulators for token economics (separate from turn-level records so
   // a failed model call still contributes to the run-level summary).
@@ -145,11 +158,28 @@ export class TraceCollector {
 
   startTurn(turn: number): void {
     this.currentTurn = turn;
+    this.pendingContext = undefined;
+  }
+
+  /** Record an `assemble` / `assembleDetailed` decision for the current turn. */
+  recordAssemble(decision: AssembleDecision): void {
+    this.pendingContext = { ...this.pendingContext, assemble: decision };
+  }
+
+  /** Record a `compactIfNeeded` / `compactIfNeededDetailed` decision. */
+  recordCompact(decision: CompactDecision): void {
+    this.pendingContext = { ...this.pendingContext, compact: decision };
   }
 
   startModelCall(): void {
     this.modelStart = Date.now();
     this.retriesThisCall = 0;
+  }
+
+  private takePendingContext(): ContextTurnTrace | undefined {
+    const ctx = this.pendingContext;
+    this.pendingContext = undefined;
+    return ctx;
   }
 
   /**
@@ -174,19 +204,23 @@ export class TraceCollector {
       this.totalCachedPromptTokens += tokenUsage.cachedPromptTokens;
     }
 
+    const context = this.takePendingContext();
     this.turns.push({
       turn: this.currentTurn,
       model: { turn: this.currentTurn, retries: this.retriesThisCall, ok: true, durationMs, usage: tokenUsage },
       tools: [],
+      ...(context ? { context } : {}),
     });
   }
 
   endModelCallError(error: string): void {
     const durationMs = Date.now() - this.modelStart;
+    const context = this.takePendingContext();
     this.turns.push({
       turn: this.currentTurn,
       model: { turn: this.currentTurn, retries: this.retriesThisCall, ok: false, durationMs, error },
       tools: [],
+      ...(context ? { context } : {}),
     });
   }
 
@@ -267,6 +301,26 @@ export function formatTraceReport(trace: AgentTrace): string {
       ? ` $${turn.model.usage.costUsd.toFixed(4)}`
       : '';
     lines.push(`  Turn ${String(turn.turn).padStart(2)}  model ${modelStatus}  ${turn.model.durationMs}ms${modelCost}  (${turn.model.retries} retries)`);
+
+    if (turn.context?.compact) {
+      const c = turn.context.compact;
+      lines.push(
+        `         ctx compact ${c.outcome}/${c.reason}` +
+          `  in=${c.inputTokens} out=${c.outputTokens}` +
+          `  summarized=${c.summarizedMessages} protectedUnits=${c.protectedUnits}` +
+          (c.key ? `  key=${c.key}` : ''),
+      );
+    }
+    if (turn.context?.assemble) {
+      const a = turn.context.assemble;
+      lines.push(
+        `         ctx assemble ${a.outcome}` +
+          `  in=${a.inputTokens} out=${a.outputTokens}/${a.availableBudget}` +
+          `  kept=${a.keptMessages} summarized=${a.summarizedMessages}` +
+          (a.hardCapTrimmed ? '  hardCap' : '') +
+          `  [${a.reasons.join(',')}]`,
+      );
+    }
 
     for (const tc of turn.tools) {
       const status = tc.ok ? '✓' : '✗';

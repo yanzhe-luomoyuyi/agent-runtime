@@ -274,9 +274,13 @@ function errorHandlerCtx(st: LoopState, goal: string, turns: number, extra?: Par
 
 // ── Shared helpers ───────────────────────────────────────────────────
 
-async function _prepareTurn(st: LoopState, turn: number): Promise<Message[]> {
-  st.convo = await st.context.compactIfNeeded(st.convo, { keyPrefix: st.prefix, turn });
-  return st.context.assemble(st.convo);
+async function _prepareTurn(st: LoopState, turn: number, trace?: TraceCollector): Promise<Message[]> {
+  const compacted = await st.context.compactIfNeededDetailed(st.convo, { keyPrefix: st.prefix, turn });
+  st.convo = compacted.messages;
+  trace?.recordCompact(compacted.decision);
+  const assembled = st.context.assembleDetailed(st.convo);
+  trace?.recordAssemble(assembled.decision);
+  return assembled.messages;
 }
 
 async function _callModelBatch(st: LoopState, assembled: Message[], turn: number): Promise<ChatResponse> {
@@ -427,7 +431,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
   for (let turn = 1; turn <= st.maxTurns; turn++) {
     opts.hooks?.onTurnStart?.(turn);
     opts.trace?.startTurn(turn);
-    const assembled = await _prepareTurn(st, turn);
+    const assembled = await _prepareTurn(st, turn, opts.trace);
 
     opts.hooks?.onModelStart?.(turn);
     opts.trace?.startModelCall();
@@ -491,7 +495,7 @@ export async function* runAgentStreamed(
     yield { type: 'turn_start', turn };
     opts.hooks?.onTurnStart?.(turn);
     opts.trace?.startTurn(turn);
-    const assembled = await _prepareTurn(st, turn);
+    const assembled = await _prepareTurn(st, turn, opts.trace);
 
     opts.hooks?.onModelStart?.(turn);
     opts.trace?.startModelCall();
