@@ -29,6 +29,7 @@ export function skillToolDefs(skills: SkillSpec[]): ManagedToolDef[] {
           name: s.name,
           description: s.description,
           tools: s.tools,
+          corpusId: s.corpusId,
           hasReferences: Boolean(s.references && Object.keys(s.references).length > 0),
         })),
     },
@@ -70,6 +71,7 @@ export function skillToolDefs(skills: SkillSpec[]): ManagedToolDef[] {
           description: skill.description,
           body: skill.body,
           tools: skill.tools,
+          corpusId: skill.corpusId,
           references: skill.references ? Object.keys(skill.references) : undefined,
         };
       },

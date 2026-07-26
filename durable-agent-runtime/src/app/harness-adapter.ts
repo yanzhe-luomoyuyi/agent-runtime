@@ -41,10 +41,12 @@ import {
 } from '@agent/harness';
 
 import {
+  collectSkillCorpora,
   countDocumentSearchesInState,
   documentSearchBudgetExhaustedMessage,
   exposeRetrievalToolsToModel,
   resolveRetrievalPolicy,
+  resolveRunCorpusId,
   RetrievalBudget,
   systemRetrieveOnce,
   wantsSystemRetrieve,
@@ -188,9 +190,14 @@ export interface HarnessWorkflowOptions {
    * Query-time RAG. Default strategy is `once` (system retrieves before the
    * loop). Prefer registering `document_search` on the ToolRegistry so the
    * read is event-logged; otherwise pass `retriever` for a direct search.
+   *
+   * `corpusId` may be omitted when a skill declares `SkillSpec.corpusId`
+   * (first skill corpus wins). `once_rewrite` rewrites the goal via a keyed
+   * `callModel` then searches once with the rewritten query.
    */
   retrieval?: {
-    corpusId: string;
+    /** Default corpus; optional if skills provide corpusId. */
+    corpusId?: string;
     policy?: RetrievalPolicy;
     /** Used when `document_search` is not registered on the run's tools. */
     retriever?: Retriever;
@@ -249,7 +256,7 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
               }
 
               const retrievalHits = opts.retrieval
-                ? await systemRetrieveForStep(ctx, opts.retrieval, retrievalPolicy)
+                ? await systemRetrieveForStep(ctx, opts.retrieval, retrievalPolicy, opts.agent?.skills)
                 : undefined;
 
               return runAgent({
@@ -282,32 +289,51 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
  * Retriever when the tool is not registered (unit / non-durable hosts).
  * Counts against the same maxRetrieves budget as agentic searches (via event
  * log when using the tool, or RetrievalBudget when using a direct retriever).
+ *
+ * `once_rewrite`: keyed model rewrite of the goal, then a single search.
  */
 async function systemRetrieveForStep(
   ctx: StepContext,
   retrieval: NonNullable<HarnessWorkflowOptions['retrieval']>,
   policy: ResolvedRetrievalPolicy,
+  skills: SkillSpec[] | undefined,
 ): Promise<RetrievalHit[] | undefined> {
   if (!wantsSystemRetrieve(policy)) return undefined;
-  if (policy.corpora && !policy.corpora.includes(retrieval.corpusId)) return undefined;
+
+  const skillCorpora = collectSkillCorpora(skills);
+  const allowed = policy.corpora ?? (skillCorpora.length > 0 ? skillCorpora : undefined);
+  let corpusId: string;
+  try {
+    corpusId = resolveRunCorpusId({
+      corpusId: retrieval.corpusId,
+      skills,
+      allowedCorpora: allowed,
+    });
+  } catch {
+    return undefined;
+  }
+
+  let query = ctx.input.issue;
+  if (policy.mode === 'once_rewrite') {
+    query = await rewriteQueryForRetrieve(ctx, ctx.input.issue);
+  }
 
   const hasTool = ctx.tools.list().some((t) => t.name === DOCUMENT_SEARCH_TOOL);
   if (hasTool) {
-    // Budget: if prior searches already filled the cap (e.g. odd resume), skip.
     if (countDocumentSearchesInState(ctx.state, DOCUMENT_SEARCH_TOOL) >= policy.maxRetrieves) {
       return undefined;
     }
     const raw = await ctx.callTool<unknown>(
       DOCUMENT_SEARCH_TOOL,
       {
-        query: ctx.input.issue,
+        query,
         limit: policy.maxChunks,
         mode: policy.rankMode,
+        // Multi-corpus tools accept corpusId; single-corpus tools ignore unknown props.
+        corpusId,
       },
       { key: 'retrieve:once' },
     );
-    // Budget exhaustion from a wrapped invoker isn't used here (system calls
-    // ctx.callTool directly). Cap is enforced for model calls via RuntimeToolInvoker.
     if (typeof raw === 'string' && raw.startsWith('ERROR:')) return undefined;
     return normalizeSearchHits(raw);
   }
@@ -318,11 +344,26 @@ async function systemRetrieveForStep(
   const result = await systemRetrieveOnce({
     retriever: retrieval.retriever,
     policy,
-    query: ctx.input.issue,
-    corpusId: retrieval.corpusId,
+    query,
+    corpusId,
     budget,
   });
   return result.retrieved ? result.hits : undefined;
+}
+
+/** Cheap rewrite for once_rewrite — durable via keyed callModel. */
+async function rewriteQueryForRetrieve(ctx: StepContext, goal: string): Promise<string> {
+  const prompt = [
+    'Rewrite the user goal into a short keyword search query for a document corpus.',
+    'Reply with ONLY the search query text — no quotes, no explanation, no punctuation wrappers.',
+    '',
+    `Goal: ${goal}`,
+  ].join('\n');
+  const text = await ctx.callModel(prompt, { key: 'retrieve:rewrite' });
+  const line = text.trim().split(/\r?\n/).find((l) => l.trim())?.trim() ?? '';
+  // Strip wrapping quotes if the model adds them.
+  const cleaned = line.replace(/^["'`]+|["'`]+$/g, '').trim();
+  return cleaned || goal;
 }
 
 function normalizeSearchHits(raw: unknown): RetrievalHit[] {

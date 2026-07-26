@@ -6,6 +6,9 @@
  * ranking from `../memory/` so behaviour stays deterministic under durable replay.
  */
 
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import type { EmbeddingProvider } from '../memory/embedding.js';
 import { rankByEmbedding, reciprocalRankFusionScored } from '../memory/embedding.js';
 import { rankByRelevance } from '../memory/lexical.js';
@@ -95,7 +98,6 @@ abstract class BaseDocumentStore implements DocumentStore {
     if (mode === 'semantic') {
       return project(await rankByEmbedding(query, pool, textOf, limit, embeddings));
     }
-    // hybrid: order + exposed score both come from RRF (not re-attached lexical/cosine).
     const lexical = rankByRelevance(query, pool, textOf, pool.length).map((s) => s.item);
     const semantic = (await rankByEmbedding(query, pool, textOf, pool.length, embeddings)).map((s) => s.item);
     return project(reciprocalRankFusionScored([lexical, semantic], (c) => c.id, limit));
@@ -124,5 +126,59 @@ export class InMemoryDocumentStore extends BaseDocumentStore {
 
   protected persist(corpusId: string, chunks: DocumentChunk[]): void {
     this.corpora.set(corpusId, chunks);
+  }
+}
+
+/** Disk-backed store: one JSON file per corpusId, written atomically (tmp + rename). */
+export class FileDocumentStore extends BaseDocumentStore {
+  constructor(
+    private readonly baseDir: string,
+    embeddings?: EmbeddingProvider,
+  ) {
+    super(embeddings);
+  }
+
+  private file(corpusId: string): string {
+    const safe = corpusId.replace(/[^a-zA-Z0-9_.-]/g, '_') || '_default';
+    return join(this.baseDir, `${safe}.json`);
+  }
+
+  protected load(corpusId: string): DocumentChunk[] {
+    const path = this.file(corpusId);
+    if (!existsSync(path)) return [];
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((c) => {
+          const o = c as DocumentChunk;
+          return {
+            id: String(o.id ?? ''),
+            text: String(o.text ?? ''),
+            metadata:
+              o.metadata && typeof o.metadata === 'object' ? (o.metadata as Record<string, unknown>) : {},
+          };
+        })
+        .filter((c) => c.id);
+    } catch {
+      return [];
+    }
+  }
+
+  protected persist(corpusId: string, chunks: DocumentChunk[]): void {
+    mkdirSync(this.baseDir, { recursive: true });
+    const dst = this.file(corpusId);
+    const tmp = `${dst}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify(chunks));
+      renameSync(tmp, dst);
+    } catch (e) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* best-effort cleanup */
+      }
+      throw e;
+    }
   }
 }

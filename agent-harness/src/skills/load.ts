@@ -32,11 +32,13 @@ export function parseSkillMarkdown(markdown: string, opts?: { name?: string; loa
   if (!description || !description.trim()) throw new Error(`parseSkillMarkdown: skill "${name}" requires a description in frontmatter`);
 
   const loadMode = opts?.loadMode ?? parseLoadMode(meta.loadMode);
+  const corpusId = meta.corpusId?.trim() || undefined;
   return {
     name: name.trim(),
     description: description.trim(),
     body,
     ...(loadMode ? { loadMode } : {}),
+    ...(corpusId ? { corpusId } : {}),
   };
 }
 

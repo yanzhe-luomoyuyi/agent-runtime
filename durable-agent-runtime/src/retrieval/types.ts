@@ -2,7 +2,8 @@
  * Retrieval policy + request types — the strategy face of document RAG.
  *
  * Default stance for a general engine: `once` (system-initiated single retrieve).
- * `capped_agentic` is opt-in; `once_rewrite` is reserved for a cheap rewrite pass.
+ * `once_rewrite`: keyed model rewrite of the goal, then a single retrieve.
+ * `capped_agentic` is opt-in multi-hop with a hard retrieve cap.
  */
 
 /** How retrieval is triggered for a run. */
@@ -18,6 +19,7 @@ export type RetrievalRankMode = 'lexical' | 'semantic' | 'hybrid';
  * `capped_agentic`: system may retrieve once, then the model may call
  * `document_search` until `maxRetrieves` (default `1 + maxExtra`) is hit;
  * further searches return a budget ERROR without executing.
+ * `once_rewrite`: rewrite the goal via keyed callModel, then one search.
  */
 export interface RetrievalPolicy {
   /** Default `once` when a retriever/tools are configured. */

@@ -5,16 +5,19 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { MockAgentModel } from '../src/app/agent-scenario.js';
-import { registerDocumentTools } from '../src/app/document-tools.js';
+import { documentToolDefs, registerDocumentTools } from '../src/app/document-tools.js';
 import { createHarnessWorkflow } from '../src/app/harness-adapter.js';
 import { EventLog, runDir } from '../src/eventlog.js';
 import { HashingEmbeddingProvider } from '../src/memory/embedding.js';
 import type { ModelProvider, ModelResult } from '../src/model/provider.js';
 import { estimateTokens } from '../src/model/provider.js';
 import {
+  collectSkillCorpora,
   countDocumentSearchesInState,
+  FileDocumentStore,
   InMemoryDocumentStore,
   resolveRetrievalPolicy,
+  resolveRunCorpusId,
   StoreRetriever,
   systemRetrieveOnce,
 } from '../src/retrieval/index.js';
@@ -265,5 +268,165 @@ describe('countDocumentSearchesInState', () => {
       modelResults: {},
     };
     expect(countDocumentSearchesInState(state)).toBe(2);
+  });
+});
+
+describe('FileDocumentStore', () => {
+  it('persists corpora across instances and sanitises corpus ids', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doc-store-'));
+    const a = new FileDocumentStore(dir);
+    a.upsert('kb', [{ id: '1', text: 'persisted chunk about login', metadata: { src: 'a.md' } }]);
+
+    const b = new FileDocumentStore(dir);
+    expect(b.list('kb').map((c) => c.text)).toEqual(['persisted chunk about login']);
+    expect((await b.search('kb', 'login'))[0]!.id).toBe('1');
+
+    a.upsert('../../etc/passwd', [{ id: 'x', text: 'safe', metadata: {} }]);
+    expect(b.list('../../etc/passwd').length).toBe(1);
+  });
+});
+
+describe('skill corpus resolution', () => {
+  it('collects unique skill corpora and resolves run corpusId', () => {
+    expect(
+      collectSkillCorpora([
+        { name: 'a', description: 'd', body: 'b', corpusId: 'auth' },
+        { name: 'b', description: 'd', body: 'b', corpusId: 'auth' },
+        { name: 'c', description: 'd', body: 'b', corpusId: 'billing' },
+      ]),
+    ).toEqual(['auth', 'billing']);
+
+    expect(
+      resolveRunCorpusId({
+        skills: [{ name: 'a', description: 'd', body: 'b', corpusId: 'from-skill' }],
+      }),
+    ).toBe('from-skill');
+
+    expect(
+      resolveRunCorpusId({
+        corpusId: 'host',
+        skills: [{ name: 'a', description: 'd', body: 'b', corpusId: 'from-skill' }],
+      }),
+    ).toBe('host');
+  });
+});
+
+describe('multi-corpus document tools', () => {
+  it('allows corpusId only when on the allow-list', async () => {
+    const store = new InMemoryDocumentStore();
+    store.upsert('auth', [{ id: 'a1', text: 'auth doc', metadata: {} }]);
+    store.upsert('billing', [{ id: 'b1', text: 'billing doc', metadata: {} }]);
+    const [search] = documentToolDefs(store, {
+      defaultCorpusId: 'auth',
+      allowedCorpora: ['auth', 'billing'],
+    });
+    const hits = (await search!.run({ query: 'billing', corpusId: 'billing' })) as Array<{ id: string }>;
+    expect(hits[0]!.id).toBe('b1');
+    expect(await search!.run({ query: 'x', corpusId: 'secret' })).toMatch(/not allowed/);
+  });
+});
+
+describe('once_rewrite', () => {
+  it('rewrites the goal via keyed callModel then searches once', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'rag-rewrite-'));
+    const store = new InMemoryDocumentStore();
+    store.upsert('kb', [{ id: '1', text: 'session null pointer login crash', metadata: {} }]);
+
+    let searchQuery: string | undefined;
+    const tools = new ToolRegistry();
+    registerDocumentTools(tools, store, 'kb');
+    const original = tools.get('document_search');
+    tools.register({
+      ...original,
+      run: async (args) => {
+        searchQuery = (args as { query?: string }).query;
+        return original.run(args);
+      },
+    });
+
+    class RewriteModel implements ModelProvider {
+      readonly name = 'rewrite';
+      async complete(prompt: string): Promise<ModelResult> {
+        let text: string;
+        if (prompt.includes('Rewrite the user goal')) {
+          text = 'login session crash';
+        } else {
+          text = JSON.stringify({ action: 'finish', answer: 'ok from rewrite path' });
+        }
+        return { text, promptTokens: estimateTokens(prompt), completionTokens: estimateTokens(text) };
+      }
+    }
+
+    const state = await new Runtime({
+      baseDir,
+      model: new RewriteModel(),
+      tools,
+      workflow: createHarnessWorkflow({
+        retrieval: {
+          corpusId: 'kb',
+          policy: { mode: 'once_rewrite' },
+        },
+        agent: {
+          skills: [{ name: 'auth', description: 'auth', body: 'steps', corpusId: 'kb' }],
+        },
+      }),
+    }).run('The thing where users cannot sign in because of a null session');
+
+    expect(state.status).toBe('completed');
+    expect(searchQuery).toBe('login session crash');
+
+    const events = new EventLog(runDir(baseDir, state.runId)).all();
+    const rewrite = events.find(
+      (e) => e.type === 'ModelCalled' && String((e as { callId?: string }).callId).includes('retrieve:rewrite'),
+    );
+    expect(rewrite).toBeTruthy();
+  });
+
+  it('can resolve corpusId from SkillSpec when retrieval.corpusId is omitted', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'rag-skill-corpus-'));
+    const store = new InMemoryDocumentStore();
+    store.upsert('auth-docs', [{ id: '1', text: 'oauth token refresh guide', metadata: {} }]);
+    const tools = registerDocumentTools(new ToolRegistry(), store, {
+      defaultCorpusId: 'auth-docs',
+      allowedCorpora: ['auth-docs'],
+    });
+
+    class FinishModel implements ModelProvider {
+      readonly name = 'finish';
+      async complete(prompt: string): Promise<ModelResult> {
+        const text = prompt.includes('UNTRUSTED RETRIEVED') || prompt.includes('oauth')
+          ? JSON.stringify({ action: 'finish', answer: 'use oauth refresh' })
+          : JSON.stringify({ action: 'finish', answer: 'no context' });
+        return { text, promptTokens: 1, completionTokens: 1 };
+      }
+    }
+
+    const state = await new Runtime({
+      baseDir,
+      model: new FinishModel(),
+      tools,
+      workflow: createHarnessWorkflow({
+        retrieval: { policy: { mode: 'once' } }, // no corpusId — skill provides it
+        agent: {
+          skills: [
+            {
+              name: 'oauth',
+              description: 'OAuth playbook',
+              body: 'follow docs',
+              corpusId: 'auth-docs',
+              loadMode: 'eager',
+            },
+          ],
+        },
+      }),
+    }).run('token refresh');
+
+    expect(state.status).toBe('completed');
+    const events = new EventLog(runDir(baseDir, state.runId)).all();
+    const search = events.find(
+      (e) => e.type === 'ToolCallSucceeded' && (e as { tool?: string }).tool === 'document_search',
+    );
+    expect(search).toBeTruthy();
+    expect(JSON.stringify((search as { result: unknown }).result)).toContain('oauth');
   });
 });

@@ -98,7 +98,8 @@ function appendSkillsToInstructions(
 
   for (const s of all) {
     const mode = eager.includes(s) ? 'eager' : 'on_demand';
-    lines.push(`- **${s.name}** (${mode}): ${s.description}`);
+    const corpus = s.corpusId ? ` · corpus: ${s.corpusId}` : '';
+    lines.push(`- **${s.name}** (${mode}${corpus}): ${s.description}`);
   }
 
   for (const s of eager) {

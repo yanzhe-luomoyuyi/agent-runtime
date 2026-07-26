@@ -112,7 +112,7 @@ ProtocolDecision =
 |------|--------|------|
 | Working memory（run 内） | ✅ | 压缩 + scratchpad |
 | 跨会话持久记忆 | ✅ runtime | `memory_write/search/read` 工具 + FileMemoryStore |
-| 文档 / 代码库 RAG | 🟡 | runtime Retriever + query-time `once`；skill 附件语料仍未做 |
+| 文档 / 代码库 RAG | ✅ | Retriever + `once`/`once_rewrite`/`capped_agentic`；`FileDocumentStore`；`SkillSpec.corpusId` |
 | **MemGPT / Letta** 三层记忆 | 🟡 | Working/Episodic/Semantic，OS 式管理；scratchpad 算平民版分页 |
 | **CrewAI** 记忆分离 | ❌ | 短期/长期/实体记忆 + 向量检索 |
 | **Mem0** 自动提炼 | ❌ | 刻意不做——自动提炼高危，留人工闸门 |
@@ -136,10 +136,13 @@ ProtocolDecision =
 | 重要性评分 | ✅ | tool error > write > read；单位是 atomic unit（max 成员分） |
 | 词法检索 | ✅ | 零依赖 mini-BM25（含 CJK）；Memory + DocumentStore |
 | 语义/embedding 检索 | 🟡 | async `EmbeddingProvider` 缝已通（`embed` / 可选 `embedMany`）；默认仍是 `HashingEmbeddingProvider`（确定性 demo，无同义词）；真模型用 `createHttpEmbeddingProvider` / 自实现接入，与 mock chat 正交 |
-| 文档 RAG（query-time） | ✅ | runtime `retrieval/` + `document_*` 工具；默认 `RetrievalPolicy.mode=once`；harness `context/retrieval.ts` gate/注入 |
-| hybrid（RRF） | ✅ | 排序与对外 `score` 均为 RRF 分；可选 `maxTextChars` 截断 search 文本 |
-| Agentic 多跳检索 | ✅ | `capped_agentic`：系统可先 once，模型可见 `document_search`，硬顶 `maxRetrieves`（默认 `1+maxExtra`）；超预算返回 ERROR 且不执行；resume 按 `toolResults` 计数不重置 |
-| Embedding 缓存 | ✅ | `CachingEmbeddingProvider`（进程内；replay 仍靠 logged tool 结果） |
+| 文档 RAG（query-time） | ✅ | runtime `retrieval/` + `document_*`；默认 `once`；`FileDocumentStore` 可持久化 corpus |
+| hybrid（RRF） | ✅ | 排序与对外 `score` 均为 RRF 分；可选 `maxTextChars` |
+| Query rewrite 后单次检索 | ✅ | `once_rewrite`：keyed `callModel` 改写 goal → 一次 search |
+| Agentic 多跳检索 | ✅ | `capped_agentic` + `maxRetrieves` 硬顶；超预算 ERROR；resume 按 `toolResults` 计数 |
+| Skill ↔ corpus | ✅ | `SkillSpec.corpusId`；catalog/`skill_read` 暴露；`resolveRunCorpusId`；工具 allow-list |
+| 单次 search 多 corpus fan-out | ❌ | 每次 search 一个 corpus；多库需多次调用 |
+| Embedding 缓存 | ✅ | `CachingEmbeddingProvider` |
 | 静态前缀排序 | ✅ | OpenAI 前缀缓存直接受益 |
 | Anthropic cache breakpoints | ❌ | 暂缓 |
 
@@ -392,7 +395,7 @@ L5: 反思记忆化 + 跨 run 复用
 
 | 模块 | 职责 |
 |------|------|
-| `skills/types.ts` | `SkillSpec` / `SkillLoadMode`（`eager` \| `on_demand`） |
+| `skills/types.ts` | `SkillSpec` / `SkillLoadMode`；可选 `corpusId` |
 | `skills/load.ts` | `parseSkillMarkdown` / `loadSkillFile`（轻量 frontmatter，零 YAML 依赖） |
 | `skills/tools.ts` | on_demand：`skill_list` + `skill_read`（静态正文 → `AugmentedToolInvoker` 本地挂载，durable 重放安全） |
 | `skills/resolve.ts` | `createAgent` 物化：catalog 注入 instructions；eager 内联正文；subAgents → `delegate_<name>` |
@@ -423,7 +426,7 @@ L5: 反思记忆化 + 跨 run 复用
 |------|------|
 | Host-side AgentCatalogue（按 name resolve） | ❌ |
 | 子 agent 显式 `inheritSkills: string[]` | ❌ 需要时在子 config 重复声明即可 |
-| 文档库 / 代码库 RAG 作为 skill 附件 | ❌ | 平台 Retriever + query-time `once` 已有；skill↔corpus 绑定仍待做 |
+| 文档库 / 代码库 RAG 作为 skill 附件 | 🟡 | `SkillSpec.corpusId` + host allow-list 已通；静态 `references` 仍在；无自动 ingest 管道 |
 | Progressive disclosure（references 大文件） | 🟡 | `references` 字段已有；无目录 discovery |
 
 ### 要点

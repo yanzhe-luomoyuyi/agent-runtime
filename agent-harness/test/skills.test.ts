@@ -161,6 +161,40 @@ describe('createAgent skills materialisation', () => {
     const ref = await agent.tools.call(SKILL_READ_TOOL, { name: 'spec', reference: 'template' });
     expect(ref).toEqual({ name: 'spec', reference: 'template', content: '## Template\n...' });
   });
+
+  it('surfaces SkillSpec.corpusId in catalog, skill_list, and skill_read', async () => {
+    const agent = createAgent({
+      name: 'dev',
+      instructions: 'base',
+      model: new ScriptedChatModel([finalResponse('ok')]),
+      tools: new MockToolInvoker([]),
+      skills: [
+        {
+          name: 'auth-playbook',
+          description: 'Auth fixes',
+          body: 'steps',
+          corpusId: 'auth-docs',
+        },
+      ],
+    });
+    expect(agent.instructions).toContain('corpus: auth-docs');
+    const listed = (await agent.tools.call(SKILL_LIST_TOOL, {})) as Array<{ corpusId?: string }>;
+    expect(listed[0]?.corpusId).toBe('auth-docs');
+    const read = (await agent.tools.call(SKILL_READ_TOOL, { name: 'auth-playbook' })) as {
+      corpusId?: string;
+    };
+    expect(read.corpusId).toBe('auth-docs');
+  });
+
+  it('parseSkillMarkdown reads corpusId from frontmatter', () => {
+    const skill = parseSkillMarkdown(`---
+name: n
+description: d
+corpusId: payments-api
+---
+body`);
+    expect(skill.corpusId).toBe('payments-api');
+  });
 });
 
 describe('createAgent subAgents wiring', () => {

@@ -10,7 +10,7 @@
 import type { RunState } from '../types.js';
 import type { ResolvedRetrievalPolicy, RetrievalPolicy, RetrievalStrategyMode } from './types.js';
 
-/** Fill defaults. `once_rewrite` currently behaves like `once` (rewrite not implemented). */
+/** Fill defaults. `once_rewrite` uses one retrieve after a keyed query rewrite. */
 export function resolveRetrievalPolicy(policy: RetrievalPolicy = {}): ResolvedRetrievalPolicy {
   const mode: RetrievalStrategyMode = policy.mode ?? 'once';
   const maxExtra = policy.maxExtra ?? (mode === 'capped_agentic' ? 2 : 0);

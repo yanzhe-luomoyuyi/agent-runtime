@@ -27,6 +27,11 @@ export interface SkillSpec {
   loadMode?: SkillLoadMode;
   /** Soft hint: tool names this playbook expects the host to provide. */
   tools?: string[];
+  /**
+   * Optional document corpus this playbook is scoped to.
+   * Hosts bind retrieval tools to an allow-list; the model does not invent corpus ids.
+   */
+  corpusId?: string;
   /** Optional named attachments (templates, schemas) returned by `skill_read`. */
   references?: Record<string, string>;
 }

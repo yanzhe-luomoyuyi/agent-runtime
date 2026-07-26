@@ -41,7 +41,7 @@
 | 模块 | 一句话 |
 |------|--------|
 | `agent.ts` | `AgentConfig` + `createAgent`：物化 `skills` / `subAgents`（idempotent `resolved`） |
-| `skills/types.ts` | `SkillSpec` / `SkillLoadMode`（`eager` \| `on_demand`） |
+| `skills/types.ts` | `SkillSpec` / `SkillLoadMode`；可选 `corpusId`（playbook 绑定知识库） |
 | `skills/load.ts` | `parseSkillMarkdown` / `loadSkillFile`（轻量 frontmatter，零 YAML 依赖） |
 | `skills/tools.ts` | on_demand：`skill_list` + `skill_read`（静态正文，durable 下也可本地挂） |
 | `skills/resolve.ts` | catalog 注入 instructions；eager 内联正文；subAgents → `delegate_<name>`；**skills 不 inherit 到子 agent** |
@@ -90,9 +90,9 @@
 | `memory/store.ts` | 跨会话持久记忆：分 scope + 内容哈希幂等写；FileMemoryStore 原子写；`search` async；`mode: lexical/semantic/hybrid` |
 | `memory/lexical.ts` | 零依赖 mini-BM25 词法打分（含 常见 CJK），确定性检索 |
 | `memory/embedding.ts` | async-first `EmbeddingProvider`（可选 `embedMany`）+ 默认 `HashingEmbeddingProvider` + `CachingEmbeddingProvider` + `createHttpEmbeddingProvider` + RRF |
-| `retrieval/` | 文档 RAG：`DocumentStore` / `StoreRetriever` / `RetrievalPolicy`（默认 `once`；`capped_agentic` + `maxRetrieves` 硬顶）/ `systemRetrieveOnce`；search 可选 `maxTextChars` |
-| `app/document-tools.ts` | `document_search` / `document_read`（corpus 绑定；走 durable seam） |
-| `app/harness-adapter.ts` | harness↔runtime；`RuntimeToolInvoker` 可按 state 强制 document_search 预算 |
+| `retrieval/` | 文档 RAG：`InMemoryDocumentStore` / `FileDocumentStore`；`RetrievalPolicy`（`once` / `once_rewrite` / `capped_agentic`）；`resolveRunCorpusId` / `collectSkillCorpora`；`systemRetrieveOnce` |
+| `app/document-tools.ts` | `document_search` / `document_read`（default + allow-list corpus；走 durable seam） |
+| `app/harness-adapter.ts` | harness↔runtime；retrieve 预算；`once_rewrite` keyed 改写；skill corpus 解析 |
 | harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策 / token 估价（非 event-log） |
 | `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟/replay/policy/cache 汇总 |
 | `otel.ts` | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出 |
