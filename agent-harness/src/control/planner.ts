@@ -11,8 +11,8 @@
  * asking the model to adjust its approach based on what went wrong.
  *
  * Each execution (plan generation + each step's run) gets its own idempotency
- * key namespace (`plan`, `s0:`, `s1:`, `replan0`, …) so the whole plan-execute
- * cycle replays deterministically on a durable host.
+ * key namespace via `keyScope` (`plan`, `s:{n}`, `replan:{n}`, …) so the whole
+ * plan-execute cycle replays deterministically on a durable host.
  *
  * Improvements over the earlier version:
  *  - Step-by-step execution: each plan step is a separate `runAgent` call.
@@ -22,7 +22,7 @@
  */
 
 import type { ChatModel, Message, ToolInvoker } from '@agent/contracts';
-import { systemMessage, userMessage } from '@agent/contracts';
+import { keyScope, systemMessage, userMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
 import { extractJsonObject } from '@agent/contracts';
@@ -116,7 +116,7 @@ export async function makePlan(
     ),
     userMessage(`Goal: ${goal}\n\nAvailable tools:\n${toolList}${failureCtx}`),
   ];
-  const resp = await model.chat({ messages, tools: [], key: opts.key ?? 'plan' });
+  const resp = await model.chat({ messages, tools: [], key: opts.key ?? keyScope().plan() });
   return newPlan(parsePlanSteps(resp.message.content ?? ''));
 }
 
@@ -140,7 +140,7 @@ export function parsePlanSteps(text: string): string[] {
 // ── Plan-driven execution ───────────────────────────────────────────
 
 export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<PlannedAgentResult> {
-  const prefix = opts.keyPrefix ?? '';
+  const scope = keyScope(opts.keyPrefix);
   const maxReplans = opts.maxReplans ?? 2;
   const replanOnFailure = opts.replanOnFailure ?? true;
 
@@ -151,7 +151,7 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
   if (!tools) throw new Error('runPlannedAgent: tools are required');
 
   let plan = await makePlan(opts.goal, model, {
-    key: opts.planKey ?? `${prefix}plan`,
+    key: opts.planKey ?? scope.plan(),
     tools,
   });
   if (plan.steps.length === 0) plan = newPlan(['Accomplish the goal']);
@@ -175,7 +175,7 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
     const result = await runAgent({
       ...opts,
       goal: stepGoal,
-      keyPrefix: `${prefix}s${plan.currentStep}:`,
+      keyPrefix: scope.planStep(plan.currentStep).toPrefix(),
       systemPrompt: basePrompt +
         `\n\nFollow this plan (you are on → step ${plan.currentStep + 1}):\n${formatPlanForPrompt(plan)}`,
     });
@@ -195,7 +195,7 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
         .filter((_, i) => plan.statuses[i] === 'failed')
         .map((s) => `Step "${s}" was not completed.`);
       plan = await makePlan(opts.goal, model, {
-        key: `${prefix}replan${replans}`,
+        key: scope.replan(replans),
         tools,
         previousFailures: failures,
       });

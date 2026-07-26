@@ -12,16 +12,16 @@
  * about — code-driven pipeline vs. model-driven loop.
  *
  * Durability design: the whole loop is a SINGLE workflow step. Each turn's model
- * call and tool call gets a per-turn idempotency key (`t<turn>`), so a crash
- * mid-loop resumes by replaying the already-completed turns from the log (no
- * repeated side effects) and continuing at the first turn that had not finished.
- * The runtime is unchanged; the agentic control flow rides on top of it — this is
- * the "loop as a durable step" idea. A real deployment swaps the mock brain for a
- * live tool-calling LLM implementing the same ModelProvider contract; nothing
- * here changes.
+ * call and tool call gets a `keyScope` key (`t:{turn}` / `t:{turn}:{call}`), so a
+ * crash mid-loop resumes by replaying the already-completed turns from the log
+ * (no repeated side effects) and continuing at the first turn that had not
+ * finished. The runtime is unchanged; the agentic control flow rides on top of
+ * it — this is the "loop as a durable step" idea. A real deployment swaps the
+ * mock brain for a live tool-calling LLM implementing the same ModelProvider
+ * contract; nothing here changes.
  */
 
-import { extractJsonObject } from '@agent/contracts';
+import { extractJsonObject, keyScope } from '@agent/contracts';
 
 import type { ToolRegistry } from './tools/registry.js';
 import type { RunState } from './types.js';
@@ -139,14 +139,16 @@ async function runAgentLoop(
     // Per-turn idempotency key: on resume, completed turns replay from the log
     // (same key -> cached result) instead of re-issuing the model/tool call.
     const prompt = buildAgentPrompt(ctx.input.issue, tools, transcript, conversationHistory);
-    const reply = await ctx.callModel(prompt, { key: `t${turn}` });
+    const reply = await ctx.callModel(prompt, { key: keyScope().turnModel(turn) });
     const decision = parseDecision(reply);
 
     if (decision.action === 'finish') {
       return { answer: decision.answer, turns: turn, finished: true, transcript };
     }
 
-    const observation = await ctx.callTool(decision.tool, decision.args, { key: `t${turn}` });
+    const observation = await ctx.callTool(decision.tool, decision.args, {
+      key: keyScope().turnTool(turn, '0'),
+    });
     transcript.push({ turn, tool: decision.tool, args: decision.args, observation });
 
     if (crashAfterTurn === turn) {

@@ -26,6 +26,7 @@ import type {
   ToolInvoker,
   ToolSpec,
 } from '@agent/contracts';
+import { keyScope, runtimeToolCallId } from '@agent/contracts';
 import {
   createAgent,
   ContextManager,
@@ -94,7 +95,7 @@ export class RuntimeToolInvoker implements ToolInvoker {
     if (name === DOCUMENT_SEARCH_TOOL && this.maxDocumentSearches !== undefined) {
       const phase = this.ctx.state.currentPhase ?? 'agent';
       const step = this.ctx.state.currentStep ?? 1;
-      const callId = `${phase}.${step}:${opts?.key ? `${opts.key}:` : ''}${name}`;
+      const callId = runtimeToolCallId(phase, step, name, opts?.key);
       const isReplay = callId in this.ctx.state.toolResults;
       if (!isReplay) {
         const used = countDocumentSearchesInState(this.ctx.state, DOCUMENT_SEARCH_TOOL);
@@ -332,7 +333,7 @@ async function systemRetrieveForStep(
         // Multi-corpus tools accept corpusId; single-corpus tools ignore unknown props.
         corpusId,
       },
-      { key: 'retrieve:once' },
+      { key: keyScope().retrieveOnce() },
     );
     if (typeof raw === 'string' && raw.startsWith('ERROR:')) return undefined;
     return normalizeSearchHits(raw);
@@ -359,7 +360,7 @@ async function rewriteQueryForRetrieve(ctx: StepContext, goal: string): Promise<
     '',
     `Goal: ${goal}`,
   ].join('\n');
-  const text = await ctx.callModel(prompt, { key: 'retrieve:rewrite' });
+  const text = await ctx.callModel(prompt, { key: keyScope().retrieveRewrite() });
   const line = text.trim().split(/\r?\n/).find((l) => l.trim())?.trim() ?? '';
   // Strip wrapping quotes if the model adds them.
   const cleaned = line.replace(/^["'`]+|["'`]+$/g, '').trim();

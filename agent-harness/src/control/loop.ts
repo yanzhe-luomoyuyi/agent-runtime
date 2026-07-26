@@ -10,11 +10,10 @@
  * ends when the model returns a final answer, the turn budget is hit, or a loop
  * is detected.
  *
- * The `keyPrefix` + per-turn/per-call key scheme (`t<turn>` for the model,
- * `t<turn>:<callId>` for each tool) is the whole durability story: a host like
- * the durable-agent-runtime uses these keys to replay completed turns on resume
- * without re-issuing side effects. Sub-agents extend the prefix, so keys stay
- * unique across nesting.
+ * Durable keys come from `@agent/contracts` `keyScope` (`t:{turn}` for the model,
+ * `t:{turn}:{callId}` for each tool). A host like durable-agent-runtime uses
+ * these keys to replay completed turns on resume without re-issuing side
+ * effects. Sub-agents nest via `keyScope(...).child(...)`.
  *
  * ## Tool parallelism
  * When the model emits multiple tool calls in a single turn they are executed
@@ -37,7 +36,7 @@
  */
 
 import type { ChatModel, ChatResponse, ChatStreamOutput, JSONSchema, Message, StopReason, ToolCall, ToolInvoker, ToolSpec, Usage } from '@agent/contracts';
-import { systemMessage, toolResultMessage, userMessage } from '@agent/contracts';
+import { keyScope, systemMessage, toolResultMessage, userMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
 import { ContextManager } from '../context/manager.js';
@@ -301,7 +300,7 @@ async function _prepareTurn(st: LoopState, turn: number, trace?: TraceCollector)
 }
 
 async function _callModelBatch(st: LoopState, assembled: Message[], turn: number): Promise<ChatResponse> {
-  const key = `${st.prefix}t${turn}`;
+  const key = keyScope(st.prefix).turnModel(turn);
   // When retryBudget is set, use it as the per-call retry cap so the full
   // budget is usable before the call fails — not just st.retryOpts.retries.
   const retries = st.retryBudget > 0 ? st.retryBudget : (st.retryOpts?.retries ?? 2);
@@ -425,7 +424,7 @@ async function _execOne(prepared: PreparedCall, st: LoopState, turn: number, opt
   st.toolsUsed.push(call.name);
   opts.trace?.startToolCall();
   try {
-    const raw = await st.tools.call(call.name, effectiveArgs, { key: `${st.prefix}t${turn}:${call.id}` });
+    const raw = await st.tools.call(call.name, effectiveArgs, { key: keyScope(st.prefix).turnTool(turn, call.id) });
     opts.trace?.endToolCall(call.name, true, effectiveArgs);
     return { text: typeof raw === 'string' ? raw : JSON.stringify(raw), ok: true, tripped: false, stopOnUse: prepared.stopOnUse };
   } catch (e) {
@@ -523,7 +522,7 @@ export async function* runAgentStreamed(
       let stream: AsyncIterable<ChatStreamOutput>;
       try {
         stream = await withRetry(
-          async () => st.model.chatStream!({ messages: assembled, tools: st.specs, key: `${st.prefix}t${turn}` }),
+          async () => st.model.chatStream!({ messages: assembled, tools: st.specs, key: keyScope(st.prefix).turnModel(turn) }),
           st.retryBudget > 0
             ? { ...st.retryOpts, retries: st.retryBudget, onRetry: (_err: unknown, attempt: number, delayMs: number) => { st.retryCount++; st.retryOpts?.onRetry?.(_err, attempt, delayMs); } }
             : st.retryOpts,

@@ -11,6 +11,7 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { runtimeModelCallId, runtimeToolCallId } from '@agent/contracts';
 import { deadLetterId, type DeadLetterQueue } from '@agent/harness';
 
 import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
@@ -267,7 +268,7 @@ export class Runtime {
       getStepOutput: <R>(stepId: string): R | undefined => getState().stepOutputs[stepId] as R | undefined,
       callModel: async (prompt: string, opts?: { key?: string }): Promise<string> => {
         const state = getState();
-        const callId = `${state.currentPhase}.${state.currentStep}:${opts?.key ? `${opts.key}:` : ''}model`;
+        const callId = runtimeModelCallId(state.currentPhase!, state.currentStep!, opts?.key);
         // Idempotency: a completed model call is replayed from the log, never re-issued.
         if (callId in state.modelResults) return state.modelResults[callId]!;
 
@@ -314,7 +315,7 @@ export class Runtime {
       },
       callTool: async <R>(tool: string, args: unknown, opts?: { key?: string }): Promise<R> => {
         const state = getState();
-        const callId = `${state.currentPhase}.${state.currentStep}:${opts?.key ? `${opts.key}:` : ''}${tool}`;
+        const callId = runtimeToolCallId(state.currentPhase!, state.currentStep!, tool, opts?.key);
         // Idempotency: a completed tool call is replayed from the log, never re-run.
         if (callId in state.toolResults) return state.toolResults[callId] as R;
 

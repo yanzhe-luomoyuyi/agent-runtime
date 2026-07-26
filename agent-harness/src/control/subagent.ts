@@ -11,9 +11,8 @@
  * instructions, etc. into one value.  The individual fields (`model`, `tools`,
  * `systemPrompt`, …) are still supported for backward compatibility.
  *
- * Durability: the handler receives the parent's per-call key and uses it as the
- * sub-agent's `keyPrefix`, so nested model/tool keys stay globally unique
- * (`t1:call_2:t1`, `t1:call_2:t1:s1`, …) and the whole tree replays
+ * Durability: the handler receives the parent's per-call key and nests it via
+ * `keyScope` (`t:1:c1:researcher:t:1`, …) so the whole tree replays
  * deterministically.
  *
  * ## Depth limit (recursion guard)
@@ -38,6 +37,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { CallOptions, ChatModel, JSONSchema, ToolInvoker, ToolSpec } from '@agent/contracts';
+import { keyScope } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
 import { ContextManager } from '../context/manager.js';
@@ -140,7 +140,7 @@ export function makeSubagentTool(options: SubagentToolOptions): SubagentTool {
       }
 
       const goal = isRecord(args) && typeof args.goal === 'string' ? args.goal : String(args ?? '');
-      const prefix = opts?.key ? `${opts.key}:` : `${name}:`;
+      const prefix = opts?.key ? keyScope(opts.key).toPrefix() : keyScope().child(name).toPrefix();
       const result = await delegationContext.run({ depth }, () =>
         runAgent({
           goal,

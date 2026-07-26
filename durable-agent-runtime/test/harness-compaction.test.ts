@@ -26,7 +26,7 @@ describe('RuntimeChatModel — textCompletion passthrough', () => {
         { role: 'user', content: 'Summarize: turn 1 did X; turn 2 did Y.' },
       ],
       tools: [],
-      key: 'compact-t3',
+      key: 'compact:3',
       textCompletion: true,
     });
 
@@ -47,7 +47,7 @@ describe('RuntimeChatModel — textCompletion passthrough', () => {
     const resp = await model.chat({
       messages: [{ role: 'user', content: 'Goal: fix it' }],
       tools: [{ name: 'getIssue', description: 'd', inputSchema: { type: 'object' } }],
-      key: 't1',
+      key: 't:1',
     });
 
     expect(resp.stopReason).toBe('tool_calls');

@@ -74,8 +74,8 @@ describe('agent loop', () => {
       finalResponse('done'),
     ]);
     await runAgent({ goal: 'x', model, tools });
-    expect(model.requests.map((r) => r.key)).toEqual(['t1', 't2']);
-    expect(tools.calls[0]!.key).toBe('t1:c1');
+    expect(model.requests.map((r) => r.key)).toEqual(['t:1', 't:2']);
+    expect(tools.calls[0]!.key).toBe('t:1:c1');
   });
 
   it('feeds a thrown tool error back so the model can recover', async () => {
@@ -115,7 +115,7 @@ describe('agent loop', () => {
     ]);
     const res = await runAgent({ goal: 'x', model, tools });
     expect(res.turns).toBe(2);
-    expect(tools.calls.map((c) => c.key)).toEqual(['t1:c1', 't1:c2']);
+    expect(tools.calls.map((c) => c.key)).toEqual(['t:1:c1', 't:1:c2']);
   });
 
   it('stops at the turn budget', async () => {

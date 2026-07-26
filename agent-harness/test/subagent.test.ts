@@ -50,8 +50,8 @@ describe('sub-agent delegation', () => {
     expect(res.finished).toBe(true);
     expect(res.answer).toBe('final 42');
     expect(subTools.counts.lookup).toBe(1);
-    // nested key = parent call key (t1:p1) + sub loop key (t1:s1)
-    expect(subTools.calls[0]!.key).toBe('t1:p1:t1:s1');
+    // nested key = parent call key (t:1:p1) + sub loop key (t:1:s1)
+    expect(subTools.calls[0]!.key).toBe('t:1:p1:t:1:s1');
   });
 
   it('surfaces a parsed `structured` result when outputSchema is set and the answer validates', async () => {

@@ -139,7 +139,7 @@ describe('ContextManager.compactIfNeeded', () => {
       modelSummarize: createModelSummarizer(model),
     });
     await cm.compactIfNeeded(longConvo(), { keyPrefix: 'run1:', turn: 3 });
-    expect(model.requests[0]!.key).toBe('run1:compact-t3');
+    expect(model.requests[0]!.key).toBe('run1:compact:3');
   });
 
   it('fences untrusted tool output when building the summary prompt', async () => {

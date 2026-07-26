@@ -36,6 +36,7 @@
  */
 
 import type { ChatModel, Message } from '@agent/contracts';
+import { keyScope } from '@agent/contracts';
 
 import { resolveModelLimit } from './model-limits.js';
 import { cjkAwareTokenizer, type Tokenizer } from './tokenizer.js';
@@ -561,7 +562,7 @@ export class ContextManager {
     const recentSet = new Set([...protectedSet, ...flattenUnits(positionalRecentUnits)]);
     const recent = rest.filter((m) => recentSet.has(m));
 
-    const key = `${opts.keyPrefix ?? ''}compact-t${opts.turn}`;
+    const key = keyScope(opts.keyPrefix).compact(opts.turn);
     const summary = await this.modelSummarize!(older, { key });
     const summaryMsg: Message = {
       role: 'system',

@@ -16,13 +16,13 @@
  * ## Determinism / durable replay
  *
  * Offload ids are derived from the call's deterministic durable `key` when
- * present (else a monotonic counter). Since tool calls replay in the same order
- * with the same keys, the scratchpad rebuilds identically on resume — no special
- * persistence needed for correctness (though a real host may back the store with
- * disk for cross-process reads).
+ * present (else a monotonic counter for non-durable hosts). LLM scratchpad
+ * summaries use `keyScope(toolKey).scratchpadSummary()` — never a counter —
+ * so durable replay stays safe.
  */
 
 import type { CallOptions, ChatModel, ToolInvoker, ToolSpec } from '@agent/contracts';
+import { keyScope } from '@agent/contracts';
 
 /** One stored entry. */
 export interface ScratchpadEntry {
@@ -215,12 +215,12 @@ export class ScratchpadToolInvoker implements ToolInvoker {
 
     const id = this.nextId(opts?.key);
 
-    // ── Write-time summarisation ──
+    // ── Write-time summarisation (only when the tool call has a durable key)
     let summary: string | undefined;
-    if (this.summarize) {
+    if (this.summarize && opts?.key) {
       try {
         summary = await this.summarize(result, {
-          key: opts?.key ?? `sp-${this.counter}`,
+          key: keyScope(opts.key).scratchpadSummary(),
           toolName: name,
         });
       } catch {
