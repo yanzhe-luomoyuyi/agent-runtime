@@ -14,6 +14,7 @@
 | **B** — 恢复 / 自愈 | `src/recovery` | 只对**瞬时性**模型/工具失败执行退避重试（`withRetry`），支持 HTTP 状态码分类（429 / 5xx / 超时）→ 结构化 `TransientError` / `HttpError`，遵循 `Retry-After` 头 + 指数退避 + full jitter。**燔断器** `CircuitBreaker`（closed→open→half_open，只对 transient error 跳闸）。**分级模型链** `createResilientModel` 按 tier 顺序尝试模型（每 tier 独立 retry+breaker），包含 escalation ladder（retry→降级→…），作为普通 `ChatModel` 零侵入。**Saga 补偿** `CompensatingToolInvoker`（opt-in 装饰器，LIFO 回滚已提交副作用，best-effort / stopOnError）。**重试 ToolInvoker** `RetryingToolInvoker`（`ToolInvoker` 装饰器，把 `withRetry` 套到工具调用上，而不只是模型调用）。**死信队列** `DeadLetterToolInvoker`（opt-in 装饰器，与 retry 组合——只有耗尽重试的调用才入队，内容寻址去重，配 `retryDeadLetter()` 人工重放）。把工具抛出的异常转化为模型能理解的 observation；检测无进展的循环调用死循环（`LoopDetector`），不仅检测单次重复调用，还能检测重复序列模式（A→B→A→B），支持按工具维度的调用次数上限。 |
 | **C** — 上下文 / 记忆 | `src/context` | 在 token 预算内组装 prompt + 滚动压缩（保留 system + 近期消息，其余压缩为摘要），observation 截断，缓存友好排序。**Atomic tool-call 单元**：`assistant(toolCalls)` 与匹配的 `tool` 结果整组计分/淘汰/保护，不拆 call/response。**近期 pin + 重要性**：`keepRecentMessages` 窗口硬钉住（最新 user 指令不会输给更老的高分 tool error）；扩窗段用重要性折扣（工具错误 > 写入 > 读取）再 hard-cap 裁剪。**untrusted 输出隔离**——工具结果被隔离标记为“仅数据”，被污染的结果无法劫持 agent。**可插拔 tokenizer**（默认 `cjkAwareTokenizer`：CJK ≈ 1 token/字、其余 ≈ 4 字/token，`fromCounter` 可接 tiktoken），**按模型窗口**（`ContextManager.forModel` + 型号注册表）。**主动压缩** `compactIfNeeded`：跨过预算阈值时把旧消息折叠成一条 **keyed LLM 摘要**（durable replay 安全，默认关闭、opt-in；重要 older unit 可 verbatim 保护）。**Scratchpad** `ScratchpadToolInvoker`：超大工具输出卸载到外部存储，窗口只留指针 + 预览，模型可 `scratchpad_read` 取回（比截断不丢数据）。 |
 | **D** — 控制流 | `src/control` | 核心 `runAgent` 循环 + `runAgentStreamed`（async generator，13 种类型化事件，`chatStream` 可用时实时流式输出，否则透明 fallback batch）。**工具并行执行**（`toolConcurrency` 控制并发度，`Promise.allSettled` 一个失败不影响其他）。**工具使用行为控制**（`ToolSpec.stopOnUse` 工具直接返回输出省一次 LLM 调用）。**Structured output**（`outputSchema` + 自动重试，校验失败反馈给模型自我纠正）。**可插拔错误处理器**（`errorHandlers`：`maxTurns` / `modelRefusal` / `invalidFinalOutput`）。加上 `runPlannedAgent`（先规划后执行，失败时重新规划，每步有 ✓/→/○ 进度标记）、`runReflectiveAgent`（自我批评并修订，每次尝试有独立 key 命名空间 `a0:` / `a1:` …）、`makeSubagentTool`（把子任务委派封装成一个工具，嵌套 key 全局唯一；`AsyncLocalStorage` 追踪实际嵌套深度，`maxDepth`（默认 5）超限拒绝并转成普通 ERROR 观测，不需要在 loop 里特殊处理），以及 human-in-the-loop 的 `Approver`（基于模式匹配的审批门控 `deploy*`、`write*`，带过期时间的审批缓存 + 审计时间戳），`countingApprover` 包一层即可统计"人工介入率"（`requested`/`approved`/`denied`），供宿主的 eval 层读取。 |
+| **Skills** | `src/skills` | Playbook 注册：`SkillSpec` + markdown loader；`createAgent` 物化到 instructions / 工具。默认 **on_demand**（catalog 注入 + `skill_list` / `skill_read`）；短 playbook 可 **eager** 全文内联。与 sub-agent **正交**——skills 不自动 inherit 到子 agent（子 agent 需自己声明 `skills`）。 |
 
 ### 可观测性
 
@@ -64,6 +65,8 @@ harness 以确定性方式生成这些 key。持久化宿主将每个 `key` 映�
 
 ```
 src/
+  agent.ts                  # AgentConfig + createAgent（物化 skills / subAgents）
+  skills/                   # SkillSpec · markdown loader · skill_list/skill_read · resolve
   schema/validate.ts        # A: 极简 JSON-Schema 参数校验器
   protocol/tool-calling.ts  # A: 响应 → 已校验调用 | 最终答案
   context/manager.ts        # C: token 预算、atomic unit 淘汰、近期 pin、keyed 摘要、untrusted 围栏
@@ -121,6 +124,53 @@ const model = new RuleChatModel((req) => {
 const res = await runAgent({ goal: 'Login crashes on a null session', model, tools });
 console.log(res.answer, res.toolsUsed);
 ```
+
+### Skills（playbook 注册）
+
+Skills 是给**当前 agent** 的静态 playbook（步骤 / 约束 / 输出格式），不是工具实现，也不是 sub-agent。`createAgent` 负责物化：
+
+| 模式 | 行为 | 适用 |
+| --- | --- | --- |
+| **`on_demand`（默认）** | instructions 只注入 name + description 目录；正文经 `skill_list` / `skill_read` 拉取 | 多 skill、长 playbook |
+| **`eager`** | 全文写入 instructions，不挂 skill 工具 | 少而短的 playbook |
+
+与 sub-agent 正交：`subAgents` 各自 `createAgent` / `resolveAgent`，**不继承**父级 skills（子 agent 要自己声明）。工业实践（如 Claude Code）同样是 skills 显式列表、不自动 inherit。
+
+```ts
+import { createAgent, parseSkillMarkdown, runAgent } from '@agent/harness';
+
+const clarify = parseSkillMarkdown(`---
+name: clarify
+description: Ask targeted questions before coding
+---
+
+# Clarification
+1. List ambiguities
+2. Ask the user
+`);
+
+const agent = createAgent({
+  name: 'dev',
+  instructions: 'You are a developer.',
+  model,
+  tools,
+  skills: [clarify],
+  // skillLoadMode: 'eager',  // 可选：默认 on_demand
+  subAgents: [
+    {
+      name: 'reviewer',
+      instructions: 'You review diffs.',
+      model: reviewerModel,
+      tools: reviewerTools,
+      // skills: [clarify],  // 需要时显式挂上；不会从父级继承
+    },
+  ],
+});
+
+const res = await runAgent({ agent, goal: 'Ship login fix' });
+```
+
+Durable 宿主可通过 `createHarnessWorkflow({ agent: { name, instructions, skills } })` 传入同一套 skill 配置；`skill_read` 读的是静态正文，用本地 `AugmentedToolInvoker` 即可，不影响事件日志重放。
 
 ### 使用 TraceCollector
 

@@ -94,7 +94,7 @@ flowchart LR
 
 ### Demo 工作负载 — Agent (`src/app/`)
 
-- **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。`createHarnessWorkflow()` 把 `runAgent` 封装为单个 durable step。启用方式：`HARNESS=1`。
+- **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。`createHarnessWorkflow({ agent?: { name, instructions, skills, skillLoadMode } })` 把 `runAgent` 封装为单个 durable step，并可注册 harness skills（默认 on_demand）。启用方式：`HARNESS=1`。
 - **工作流** ([src/app/issue-workflow.ts](src/app/issue-workflow.ts)) — `issue → fix` Agent，声明为 `analyze → locate → propose` 三个阶段。
 - **工具** ([src/app/tools.ts](src/app/tools.ts)) — 确定性的 mock 工具 `getIssue` / `searchCode`。设置 `AGENT_MCP=1` 可通过 MCP base SDK 提供同一批工具——运行时完全无法区分。
 - **模型响应** ([src/app/responses.ts](src/app/responses.ts)) — 为 mock 模型预设的确定性输出。`AGENT_REGRESS=1` 会故意降级输出质量，用于验证 eval 框架能否捕获回归。

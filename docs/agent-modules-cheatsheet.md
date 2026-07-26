@@ -36,6 +36,15 @@
 | `control/subagent.ts` | 子 agent 封装为 tool，key namespace 嵌套；`AsyncLocalStorage` 追踪实际嵌套深度，`maxDepth`（默认 5）超限拒绝并转成普通工具错误观测 |
 | `control/human.ts` | glob 审批门控 + 时效缓存 + 参数可修改 |
 
+### Skills（playbook · 与 sub-agent 正交）
+| 模块 | 一句话 |
+|------|--------|
+| `agent.ts` | `AgentConfig` + `createAgent`：物化 `skills` / `subAgents`（idempotent `resolved`） |
+| `skills/types.ts` | `SkillSpec` / `SkillLoadMode`（`eager` \| `on_demand`） |
+| `skills/load.ts` | `parseSkillMarkdown` / `loadSkillFile`（轻量 frontmatter，零 YAML 依赖） |
+| `skills/tools.ts` | on_demand：`skill_list` + `skill_read`（静态正文，durable 下也可本地挂） |
+| `skills/resolve.ts` | catalog 注入 instructions；eager 内联正文；subAgents → `delegate_<name>`；**skills 不 inherit 到子 agent** |
+
 ---
 
 ## durable-agent-runtime（执行底座 · 事件溯源）
@@ -88,7 +97,7 @@
 ### 桥接
 | 模块 | 一句话 |
 |------|--------|
-| `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；把 runAgent 封装为 durable step |
+| `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；`createHarnessWorkflow({ agent: { skills } })` 可传入 persona/skills |
 | `agent-loop.ts` | 内置简化版 agent 循环（已被 harness 取代，保留用于对比） |
 
 ---
@@ -102,3 +111,4 @@
 | **状态全派生** | RunState 永远从事件日志 reduce 得出，不落盘；snapshot 是可选加速 |
 | **错误→observation** | 工具抛错/参数非法/loop 检测 → 结构化错误喂回模型 → 模型自愈 |
 | **分层** | harness = 无状态 loop 引擎；runtime = 有状态持久化底座；policy = 声明式护栏 |
+| **skills ≠ sub-agent** | skill = 当前 agent 的 playbook（上下文）；sub-agent = 嵌套 run；skills 不自动 inherit |

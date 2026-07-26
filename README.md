@@ -135,6 +135,7 @@ sequenceDiagram
 | **B 恢复** | [recovery/retry.ts](agent-harness/src/recovery/retry.ts) · [recovery/loop-detector.ts](agent-harness/src/recovery/loop-detector.ts) | 只对**瞬时性**失败执行退避重试（HTTP 429/5xx 分类 + `Retry-After` 头 + 指数退避 + full jitter）；把工具抛出的异常转化为模型能理解的 observation；检测无进展的死循环——包括单次重复调用和重复序列模式（A→B→A→B）。 |
 | **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) | 在 token 预算内组装 prompt + 滚动压缩；**atomic tool-call 单元**淘汰（不拆 assistant/tool）；**近期 pin + 重要性**硬顶裁剪；observation 截断；**untrusted 输出隔离**（工具结果只当数据、绝不当指令）。 |
 | **D 控制** | [control/loop.ts](agent-harness/src/control/loop.ts) · [planner.ts](agent-harness/src/control/planner.ts) · [reflection.ts](agent-harness/src/control/reflection.ts) · [subagent.ts](agent-harness/src/control/subagent.ts) · [human.ts](agent-harness/src/control/human.ts) | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行）、`runReflectiveAgent`（自我批评并修订）、`makeSubagentTool`（把子任务委派封装成一个工具）、以及 human-in-the-loop 的 `Approver`。 |
+| **Skills** | [skills/](agent-harness/src/skills) · [agent.ts](agent-harness/src/agent.ts) | Playbook 注册：`SkillSpec` + markdown loader；`createAgent` 默认 **on_demand**（catalog + `skill_list`/`skill_read`），可选 **eager** 全文内联；`subAgents` 自动挂 `delegate_<name>`。skills 与 sub-agent 正交，**不自动 inherit**。 |
 
 另外：`tracing/collector.ts`（结构化 trace：token 用量统计、每次调用的成本估算、每 turn 决策记录）+ `testkit/`（确定性的 `ChatModel` / `ToolInvoker` 测试替身）+ `demo.ts`（可离线运行的 demo）。
 

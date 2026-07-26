@@ -17,6 +17,9 @@
 // Agent — the "what" that the harness runs
 export * from './agent.js';
 
+// Skills — playbooks materialised onto AgentConfig
+export * from './skills/index.js';
+
 // A — tool-calling protocol + schema validation
 export * from './schema/validate.js';
 export * from './protocol/tool-calling.js';

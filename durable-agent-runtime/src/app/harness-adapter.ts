@@ -26,7 +26,18 @@ import type {
   ToolInvoker,
   ToolSpec,
 } from '@agent/contracts';
-import { createAgent, ContextManager, createModelSummarizer, parseTextToolCall, runAgent, type AgentConfig, type AgentRunResult, type Approver } from '@agent/harness';
+import {
+  createAgent,
+  ContextManager,
+  createModelSummarizer,
+  parseTextToolCall,
+  runAgent,
+  type AgentConfig,
+  type AgentRunResult,
+  type Approver,
+  type SkillLoadMode,
+  type SkillSpec,
+} from '@agent/harness';
 
 import type { RunState } from '../types.js';
 import type { StepContext, WorkflowDef } from '../workflow.js';
@@ -81,12 +92,31 @@ export class RuntimeChatModel implements ChatModel {
   }
 }
 
+/**
+ * Optional agent identity / skills for the harness workflow.
+ * `model` and `tools` always come from the runtime seam; do not pass them here.
+ */
+export interface HarnessAgentOptions {
+  name?: string;
+  instructions?: string;
+  /** Skill playbooks — catalog always injected; bodies follow skillLoadMode. */
+  skills?: SkillSpec[];
+  /** Default skill load mode. Default: on_demand. */
+  skillLoadMode?: SkillLoadMode;
+}
+
 export interface HarnessWorkflowOptions {
   name?: string;
   /** Hard cap on turns. */
   maxTurns?: number;
   /** Inject a crash right after this turn's tool calls (to demo mid-loop resume). */
   crashAfterTurn?: number;
+  /**
+   * Agent persona / skills. When omitted, a generic durable tool-using agent
+   * is used. Skills are materialised by `createAgent` (on_demand tools are
+   * safe locally — skill bodies are static).
+   */
+  agent?: HarnessAgentOptions;
   /**
    * Enable proactive, model-driven context compaction. When set, older messages
    * are folded into a keyed LLM summary once the transcript crosses the budget
@@ -129,13 +159,17 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
             name: 'Harness loop',
             run: (ctx) => {
               const chatModel = new RuntimeChatModel(ctx);
-              const agent: AgentConfig = {
-                name: 'harness-agent',
-                instructions: 'You are a durable, tool-using agent. Achieve the user goal by calling tools one at a time (or several at once when they are independent). When finished, reply with a final answer and NO tool calls.',
+              const agent: AgentConfig = createAgent({
+                name: opts.agent?.name ?? 'harness-agent',
+                instructions:
+                  opts.agent?.instructions ??
+                  'You are a durable, tool-using agent. Achieve the user goal by calling tools one at a time (or several at once when they are independent). When finished, reply with a final answer and NO tool calls.',
                 model: chatModel,
                 tools: new RuntimeToolInvoker(ctx),
+                skills: opts.agent?.skills,
+                skillLoadMode: opts.agent?.skillLoadMode,
                 maxTurns: opts.maxTurns,
-              };
+              });
               // Opt-in: wire a keyed model summarizer through the same durable seam.
               if (opts.modelCompaction) {
                 agent.context = new ContextManager({
