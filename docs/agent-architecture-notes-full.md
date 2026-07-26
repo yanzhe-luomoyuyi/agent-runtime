@@ -1,6 +1,6 @@
 # Agent Architecture — Implementation Review（完整版）
 
-> 包含：Protocol · Recovery · Context · Loop · Tracing · Planner · HITL · Reflection · Sub-agent
+> 包含：Protocol · Recovery · Context · Loop · Tracing · Planner · HITL · Reflection · Sub-agent · Skills · Session
 
 ---
 
@@ -351,9 +351,10 @@ L5: 反思记忆化 + 跨 run 复用
 ## 九、Sub-agent（子任务委派）
 
 ### 本项目实现
-- 子 agent 封装为 tool：`delegate({goal: "sub-goal"})`
+- 子 agent 封装为 tool：`makeSubagentTool` → `delegate({goal})`；`createAgent({ subAgents })` 自动挂 `delegate_<name>`
 - Durable key namespace 嵌套：父调用 key（如 `t1:p1`）作为子 loop 的 `keyPrefix` → 子 key 形如 `t1:p1:t1:s1`
 - ✅ 深度限制：`AsyncLocalStorage` 跟踪跨异步调用链的真实嵌套深度（`maxDepth`，默认 5），超限抛 `DelegationDepthExceededError` —— 被 loop.ts 现有的 try/catch 自动转成普通 ERROR 工具观测反馈给模型，不需要特殊处理。选 `AsyncLocalStorage` 而非在 `CallOptions`/`keyPrefix` 里传参，是因为它能跨多个独立的 `makeSubagentTool` 实例、且能在并发的、互不相关的委派链之间保持隔离（同一进程内两条并发链不会互相污染 depth）
+- Skills **不**自动 inherit 到子 agent（见下一节）
 
 ### 工业界 & 前沿
 | 做法 | 说明 |
@@ -367,6 +368,7 @@ L5: 反思记忆化 + 跨 run 复用
 | **Supervisor 路由模式** | LangGraph 推荐范式：supervisor 不参与任务分解，只做"这个问题该交给谁"的路由决策，每个 sub-agent 是完整独立的专家 |
 | **Budget 传播** | 父 agent 的 token/时间预算按比例分给子 agent，防止子 agent 无限制消耗拖垮父 agent 自身的预算 |
 | **结果聚合策略** | Map-Reduce（结构化合并而非文本拼接）/ 投票共识（类 Self-Consistency）/ 分层合并（避免子结果一次性塞爆父窗口） |
+| **Skills vs tools 继承** | Claude Code：tools 默认可 inherit；skills **不** inherit，子 agent frontmatter 显式 `skills: [...]` preload |
 
 ### 要点
 - "子 agent 的价值是上下文隔离——繁重子任务不污染主 agent 的窗口"
@@ -375,7 +377,56 @@ L5: 反思记忆化 + 跨 run 复用
 
 ---
 
-## 十、Session（多轮用户对话）
+## 十、Skills（Agent playbook 注册）
+
+> Skill = 当前 agent 的静态 playbook（步骤 / 约束 / 输出格式）。**不是**工具实现，也**不是** sub-agent。
+
+### 本项目实现
+
+| 模块 | 职责 |
+|------|------|
+| `skills/types.ts` | `SkillSpec` / `SkillLoadMode`（`eager` \| `on_demand`） |
+| `skills/load.ts` | `parseSkillMarkdown` / `loadSkillFile`（轻量 frontmatter，零 YAML 依赖） |
+| `skills/tools.ts` | on_demand：`skill_list` + `skill_read`（静态正文 → `AugmentedToolInvoker` 本地挂载，durable 重放安全） |
+| `skills/resolve.ts` | `createAgent` 物化：catalog 注入 instructions；eager 内联正文；subAgents → `delegate_<name>` |
+| runtime adapter | `createHarnessWorkflow({ agent: { skills, skillLoadMode } })` |
+
+**加载策略：**
+- **默认 `on_demand`**：instructions 只注入 name + description 目录；模型按需 `skill_read`
+- **`eager`（opt-in）**：全文写入 instructions；不挂 skill 工具
+- 可按 skill 混用 `loadMode`
+
+**与 sub-agent 的边界：**
+- Skills 只物化到声明它们的那个 `AgentConfig`
+- 父 skills **不**自动传给子 agent；子 agent 需自己声明（对齐 Claude Code）
+
+### 工业界对照
+
+| 做法 | 本项目 | 说明 |
+|------|--------|------|
+| Catalog + 按需读正文 | ✅ 默认 on_demand | Claude Code / Cursor skills 同类 |
+| Eager preload 白名单 | ✅ per-skill / `skillLoadMode` | Claude Code 子 agent `skills: [...]` 启动时注入全文 |
+| 父→子自动 inherit 全部 skills | ❌ 刻意不做 | 工业默认也不做；避免上下文膨胀与角色污染 |
+| 共享全局 skill 注册表 / AgentCatalogue | ❌ | Phase 3 候选 |
+| Skill 声明的 tool allowlist 强制执行 | 🟡 仅 soft hint（`SkillSpec.tools`） | 未做硬门禁 |
+
+### 当前 vs production-grade 差距
+
+| 差距 | 状态 |
+|------|------|
+| Host-side AgentCatalogue（按 name resolve） | ❌ |
+| 子 agent 显式 `inheritSkills: string[]` | ❌ 需要时在子 config 重复声明即可 |
+| 文档库 / 代码库 RAG 作为 skill 附件 | ❌ Phase 2（Retriever） |
+| Progressive disclosure（references 大文件） | 🟡 `references` 字段已有；无目录 discovery |
+
+### 要点
+- "Skill = 教当前 agent 怎么干；sub-agent = 把活交给另一个 agent"
+- "默认 on_demand：catalog 便宜，正文按需——长 playbook 不应开局塞满 context"
+- "不 inherit：显式列表是工业默认，也是安全边界"
+
+---
+
+## 十一、Session（多轮用户对话）
 
 ### 工业界对照
 

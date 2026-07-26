@@ -1,0 +1,15 @@
+---
+description: Always read and follow the repo-agent-instructions skill before working in this repo
+alwaysApply: true
+---
+
+# Repo instructions (mandatory)
+
+Before any implementation, refactor, documentation, or commit work in this repository:
+
+1. **Read** the shared project skill at `.agents/skills/repo-agent-instructions/SKILL.md` (or follow the `repo-agent-instructions` skill if already loaded).
+2. **Follow** all three rules in that skill: comment style, post-feature doc checklist, and docs-only-after-user-review.
+
+Do not skip this step even for "small" changes. If the skill and this rule disagree, the skill body wins.
+
+> This skill lives under `.agents/skills/` so Cursor and GitHub Copilot / VS Code both discover it.
