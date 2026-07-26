@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { cosineSimilarity, HashingEmbeddingProvider, reciprocalRankFusion, type EmbeddingProvider } from '../src/memory/embedding.js';
+import { cosineSimilarity, HashingEmbeddingProvider, reciprocalRankFusion, reciprocalRankFusionScored, type EmbeddingProvider } from '../src/memory/embedding.js';
 import { FileMemoryStore, InMemoryStore, type MemoryStore } from '../src/memory/store.js';
 
 function stores(): Array<[string, () => MemoryStore]> {
@@ -120,6 +120,14 @@ describe('reciprocalRankFusion', () => {
 
   it('preserves single-ranking order when only one ranking is given', () => {
     expect(reciprocalRankFusion([['x', 'y', 'z']], (s) => s, 3)).toEqual(['x', 'y', 'z']);
+  });
+
+  it('exposes the fused RRF score used for ordering', () => {
+    // 'y' ranks in both lists (1st list rank1, 2nd list rank0) → highest RRF.
+    const scored = reciprocalRankFusionScored([['x', 'y'], ['y', 'z']], (x) => x, 3);
+    expect(scored[0]!.item).toBe('y');
+    expect(scored[0]!.score).toBeCloseTo(1 / 61 + 1 / 62, 5);
+    expect(scored[0]!.score).toBeGreaterThan(scored[1]!.score);
   });
 });
 

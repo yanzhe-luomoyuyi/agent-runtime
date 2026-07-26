@@ -112,6 +112,7 @@ ProtocolDecision =
 |------|--------|------|
 | Working memory（run 内） | ✅ | 压缩 + scratchpad |
 | 跨会话持久记忆 | ✅ runtime | `memory_write/search/read` 工具 + FileMemoryStore |
+| 文档 / 代码库 RAG | 🟡 | runtime Retriever + query-time `once`；skill 附件语料仍未做 |
 | **MemGPT / Letta** 三层记忆 | 🟡 | Working/Episodic/Semantic，OS 式管理；scratchpad 算平民版分页 |
 | **CrewAI** 记忆分离 | ❌ | 短期/长期/实体记忆 + 向量检索 |
 | **Mem0** 自动提炼 | ❌ | 刻意不做——自动提炼高危，留人工闸门 |
@@ -133,14 +134,19 @@ ProtocolDecision =
 | 做法 | 本项目 | 说明 |
 |------|--------|------|
 | 重要性评分 | ✅ | tool error > write > read；单位是 atomic unit（max 成员分） |
-| 词法检索 | ✅ | 零依赖 mini-BM25（含 CJK） |
-| 语义/embedding 检索 | ❌ | seam 已留 |
+| 词法检索 | ✅ | 零依赖 mini-BM25（含 CJK）；Memory + DocumentStore |
+| 语义/embedding 检索 | 🟡 | `EmbeddingProvider` seam + 默认 `HashingEmbeddingProvider`（确定性 demo，非真语义模型） |
+| 文档 RAG（query-time） | ✅ | runtime `retrieval/` + `document_*` 工具；默认 `RetrievalPolicy.mode=once`；harness `context/retrieval.ts` gate/注入 |
+| hybrid（RRF） | ✅ | 排序与对外 `score` 均为 RRF 分；可选 `maxTextChars` 截断 search 文本 |
+| Agentic 多跳检索 | 🟡 | `capped_agentic` 枚举已留；硬顶 enforcement / 默认不暴露 search 给模型仍待补全 |
 | 静态前缀排序 | ✅ | OpenAI 前缀缓存直接受益 |
 | Anthropic cache breakpoints | ❌ | 暂缓 |
 
 ### 架构决策
-- **操作 transcript → harness**（tokenizer、压缩、scratchpad、untrusted 围栏）。无状态、per-run。
-- **跨 run 持久化 → runtime**。记忆读必须走 `ctx.callTool` 被记日志，否则 replay 读到已变 store。
+- **操作 transcript → harness**（tokenizer、压缩、scratchpad、untrusted 围栏、retrieval **注入**）。无状态、per-run；**不持有**文档索引。
+- **跨 run 持久化 → runtime**。记忆读与文档检索读必须走 `ctx.callTool` 被记日志，否则 replay 读到已变 store。
+- **Memory ≠ Document corpus**：短事实 vs 文档 chunk；平行 store，不要混表。
+- **通用引擎默认 `once`**：系统单次检索 + gate；模型连搜是 opt-in（省算力）。
 - **正确性优先于启发式**：淘汰原子单位是 tool-call group；`keepRecent` 是 pin，不是可被重要性推翻的软提示。
 - **暂缓 `score × recencyDecay`**：与 pin 语义重叠、缺 telemetry 前无法证伪；先观测再平滑。
 - "Context engineering 核心矛盾：窗口有限 vs 信息无限 → 解法是信息密度最大化"
@@ -416,8 +422,8 @@ L5: 反思记忆化 + 跨 run 复用
 |------|------|
 | Host-side AgentCatalogue（按 name resolve） | ❌ |
 | 子 agent 显式 `inheritSkills: string[]` | ❌ 需要时在子 config 重复声明即可 |
-| 文档库 / 代码库 RAG 作为 skill 附件 | ❌ Phase 2（Retriever） |
-| Progressive disclosure（references 大文件） | 🟡 `references` 字段已有；无目录 discovery |
+| 文档库 / 代码库 RAG 作为 skill 附件 | ❌ | 平台 Retriever + query-time `once` 已有；skill↔corpus 绑定仍待做 |
+| Progressive disclosure（references 大文件） | 🟡 | `references` 字段已有；无目录 discovery |
 
 ### 要点
 - "Skill = 教当前 agent 怎么干；sub-agent = 把活交给另一个 agent"

@@ -41,6 +41,11 @@ import { systemMessage, toolResultMessage, userMessage } from '@agent/contracts'
 
 import type { AgentConfig } from '../agent.js';
 import { ContextManager } from '../context/manager.js';
+import {
+  buildRetrievalMessages,
+  type RetrievalHit,
+  type RetrievalInjectOptions,
+} from '../context/retrieval.js';
 import { interpretResponse, type PreparedCall } from '../protocol/tool-calling.js';
 import { callSignature, LoopDetector, type LoopDetectorOptions } from '../recovery/loop-detector.js';
 import { withRetry, type RetryOptions } from '../recovery/retry.js';
@@ -125,6 +130,15 @@ export interface RunAgentOptions {
    * current goal so the model sees the full conversation context.
    */
   conversationHistory?: Message[];
+  /**
+   * Host-supplied retrieval hits (query-time RAG). Gated and injected as
+   * untrusted messages between history and the current goal. The harness does
+   * not search — the host owns the Retriever / policy.
+   */
+  retrieval?: {
+    hits: RetrievalHit[];
+    inject?: RetrievalInjectOptions;
+  };
   context?: ContextManager;
   /** Hard cap on turns so a misbehaving model cannot loop forever. Default 12. */
   maxTurns?: number;
@@ -255,7 +269,10 @@ function initLoopState(opts: RunAgentOptions): LoopState {
     convo: [
       systemMessage(systemPrompt),
       ...(opts.conversationHistory ?? []),
-      userMessage(`Goal: ${opts.goal}`)
+      ...(opts.retrieval
+        ? buildRetrievalMessages(opts.retrieval.hits, opts.retrieval.inject).messages
+        : []),
+      userMessage(`Goal: ${opts.goal}`),
     ],
     toolsUsed: [],
     retryCount: 0,

@@ -133,7 +133,7 @@ sequenceDiagram
 | --- | --- | --- |
 | **A 协议** | [protocol/tool-calling.ts](agent-harness/src/protocol/tool-calling.ts) · [schema/validate.ts](agent-harness/src/schema/validate.ts) | 把 `ChatResponse` 解释成已校验的 tool call 或最终答案；执行**前**按各工具的 `inputSchema` 校验参数——非法调用变成结构化错误而非崩溃；内置一个为不支持原生 tool-calling 的模型准备的容错文本解析器。 |
 | **B 恢复** | [recovery/retry.ts](agent-harness/src/recovery/retry.ts) · [recovery/loop-detector.ts](agent-harness/src/recovery/loop-detector.ts) | 只对**瞬时性**失败执行退避重试（HTTP 429/5xx 分类 + `Retry-After` 头 + 指数退避 + full jitter）；把工具抛出的异常转化为模型能理解的 observation；检测无进展的死循环——包括单次重复调用和重复序列模式（A→B→A→B）。 |
-| **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) | 在 token 预算内组装 prompt + 滚动压缩；**atomic tool-call 单元**淘汰（不拆 assistant/tool）；**近期 pin + 重要性**硬顶裁剪；observation 截断；**untrusted 输出隔离**（工具结果只当数据、绝不当指令）。 |
+| **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) · [context/retrieval.ts](agent-harness/src/context/retrieval.ts) | 在 token 预算内组装 prompt + 滚动压缩；**atomic tool-call 单元**淘汰（不拆 assistant/tool）；**近期 pin + 重要性**硬顶裁剪；observation 截断；**untrusted 输出隔离**（工具结果与检索命中只当数据）；宿主传入的 retrieval hits 经 gate 后注入 Goal 之前。 |
 | **D 控制** | [control/loop.ts](agent-harness/src/control/loop.ts) · [planner.ts](agent-harness/src/control/planner.ts) · [reflection.ts](agent-harness/src/control/reflection.ts) · [subagent.ts](agent-harness/src/control/subagent.ts) · [human.ts](agent-harness/src/control/human.ts) | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行）、`runReflectiveAgent`（自我批评并修订）、`makeSubagentTool`（把子任务委派封装成一个工具）、以及 human-in-the-loop 的 `Approver`。 |
 | **Skills** | [skills/](agent-harness/src/skills) · [agent.ts](agent-harness/src/agent.ts) | Playbook 注册：`SkillSpec` + markdown loader；`createAgent` 默认 **on_demand**（catalog + `skill_list`/`skill_read`），可选 **eager** 全文内联；`subAgents` 自动挂 `delegate_<name>`。skills 与 sub-agent 正交，**不自动 inherit**。 |
 
@@ -176,6 +176,8 @@ flowchart LR
 | [mcp/](durable-agent-runtime/src/mcp/index.ts) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
 | [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
 | [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |
+| [memory/](durable-agent-runtime/src/memory/) | 跨会话短记忆（scope + lexical/semantic/hybrid）。 |
+| [retrieval/](durable-agent-runtime/src/retrieval/) | 文档 RAG：`DocumentStore` / `Retriever` / `RetrievalPolicy`（默认 query-time `once`）。 |
 | [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；可组合的打分器（含 LLM 裁判）。 |
 | [otel.ts](durable-agent-runtime/src/otel.ts) | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往标准后端。 |
 | [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace`（含 `--otel`）/ `eval` / `chat`；通过环境变量切换多种执行模式。 |
@@ -185,9 +187,9 @@ flowchart LR
 
 | 模块 | 职责 |
 | --- | --- |
-| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker` 在 `StepContext` 上实现契约并转发 `key`；`createHarnessWorkflow` 把 `runAgent` 包成单个 durable step。 |
+| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker` 在 `StepContext` 上实现契约并转发 `key`；`createHarnessWorkflow` 把 `runAgent` 包成单个 durable step；可选 `retrieval`（系统 once 检索 + 注入）。 |
 | [issue-workflow.ts](durable-agent-runtime/src/app/issue-workflow.ts) | demo 的 `issue → fix` Agent，声明为 `analyze → locate → propose` 三阶段。 |
-| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性的 mock 工具 / 模型响应、通过 MCP base SDK 暴露同一批工具的封装、eval 测试场景、内置 agent 循环的 mock 模型大脑。 |
+| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [document-tools.ts](durable-agent-runtime/src/app/document-tools.ts) · [memory-tools.ts](durable-agent-runtime/src/app/memory-tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性 mock 工具 / 文档检索工具 / 记忆工具、MCP 封装、eval 场景、内置 agent 循环的 mock 模型大脑。 |
 
 状态永远是「算出来的」，不是「存下来的」：
 

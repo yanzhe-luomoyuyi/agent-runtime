@@ -58,7 +58,8 @@ flowchart LR
 - **工具注册表** ([src/tools/registry.ts](src/tools/registry.ts)) — 遵循 MCP 规范的 `ToolDef` / `ToolRegistry` 契约，本地工具和远程 MCP 工具在运行时眼里完全一样。
 - **声明式策略层** ([src/policy.ts](src/policy.ts)) — 可复用的护栏中间件，作用于统一的工具/模型调用通道：以数据声明 `Policy`（工具 allow-list · 成本预算 · PII 脱敏 · **按工具的 token-bucket 限流**）。拒绝操作记录为 `PolicyDenied` 事件，护栏可观测、可 eval 测试——而不是硬编码在 server 代码里。限流 bucket 故意不事件源化（进程内存状态，重启重置满额）——重放历史不应该重新触发限流判断。
 - **共享 MCP base SDK** ([src/mcp/](src/mcp/)) — 把每个 MCP server 都要重复实现的横切逻辑一次性提取出来：JSON-RPC 框架、可替换 transport、**共享** token cache。adapter 把 server 的工具投影进 `ToolRegistry`，让 N 个 server 共享一个 client + 一个 auth cache，而不是每个 server 各自实现一遍 curl / JSON-RPC / token 缓存。
-- **跨会话记忆** ([src/memory/store.ts](src/memory/store.ts)) — 持久、分 scope、活过单次 run 的知识（事实 / 偏好 / how-to）。与 per-run 事件日志**完全分开**：一个 scope 一个 JSON 文件、原子写（tmp+rename）、**内容哈希 id 保证幂等写**（崩溃重放不产生重复）。支持 `mode: lexical`（默认，零依赖词法检索）/ `semantic`（`EmbeddingProvider` 余弦相似度检索，默认 `HashingEmbeddingProvider` feature-hashing 实现）/ `hybrid`（Reciprocal Rank Fusion 融合两者）。记忆以普通工具（`memory_write/search/read`）形式暴露给模型；读写走 `ctx.callTool` 被记日志，所以即使其他会话改了 store，replay 仍确定。
+- **跨会话记忆** ([src/memory/store.ts](src/memory/store.ts)) — 持久、分 scope、活过单次 run 的知识（事实 / 偏好 / how-to）。与 per-run 事件日志**完全分开**：一个 scope 一个 JSON 文件、原子写（tmp+rename）、**内容哈希 id 保证幂等写**（崩溃重放不产生重复）。支持 `mode: lexical`（默认，零依赖词法检索）/ `semantic`（`EmbeddingProvider` 余弦相似度检索，默认 `HashingEmbeddingProvider` feature-hashing 实现）/ `hybrid`（Reciprocal Rank Fusion 融合两者；排序与对外 `score` 均为 RRF 分）。记忆以普通工具（`memory_write/search/read`）形式暴露给模型；读写走 `ctx.callTool` 被记日志，所以即使其他会话改了 store，replay 仍确定。
+- **文档 RAG / Retriever** ([src/retrieval/](src/retrieval/)) — 与 Memory **平行**：corpus 级文档 chunk 存储 + `Retriever` 缝 + `RetrievalPolicy`（默认 `mode: once` = query 进 loop 前系统检索一次，不默认让模型连搜）。`InMemoryDocumentStore` / `StoreRetriever`；hybrid 暴露 RRF 分；search 可选 `maxTextChars` 截断，全文走 `document_read`。
 - **死信队列** ([src/dead-letter-store.ts](src/dead-letter-store.ts)) — `FileDeadLetterQueue`：实现 `@agent/harness` 的 `DeadLetterQueue` 接口，一个 JSON 文件存整个队列，原子写（tmp+rename）。选配 `RuntimeOptions.deadLetterQueue` 后，工具调用在 `callTool` 漏斗里最终失败时会被内容寻址地记录下来（同一 tool+args 重复失败 upsert `attempts` 而非堆叠），供人工复盘后用 `retryDeadLetter()` 重放；日志仍正常记 `ToolCallFailed` 并失败，入队只是人工审阅的旁路通道。
 - **Trace 可观测性** ([src/trace.ts](src/trace.ts)) — 从事件日志派生 span 时间线 + token / 成本 / 延迟汇总。统计持久化重放的关键指标：`replayHitRate`、`cachedModelCalls`、`costSavedUsd`。
 - **OpenTelemetry 导出** ([src/otel.ts](src/otel.ts)) — 把 `trace.ts` 派生出的 span 桥接成真正的 OTel span（父子关系按 `Span.depth` 用栈重建，时间戳锚定在 `Trace.startedAtMs` 上，是历史真实时间而非导出时刻）。没配置 collector 时退回 `ConsoleSpanExporter`，离线也能跑；配置了 `OTEL_EXPORTER_OTLP_ENDPOINT` 就通过 OTLP/HTTP 发到 Jaeger / Tempo / Honeycomb 等任意标准后端。刻意放在运行时而不是 harness——导出是真实网络 IO，harness 只产出结构化数据、不碰 IO。
@@ -101,6 +102,7 @@ flowchart LR
 - **Eval 场景** ([src/app/scenarios.ts](src/app/scenarios.ts)) — demo 的测试场景 + 预期结果，供 eval 框架打分。
 - **Agent 场景模型** ([src/app/agent-scenario.ts](src/app/agent-scenario.ts)) — 内置 agent 循环的确定性 mock 模型大脑：`getIssue` → `searchCode` → `finish`。
 - **记忆工具** ([src/app/memory-tools.ts](src/app/memory-tools.ts)) — 把 `MemoryStore` 包成 `memory_write/search/read` 并绑定 scope；`registerMemoryTools()` 把它们注册进 `ToolRegistry`，从而读写走得 durable seam、完全可重放。
+- **文档检索工具** ([src/app/document-tools.ts](src/app/document-tools.ts)) — `document_search` / `document_read`，corpus 在注册时绑定；与 `createHarnessWorkflow({ retrieval })` 配合：`once` 模式由系统经 `ctx.callTool` 检索一次并注入 harness，且对模型隐藏检索工具以免重复搜。
 
 ---
 

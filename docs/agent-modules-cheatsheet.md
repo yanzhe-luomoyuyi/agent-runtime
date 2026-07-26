@@ -24,6 +24,7 @@
 | 模块 | 一句话 |
 |------|--------|
 | `context/manager.ts` | Token 预算硬顶；atomic tool-call 单元淘汰；近期 pin + 重要性折扣扩窗；untrusted 隔离；keyed LLM 主动压缩 |
+| `context/retrieval.ts` | Query-time RAG 注入：gate（minScore / maxChunks / char 预算）→ untrusted 消息；不持有索引 |
 | `context/tokenizer.ts` | CJK ≈ 1 token/字估算；`fromCounter` 可接 tiktoken |
 | `context/scratchpad.ts` | 超大工具输出卸载到外部存储，窗口留指针 |
 
@@ -88,7 +89,9 @@
 |------|--------|
 | `memory/store.ts` | 跨会话持久记忆：分 scope + 内容哈希幂等写；FileMemoryStore 原子写；`mode: lexical/semantic/hybrid` 可选检索策略 |
 | `memory/lexical.ts` | 零依赖 mini-BM25 词法打分（含 常见 CJK），确定性检索 |
-| `memory/embedding.ts` | `EmbeddingProvider` 可插拔接口 + `HashingEmbeddingProvider`（feature-hashing 词袋向量，零依赖、确定性）+ `reciprocalRankFusion`（RRF 混合检索） |
+| `memory/embedding.ts` | `EmbeddingProvider` 可插拔接口 + `HashingEmbeddingProvider` + `reciprocalRankFusion` / `reciprocalRankFusionScored`（RRF；hybrid 对外分即 RRF） |
+| `retrieval/` | 文档 RAG：`DocumentStore` / `StoreRetriever` / `RetrievalPolicy`（默认 `once`）/ `systemRetrieveOnce`；search 可选 `maxTextChars` |
+| `app/document-tools.ts` | `document_search` / `document_read`（corpus 绑定；走 durable seam） |
 | harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策 / token 估价（非 event-log） |
 | `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟/replay/policy/cache 汇总 |
 | `otel.ts` | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出 |

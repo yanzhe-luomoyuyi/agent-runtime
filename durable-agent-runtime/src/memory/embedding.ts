@@ -112,8 +112,16 @@ export function rankByEmbedding<T>(
  * of this). `kRrf` (default 60, the value used in the original TREC paper and
  * most production deployments) dampens the influence of any single ranking's
  * top result.
+ *
+ * The returned `score` IS the fused RRF value (sum of `1/(kRrf+rank+1)` across
+ * lists) — use it for gating / display; do not re-attach lexical/cosine scores.
  */
-export function reciprocalRankFusion<T>(rankings: T[][], keyOf: (item: T) => string, k: number, kRrf = 60): T[] {
+export function reciprocalRankFusionScored<T>(
+  rankings: T[][],
+  keyOf: (item: T) => string,
+  k: number,
+  kRrf = 60,
+): Array<{ item: T; score: number }> {
   const scores = new Map<string, number>();
   const itemByKey = new Map<string, T>();
   for (const ranking of rankings) {
@@ -126,5 +134,10 @@ export function reciprocalRankFusion<T>(rankings: T[][], keyOf: (item: T) => str
   return [...scores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, Math.max(0, k))
-    .map(([key]) => itemByKey.get(key)!);
+    .map(([key, score]) => ({ item: itemByKey.get(key)!, score }));
+}
+
+/** Same as `reciprocalRankFusionScored` but drops the fused scores (items only). */
+export function reciprocalRankFusion<T>(rankings: T[][], keyOf: (item: T) => string, k: number, kRrf = 60): T[] {
+  return reciprocalRankFusionScored(rankings, keyOf, k, kRrf).map((s) => s.item);
 }
