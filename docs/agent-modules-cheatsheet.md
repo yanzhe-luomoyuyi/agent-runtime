@@ -90,8 +90,9 @@
 | `memory/store.ts` | 跨会话持久记忆：分 scope + 内容哈希幂等写；FileMemoryStore 原子写；`search` async；`mode: lexical/semantic/hybrid` |
 | `memory/lexical.ts` | 零依赖 mini-BM25 词法打分（含 常见 CJK），确定性检索 |
 | `memory/embedding.ts` | async-first `EmbeddingProvider`（可选 `embedMany`）+ 默认 `HashingEmbeddingProvider` + `CachingEmbeddingProvider` + `createHttpEmbeddingProvider` + RRF |
-| `retrieval/` | 文档 RAG：`DocumentStore` / `StoreRetriever` / `RetrievalPolicy`（默认 `once`）/ `systemRetrieveOnce`；search 可选 `maxTextChars` |
+| `retrieval/` | 文档 RAG：`DocumentStore` / `StoreRetriever` / `RetrievalPolicy`（默认 `once`；`capped_agentic` + `maxRetrieves` 硬顶）/ `systemRetrieveOnce`；search 可选 `maxTextChars` |
 | `app/document-tools.ts` | `document_search` / `document_read`（corpus 绑定；走 durable seam） |
+| `app/harness-adapter.ts` | harness↔runtime；`RuntimeToolInvoker` 可按 state 强制 document_search 预算 |
 | harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策 / token 估价（非 event-log） |
 | `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟/replay/policy/cache 汇总 |
 | `otel.ts` | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出 |

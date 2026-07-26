@@ -41,22 +41,41 @@ import {
 } from '@agent/harness';
 
 import {
+  countDocumentSearchesInState,
+  documentSearchBudgetExhaustedMessage,
+  exposeRetrievalToolsToModel,
   resolveRetrievalPolicy,
+  RetrievalBudget,
   systemRetrieveOnce,
+  wantsSystemRetrieve,
   type RetrievalPolicy,
+  type ResolvedRetrievalPolicy,
   type Retriever,
 } from '../retrieval/index.js';
 import type { RunState } from '../types.js';
 import type { StepContext, WorkflowDef } from '../workflow.js';
-import { DOCUMENT_SEARCH_TOOL } from './document-tools.js';
+import { DOCUMENT_READ_TOOL, DOCUMENT_SEARCH_TOOL } from './document-tools.js';
+
+/** Options for retrieve-budget enforcement on the durable tool seam. */
+export interface RuntimeToolInvokerOptions {
+  /** Tool names registered but hidden from the model (e.g. once-mode document_search). */
+  hideFromModel?: ReadonlySet<string>;
+  /**
+   * Hard cap on `document_search` calls this run (system + agentic).
+   * Enforced before `ctx.callTool` for new calls; replays are always allowed.
+   */
+  maxDocumentSearches?: number;
+}
 
 /** Exposes the runtime's ToolRegistry to the harness, routing calls through the durable seam. */
 export class RuntimeToolInvoker implements ToolInvoker {
-  constructor(
-    private readonly ctx: StepContext,
-    /** Tool names registered but hidden from the model (e.g. once-mode document_search). */
-    private readonly hideFromModel: ReadonlySet<string> = new Set(),
-  ) {}
+  private readonly hideFromModel: ReadonlySet<string>;
+  private readonly maxDocumentSearches: number | undefined;
+
+  constructor(private readonly ctx: StepContext, opts: RuntimeToolInvokerOptions = {}) {
+    this.hideFromModel = opts.hideFromModel ?? new Set();
+    this.maxDocumentSearches = opts.maxDocumentSearches;
+  }
 
   list(): ToolSpec[] {
     return this.ctx.tools
@@ -69,7 +88,19 @@ export class RuntimeToolInvoker implements ToolInvoker {
       }));
   }
 
-  call(name: string, args: unknown, opts?: { key?: string }): Promise<unknown> {
+  async call(name: string, args: unknown, opts?: { key?: string }): Promise<unknown> {
+    if (name === DOCUMENT_SEARCH_TOOL && this.maxDocumentSearches !== undefined) {
+      const phase = this.ctx.state.currentPhase ?? 'agent';
+      const step = this.ctx.state.currentStep ?? 1;
+      const callId = `${phase}.${step}:${opts?.key ? `${opts.key}:` : ''}${name}`;
+      const isReplay = callId in this.ctx.state.toolResults;
+      if (!isReplay) {
+        const used = countDocumentSearchesInState(this.ctx.state, DOCUMENT_SEARCH_TOOL);
+        if (used >= this.maxDocumentSearches) {
+          return documentSearchBudgetExhaustedMessage(used, this.maxDocumentSearches);
+        }
+      }
+    }
     // Forward the harness key so the call is idempotent across resumes.
     return this.ctx.callTool(name, args, { key: opts?.key });
   }
@@ -173,12 +204,11 @@ export interface HarnessWorkflowOptions {
  */
 export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): WorkflowDef {
   const retrievalPolicy = resolveRetrievalPolicy(opts.retrieval?.policy);
-  // In once* modes the system already retrieved; keep search tools off the model's list
-  // so it cannot burn extra retrieves. capped_agentic leaves them visible.
+  // once*: system already retrieved — hide search/read from the model.
+  // capped_agentic: leave them visible, but RuntimeToolInvoker enforces maxRetrieves.
   const hideRetrievalTools =
-    opts.retrieval &&
-    (retrievalPolicy.mode === 'once' || retrievalPolicy.mode === 'once_rewrite')
-      ? new Set([DOCUMENT_SEARCH_TOOL, 'document_read'])
+    opts.retrieval && !exposeRetrievalToolsToModel(retrievalPolicy)
+      ? new Set([DOCUMENT_SEARCH_TOOL, DOCUMENT_READ_TOOL])
       : new Set<string>();
 
   return {
@@ -194,13 +224,17 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
             name: 'Harness loop',
             run: async (ctx) => {
               const chatModel = new RuntimeChatModel(ctx);
+              const toolInvoker = new RuntimeToolInvoker(ctx, {
+                hideFromModel: hideRetrievalTools,
+                maxDocumentSearches: opts.retrieval ? retrievalPolicy.maxRetrieves : undefined,
+              });
               const agent: AgentConfig = createAgent({
                 name: opts.agent?.name ?? 'harness-agent',
                 instructions:
                   opts.agent?.instructions ??
                   'You are a durable, tool-using agent. Achieve the user goal by calling tools one at a time (or several at once when they are independent). When finished, reply with a final answer and NO tool calls.',
                 model: chatModel,
-                tools: new RuntimeToolInvoker(ctx, hideRetrievalTools),
+                tools: toolInvoker,
                 skills: opts.agent?.skills,
                 skillLoadMode: opts.agent?.skillLoadMode,
                 maxTurns: opts.maxTurns,
@@ -246,17 +280,23 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
 /**
  * Prefer durable `document_search` (event-logged); fall back to a direct
  * Retriever when the tool is not registered (unit / non-durable hosts).
+ * Counts against the same maxRetrieves budget as agentic searches (via event
+ * log when using the tool, or RetrievalBudget when using a direct retriever).
  */
 async function systemRetrieveForStep(
   ctx: StepContext,
   retrieval: NonNullable<HarnessWorkflowOptions['retrieval']>,
-  policy: ReturnType<typeof resolveRetrievalPolicy>,
+  policy: ResolvedRetrievalPolicy,
 ): Promise<RetrievalHit[] | undefined> {
-  if (policy.mode === 'off') return undefined;
+  if (!wantsSystemRetrieve(policy)) return undefined;
+  if (policy.corpora && !policy.corpora.includes(retrieval.corpusId)) return undefined;
 
   const hasTool = ctx.tools.list().some((t) => t.name === DOCUMENT_SEARCH_TOOL);
   if (hasTool) {
-    if (policy.corpora && !policy.corpora.includes(retrieval.corpusId)) return undefined;
+    // Budget: if prior searches already filled the cap (e.g. odd resume), skip.
+    if (countDocumentSearchesInState(ctx.state, DOCUMENT_SEARCH_TOOL) >= policy.maxRetrieves) {
+      return undefined;
+    }
     const raw = await ctx.callTool<unknown>(
       DOCUMENT_SEARCH_TOOL,
       {
@@ -266,15 +306,21 @@ async function systemRetrieveForStep(
       },
       { key: 'retrieve:once' },
     );
+    // Budget exhaustion from a wrapped invoker isn't used here (system calls
+    // ctx.callTool directly). Cap is enforced for model calls via RuntimeToolInvoker.
+    if (typeof raw === 'string' && raw.startsWith('ERROR:')) return undefined;
     return normalizeSearchHits(raw);
   }
 
   if (!retrieval.retriever) return undefined;
+  const budget = new RetrievalBudget(policy.maxRetrieves);
+  budget.seedUsed(countDocumentSearchesInState(ctx.state, DOCUMENT_SEARCH_TOOL));
   const result = await systemRetrieveOnce({
     retriever: retrieval.retriever,
     policy,
     query: ctx.input.issue,
     corpusId: retrieval.corpusId,
+    budget,
   });
   return result.retrieved ? result.hits : undefined;
 }

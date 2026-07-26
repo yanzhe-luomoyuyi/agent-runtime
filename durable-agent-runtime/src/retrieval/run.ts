@@ -7,7 +7,6 @@
  */
 
 import {
-  exposeRetrievalToolsToModel,
   resolveRetrievalPolicy,
   RetrievalBudget,
   wantsSystemRetrieve,
@@ -64,4 +63,11 @@ export async function systemRetrieveOnce(opts: SystemRetrieveOptions): Promise<S
   return { hits, policy, retrievesUsed: budget.retrievesUsed, retrieved: true };
 }
 
-export { exposeRetrievalToolsToModel, resolveRetrievalPolicy, RetrievalBudget, wantsSystemRetrieve };
+export {
+  countDocumentSearchesInState,
+  documentSearchBudgetExhaustedMessage,
+  exposeRetrievalToolsToModel,
+  resolveRetrievalPolicy,
+  RetrievalBudget,
+  wantsSystemRetrieve,
+} from './policy.js';

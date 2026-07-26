@@ -2,9 +2,12 @@
  * Resolve retrieval policy defaults and track per-run retrieve budgets.
  *
  * Defaults bias toward predictable cost: `once` + `maxExtra: 0`. Agentic
- * multi-hop is available only when the product opts into `capped_agentic`.
+ * multi-hop is available only when the product opts into `capped_agentic`:
+ * system may still retrieve once, then the model may call `document_search`
+ * up to `maxExtra` more times (hard-capped by `maxRetrieves`).
  */
 
+import type { RunState } from '../types.js';
 import type { ResolvedRetrievalPolicy, RetrievalPolicy, RetrievalStrategyMode } from './types.js';
 
 /** Fill defaults. `once_rewrite` currently behaves like `once` (rewrite not implemented). */
@@ -35,7 +38,20 @@ export function exposeRetrievalToolsToModel(policy: ResolvedRetrievalPolicy): bo
   return policy.mode === 'capped_agentic' && policy.maxExtra > 0;
 }
 
-/** Mutable counter for enforce-maxRetrieves (system + optional agentic). */
+/**
+ * Count completed `document_search` results already in derived state.
+ * Used so resume does not reset the retrieve budget (replayed calls stay counted).
+ * callId shape: `<phase>.<step>:<optional key:>document_search`
+ */
+export function countDocumentSearchesInState(state: RunState, toolName = 'document_search'): number {
+  let n = 0;
+  for (const callId of Object.keys(state.toolResults)) {
+    if (callId === toolName || callId.endsWith(`:${toolName}`)) n += 1;
+  }
+  return n;
+}
+
+/** Mutable counter for non-durable / direct-retriever paths (no event log). */
 export class RetrievalBudget {
   private used = 0;
 
@@ -45,10 +61,27 @@ export class RetrievalBudget {
     return this.used;
   }
 
+  get remaining(): number {
+    return Math.max(0, this.maxRetrieves - this.used);
+  }
+
+  /** Seed used count (e.g. from already-logged searches on resume). */
+  seedUsed(n: number): void {
+    this.used = Math.max(0, Math.min(this.maxRetrieves, Math.floor(n)));
+  }
+
   /** Reserve one retrieve slot. Returns false when the budget is exhausted. */
   tryConsume(): boolean {
     if (this.used >= this.maxRetrieves) return false;
     this.used += 1;
     return true;
   }
+}
+
+/** Error string returned to the model when agentic search exceeds the hard cap. */
+export function documentSearchBudgetExhaustedMessage(used: number, max: number): string {
+  return (
+    `ERROR: document_search budget exhausted (${used}/${max} retrieves used this run). ` +
+    `Do not search again; answer with the evidence you already have.`
+  );
 }

@@ -138,7 +138,7 @@ ProtocolDecision =
 | 语义/embedding 检索 | 🟡 | async `EmbeddingProvider` 缝已通（`embed` / 可选 `embedMany`）；默认仍是 `HashingEmbeddingProvider`（确定性 demo，无同义词）；真模型用 `createHttpEmbeddingProvider` / 自实现接入，与 mock chat 正交 |
 | 文档 RAG（query-time） | ✅ | runtime `retrieval/` + `document_*` 工具；默认 `RetrievalPolicy.mode=once`；harness `context/retrieval.ts` gate/注入 |
 | hybrid（RRF） | ✅ | 排序与对外 `score` 均为 RRF 分；可选 `maxTextChars` 截断 search 文本 |
-| Agentic 多跳检索 | 🟡 | `capped_agentic` 枚举已留；硬顶 enforcement / 默认不暴露 search 给模型仍待补全 |
+| Agentic 多跳检索 | ✅ | `capped_agentic`：系统可先 once，模型可见 `document_search`，硬顶 `maxRetrieves`（默认 `1+maxExtra`）；超预算返回 ERROR 且不执行；resume 按 `toolResults` 计数不重置 |
 | Embedding 缓存 | ✅ | `CachingEmbeddingProvider`（进程内；replay 仍靠 logged tool 结果） |
 | 静态前缀排序 | ✅ | OpenAI 前缀缓存直接受益 |
 | Anthropic cache breakpoints | ❌ | 暂缓 |

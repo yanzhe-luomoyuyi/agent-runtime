@@ -14,6 +14,10 @@ export type RetrievalRankMode = 'lexical' | 'semantic' | 'hybrid';
 /**
  * Declarative knobs a product wires onto the engine.
  * Unset fields resolve to engine defaults (see `resolveRetrievalPolicy`).
+ *
+ * `capped_agentic`: system may retrieve once, then the model may call
+ * `document_search` until `maxRetrieves` (default `1 + maxExtra`) is hit;
+ * further searches return a budget ERROR without executing.
  */
 export interface RetrievalPolicy {
   /** Default `once` when a retriever/tools are configured. */

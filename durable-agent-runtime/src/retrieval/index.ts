@@ -7,6 +7,8 @@ export type {
   ResolvedRetrievalPolicy,
 } from './types.js';
 export {
+  countDocumentSearchesInState,
+  documentSearchBudgetExhaustedMessage,
   exposeRetrievalToolsToModel,
   resolveRetrievalPolicy,
   RetrievalBudget,

@@ -8,13 +8,16 @@ import { MockAgentModel } from '../src/app/agent-scenario.js';
 import { registerDocumentTools } from '../src/app/document-tools.js';
 import { createHarnessWorkflow } from '../src/app/harness-adapter.js';
 import { EventLog, runDir } from '../src/eventlog.js';
+import { HashingEmbeddingProvider } from '../src/memory/embedding.js';
+import type { ModelProvider, ModelResult } from '../src/model/provider.js';
+import { estimateTokens } from '../src/model/provider.js';
 import {
+  countDocumentSearchesInState,
   InMemoryDocumentStore,
   resolveRetrievalPolicy,
   StoreRetriever,
   systemRetrieveOnce,
 } from '../src/retrieval/index.js';
-import { HashingEmbeddingProvider } from '../src/memory/embedding.js';
 import { Runtime } from '../src/runtime.js';
 import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
 
@@ -172,5 +175,95 @@ describe('query-time RAG on harness workflow', () => {
     );
     expect(searches.length).toBe(1);
     expect(JSON.stringify((searches[0] as { result: unknown }).result)).toContain('session');
+  });
+
+  it('capped_agentic allows model document_search until maxRetrieves, then returns budget ERROR', async () => {
+    const store = new InMemoryDocumentStore();
+    store.upsert('kb', [
+      { id: '1', text: 'alpha login session notes', metadata: {} },
+      { id: '2', text: 'beta billing notes', metadata: {} },
+    ]);
+
+    let searchRuns = 0;
+    const tools = new ToolRegistry();
+    registerDocumentTools(tools, store, 'kb');
+    const original = tools.get('document_search');
+    tools.register({
+      ...original,
+      run: async (args) => {
+        searchRuns++;
+        return original.run(args);
+      },
+    });
+
+    /** System retrieve once, then keep calling document_search until budget error, then finish. */
+    class AgenticSearchModel implements ModelProvider {
+      readonly name = 'agentic-search';
+      async complete(prompt: string): Promise<ModelResult> {
+        const goal = /Goal:\s*(.+)/.exec(prompt)?.[1]?.trim() ?? 'q';
+        const searchCalls = [...prompt.matchAll(/called document_search\(/g)].length;
+        const sawBudgetError = /document_search budget exhausted/i.test(prompt);
+
+        let decision: unknown;
+        if (sawBudgetError) {
+          decision = { action: 'finish', answer: 'stopped after budget' };
+        } else if (searchCalls === 0) {
+          // After system inject, transcript may not yet show document_search as "called".
+          // First model turn: always try an agentic search.
+          decision = { action: 'call_tool', tool: 'document_search', args: { query: goal } };
+        } else {
+          decision = { action: 'call_tool', tool: 'document_search', args: { query: `${goal} refine` } };
+        }
+        const text = JSON.stringify(decision);
+        return { text, promptTokens: estimateTokens(prompt), completionTokens: estimateTokens(text) };
+      }
+    }
+
+    // maxExtra=1 → maxRetrieves=2: system(1) + one agentic success; second agentic hits ERROR (no run).
+    const runtime = new Runtime({
+      baseDir,
+      model: new AgenticSearchModel(),
+      tools,
+      workflow: createHarnessWorkflow({
+        maxTurns: 6,
+        retrieval: {
+          corpusId: 'kb',
+          policy: { mode: 'capped_agentic', maxExtra: 1 },
+        },
+      }),
+    });
+
+    const state = await runtime.run('login session');
+    expect(state.status).toBe('completed');
+    // system + 1 agentic actual executions; 3rd attempt blocked before run()
+    expect(searchRuns).toBe(2);
+
+    const summary = state.summary as { toolsUsed?: string[]; proposal?: string };
+    expect(summary.toolsUsed?.filter((t) => t === 'document_search').length).toBe(2);
+    expect(summary.proposal).toContain('budget');
+
+    const events = new EventLog(runDir(baseDir, state.runId)).all();
+    const succeeded = events.filter(
+      (e) => e.type === 'ToolCallSucceeded' && (e as { tool?: string }).tool === 'document_search',
+    );
+    expect(succeeded.length).toBe(2);
+  });
+});
+
+describe('countDocumentSearchesInState', () => {
+  it('counts callIds ending with :document_search', () => {
+    const state = {
+      runId: 'r',
+      status: 'running' as const,
+      phases: {},
+      stepOutputs: {},
+      toolResults: {
+        'agent.1:retrieve:once:document_search': [{ id: '1' }],
+        'agent.1:t1:c1:document_search': [{ id: '2' }],
+        'agent.1:t1:c2:getIssue': {},
+      },
+      modelResults: {},
+    };
+    expect(countDocumentSearchesInState(state)).toBe(2);
   });
 });

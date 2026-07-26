@@ -177,7 +177,7 @@ flowchart LR
 | [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
 | [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |
 | [memory/](durable-agent-runtime/src/memory/) | 跨会话短记忆（scope + lexical/semantic/hybrid）；async `EmbeddingProvider` 缝（默认 hashing，可换真模型）。 |
-| [retrieval/](durable-agent-runtime/src/retrieval/) | 文档 RAG：`DocumentStore` / `Retriever` / `RetrievalPolicy`（默认 query-time `once`）。 |
+| [retrieval/](durable-agent-runtime/src/retrieval/) | 文档 RAG：`DocumentStore` / `Retriever` / `RetrievalPolicy`（默认 `once`；可选 `capped_agentic` + `maxRetrieves` 硬顶）。 |
 | [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；可组合的打分器（含 LLM 裁判）。 |
 | [otel.ts](durable-agent-runtime/src/otel.ts) | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往标准后端。 |
 | [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace`（含 `--otel`）/ `eval` / `chat`；通过环境变量切换多种执行模式。 |
@@ -187,7 +187,7 @@ flowchart LR
 
 | 模块 | 职责 |
 | --- | --- |
-| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker` 在 `StepContext` 上实现契约并转发 `key`；`createHarnessWorkflow` 把 `runAgent` 包成单个 durable step；可选 `retrieval`（系统 once 检索 + 注入）。 |
+| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker` 在 `StepContext` 上实现契约并转发 `key`；`createHarnessWorkflow` 把 `runAgent` 包成单个 durable step；可选 `retrieval`（`once` / `capped_agentic` + 预算硬顶）。 |
 | [issue-workflow.ts](durable-agent-runtime/src/app/issue-workflow.ts) | demo 的 `issue → fix` Agent，声明为 `analyze → locate → propose` 三阶段。 |
 | [tools.ts](durable-agent-runtime/src/app/tools.ts) · [document-tools.ts](durable-agent-runtime/src/app/document-tools.ts) · [memory-tools.ts](durable-agent-runtime/src/app/memory-tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性 mock 工具 / 文档检索工具 / 记忆工具、MCP 封装、eval 场景、内置 agent 循环的 mock 模型大脑。 |
 
