@@ -176,7 +176,7 @@ flowchart LR
 | [mcp/](durable-agent-runtime/src/mcp/index.ts) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
 | [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
 | [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |
-| [memory/](durable-agent-runtime/src/memory/) | 跨会话短记忆（scope + lexical/semantic/hybrid）。 |
+| [memory/](durable-agent-runtime/src/memory/) | 跨会话短记忆（scope + lexical/semantic/hybrid）；async `EmbeddingProvider` 缝（默认 hashing，可换真模型）。 |
 | [retrieval/](durable-agent-runtime/src/retrieval/) | 文档 RAG：`DocumentStore` / `Retriever` / `RetrievalPolicy`（默认 query-time `once`）。 |
 | [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；可组合的打分器（含 LLM 裁判）。 |
 | [otel.ts](durable-agent-runtime/src/otel.ts) | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往标准后端。 |

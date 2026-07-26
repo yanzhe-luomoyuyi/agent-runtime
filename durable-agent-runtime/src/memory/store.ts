@@ -36,10 +36,9 @@
  * deterministic, no model call. Passing an `EmbeddingProvider` (see
  * `embedding.ts`) to the constructor unlocks `mode: 'semantic'` (rank by
  * cosine similarity) and `mode: 'hybrid'` (fuse both rankings via Reciprocal
- * Rank Fusion — exact-term precision from lexical, token-overlap tolerance
- * from the embedding). With no provider configured, `semantic`/`hybrid`
- * silently fall back to lexical — this is an additive, opt-in upgrade, not a
- * breaking change to existing callers.
+ * Rank Fusion). With no provider configured, `semantic`/`hybrid`
+ * silently fall back to lexical. `search` is async so remote (Promise-returning)
+ * embedding providers work; the default hashing provider stays local/sync.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -79,7 +78,8 @@ export interface MemoryQueryOptions {
 export interface MemoryStore {
   write(scope: string, text: string, opts?: MemoryWriteOptions): MemoryRecord;
   read(scope: string, id: string): MemoryRecord | undefined;
-  search(scope: string, query: string, opts?: MemoryQueryOptions): MemoryRecord[];
+  /** Async so semantic/hybrid can await remote EmbeddingProviders. Lexical is sync under the hood. */
+  search(scope: string, query: string, opts?: MemoryQueryOptions): Promise<MemoryRecord[]>;
   list(scope: string, opts?: MemoryQueryOptions): MemoryRecord[];
   /** Reserved for TTL / correction workflows. Returns true if a record was removed. */
   delete(scope: string, id: string): boolean;
@@ -118,7 +118,7 @@ abstract class BaseMemoryStore implements MemoryStore {
     return this.load(scope).find((r) => r.id === id);
   }
 
-  search(scope: string, query: string, opts: MemoryQueryOptions = {}): MemoryRecord[] {
+  async search(scope: string, query: string, opts: MemoryQueryOptions = {}): Promise<MemoryRecord[]> {
     const pool = filterRecords(this.load(scope), opts);
     const limit = opts.limit ?? 5;
     const textOf = (r: MemoryRecord) => `${r.text} ${r.tags.join(' ')}`;
@@ -129,12 +129,12 @@ abstract class BaseMemoryStore implements MemoryStore {
       return rankByRelevance(query, pool, textOf, limit).map((s) => s.item);
     }
     if (mode === 'semantic') {
-      return rankByEmbedding(query, pool, textOf, limit, embeddings).map((s) => s.item);
+      return (await rankByEmbedding(query, pool, textOf, limit, embeddings)).map((s) => s.item);
     }
     // hybrid: fuse both rankings via RRF instead of averaging raw scores, which
     // live on incomparable scales (lexical overlap count vs. cosine similarity).
     const lexical = rankByRelevance(query, pool, textOf, pool.length).map((s) => s.item);
-    const semantic = rankByEmbedding(query, pool, textOf, pool.length, embeddings).map((s) => s.item);
+    const semantic = (await rankByEmbedding(query, pool, textOf, pool.length, embeddings)).map((s) => s.item);
     return reciprocalRankFusion([lexical, semantic], (r) => r.id, limit);
   }
 

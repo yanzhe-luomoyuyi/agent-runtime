@@ -59,16 +59,15 @@ export function memoryToolDefs(store: MemoryStore, scope: string): ToolDef[] {
         },
         required: ['query'],
       },
-      run: (args: unknown) => {
+      run: async (args: unknown) => {
         const a = (args ?? {}) as { query?: unknown; limit?: unknown; kind?: unknown; tags?: unknown; mode?: unknown };
         if (typeof a.query !== 'string') return 'ERROR: memory_search requires a string "query".';
         const limit = typeof a.limit === 'number' && a.limit > 0 ? a.limit : 5;
         const kind = a.kind === 'semantic' || a.kind === 'episodic' || a.kind === 'procedural' ? a.kind : undefined;
         const tags = Array.isArray(a.tags) ? a.tags.filter((t): t is string => typeof t === 'string') : undefined;
         const mode = a.mode === 'lexical' || a.mode === 'semantic' || a.mode === 'hybrid' ? a.mode : undefined;
-        return store
-          .search(scope, a.query, { limit, kind, tags, mode })
-          .map((r) => ({ id: r.id, text: r.text, tags: r.tags, kind: r.kind }));
+        const rows = await store.search(scope, a.query, { limit, kind, tags, mode });
+        return rows.map((r) => ({ id: r.id, text: r.text, tags: r.tags, kind: r.kind }));
       },
     },
     {

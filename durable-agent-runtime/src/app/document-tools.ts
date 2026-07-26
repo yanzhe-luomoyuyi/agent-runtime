@@ -43,7 +43,7 @@ export function documentToolDefs(store: DocumentStore, corpusId: string): ToolDe
         },
         required: ['query'],
       },
-      run: (args: unknown) => {
+      run: async (args: unknown) => {
         const a = (args ?? {}) as {
           query?: unknown;
           limit?: unknown;
@@ -58,7 +58,7 @@ export function documentToolDefs(store: DocumentStore, corpusId: string): ToolDe
             : undefined;
         const maxTextChars =
           typeof a.maxTextChars === 'number' && a.maxTextChars > 0 ? a.maxTextChars : undefined;
-        return store.search(corpusId, a.query, { limit, mode, maxTextChars }).map((h) => ({
+        return (await store.search(corpusId, a.query, { limit, mode, maxTextChars })).map((h) => ({
           id: h.id,
           text: h.text,
           score: h.score,

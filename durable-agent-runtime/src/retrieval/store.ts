@@ -35,7 +35,7 @@ export interface DocumentStore {
     corpusId: string,
     query: string,
     opts?: DocumentSearchOptions,
-  ): Array<DocumentChunk & { score: number }>;
+  ): Promise<Array<DocumentChunk & { score: number }>>;
   list(corpusId: string): DocumentChunk[];
   delete(corpusId: string, id: string): boolean;
 }
@@ -70,11 +70,11 @@ abstract class BaseDocumentStore implements DocumentStore {
     return this.load(corpusId).find((c) => c.id === id);
   }
 
-  search(
+  async search(
     corpusId: string,
     query: string,
     opts: DocumentSearchOptions = {},
-  ): Array<DocumentChunk & { score: number }> {
+  ): Promise<Array<DocumentChunk & { score: number }>> {
     const pool = this.load(corpusId);
     const limit = opts.limit ?? 5;
     const textOf = (c: DocumentChunk) => c.text;
@@ -93,11 +93,11 @@ abstract class BaseDocumentStore implements DocumentStore {
       return project(rankByRelevance(query, pool, textOf, limit));
     }
     if (mode === 'semantic') {
-      return project(rankByEmbedding(query, pool, textOf, limit, embeddings));
+      return project(await rankByEmbedding(query, pool, textOf, limit, embeddings));
     }
     // hybrid: order + exposed score both come from RRF (not re-attached lexical/cosine).
     const lexical = rankByRelevance(query, pool, textOf, pool.length).map((s) => s.item);
-    const semantic = rankByEmbedding(query, pool, textOf, pool.length, embeddings).map((s) => s.item);
+    const semantic = (await rankByEmbedding(query, pool, textOf, pool.length, embeddings)).map((s) => s.item);
     return project(reciprocalRankFusionScored([lexical, semantic], (c) => c.id, limit));
   }
 

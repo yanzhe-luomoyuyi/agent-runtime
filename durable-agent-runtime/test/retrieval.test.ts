@@ -80,14 +80,14 @@ describe('InMemoryDocumentStore + systemRetrieveOnce', () => {
     expect(result.retrievesUsed).toBe(0);
   });
 
-  it('exposes RRF scores in hybrid mode and truncates search text when asked', () => {
+  it('exposes RRF scores in hybrid mode and truncates search text when asked', async () => {
     const store = new InMemoryDocumentStore(new HashingEmbeddingProvider());
     store.upsert('docs', [
       { id: 'lex-win', text: 'exact token login session crash login session', metadata: {} },
       { id: 'other', text: 'unrelated billing invoice totals', metadata: {} },
     ]);
 
-    const hybrid = store.search('docs', 'login session crash', { mode: 'hybrid', limit: 2 });
+    const hybrid = await store.search('docs', 'login session crash', { mode: 'hybrid', limit: 2 });
     expect(hybrid.length).toBeGreaterThan(0);
     // Scores must be RRF-scale (~1/61 ≈ 0.016 per list), not lexical overlap counts.
     expect(hybrid[0]!.score).toBeLessThan(1);
@@ -98,7 +98,7 @@ describe('InMemoryDocumentStore + systemRetrieveOnce', () => {
 
     const long = 'abcdefghijklmnopqrstuvwxyz';
     store.upsert('docs', [{ id: 'long', text: long, metadata: {} }]);
-    const truncated = store.search('docs', 'abcdefghijklmnopqrstuvwxyz', {
+    const truncated = await store.search('docs', 'abcdefghijklmnopqrstuvwxyz', {
       mode: 'lexical',
       maxTextChars: 8,
     });

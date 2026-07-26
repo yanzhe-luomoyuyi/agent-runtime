@@ -17,7 +17,7 @@ export class StoreRetriever implements Retriever {
   constructor(private readonly store: DocumentStore) {}
 
   async search(req: RetrievalRequest): Promise<RetrievalHit[]> {
-    return this.store.search(req.corpusId, req.query, { limit: req.limit, mode: req.mode }).map((c) => ({
+    return (await this.store.search(req.corpusId, req.query, { limit: req.limit, mode: req.mode })).map((c) => ({
       id: c.id,
       text: c.text,
       score: c.score,

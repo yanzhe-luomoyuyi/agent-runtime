@@ -70,11 +70,11 @@ describe('cross-session memory through the durable seam', () => {
     expect(JSON.stringify((memoryReads[0] as { result: unknown }).result)).toContain('dark mode');
   });
 
-  it('keeps memories isolated per scope', () => {
+  it('keeps memories isolated per scope', async () => {
     const store = new FileMemoryStore(memDir);
     store.write('alice', 'alice likes tabs');
     store.write('bob', 'bob likes spaces');
     expect(store.list('alice').map((r) => r.text)).toEqual(['alice likes tabs']);
-    expect(store.search('bob', 'tabs')).toEqual([]); // alice's memory never leaks to bob
+    expect(await store.search('bob', 'tabs')).toEqual([]); // alice's memory never leaks to bob
   });
 });

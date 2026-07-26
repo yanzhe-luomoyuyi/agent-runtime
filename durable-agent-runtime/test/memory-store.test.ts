@@ -4,7 +4,15 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { cosineSimilarity, HashingEmbeddingProvider, reciprocalRankFusion, reciprocalRankFusionScored, type EmbeddingProvider } from '../src/memory/embedding.js';
+import {
+  CachingEmbeddingProvider,
+  cosineSimilarity,
+  createHttpEmbeddingProvider,
+  HashingEmbeddingProvider,
+  reciprocalRankFusion,
+  reciprocalRankFusionScored,
+  type EmbeddingProvider,
+} from '../src/memory/embedding.js';
 import { FileMemoryStore, InMemoryStore, type MemoryStore } from '../src/memory/store.js';
 
 function stores(): Array<[string, () => MemoryStore]> {
@@ -16,13 +24,13 @@ function stores(): Array<[string, () => MemoryStore]> {
 
 for (const [label, make] of stores()) {
   describe(`${label}`, () => {
-    it('writes, reads, searches, and lists', () => {
+    it('writes, reads, searches, and lists', async () => {
       const s = make();
       const a = s.write('u', 'user prefers dark mode', { tags: ['pref'] });
       s.write('u', 'the api base url is https://api.example.com', { tags: ['config'] });
 
       expect(s.read('u', a.id)!.text).toBe('user prefers dark mode');
-      expect(s.search('u', 'dark mode preference')[0]!.text).toContain('dark mode');
+      expect((await s.search('u', 'dark mode preference'))[0]!.text).toContain('dark mode');
       expect(s.list('u', { tags: ['config'] }).map((r) => r.tags)).toEqual([['config']]);
     });
 
@@ -53,12 +61,12 @@ for (const [label, make] of stores()) {
       expect(s.list('u', { kind: 'episodic' })).toEqual([]);
     });
 
-    it('isolates scopes', () => {
+    it('isolates scopes', async () => {
       const s = make();
       s.write('alice', 'alice secret');
       s.write('bob', 'bob secret');
       expect(s.list('alice').length).toBe(1);
-      expect(s.search('bob', 'alice')).toEqual([]);
+      expect(await s.search('bob', 'alice')).toEqual([]);
     });
   });
 }
@@ -136,36 +144,36 @@ describe('MemoryStore semantic / hybrid search modes', () => {
     return new InMemoryStore(provider);
   }
 
-  it('mode "lexical" (default) is unaffected by an embedding provider being configured', () => {
+  it('mode "lexical" (default) is unaffected by an embedding provider being configured', async () => {
     const s = makeStoreWithEmbeddings();
     s.write('u', 'user prefers dark mode');
     s.write('u', 'the api base url is https://api.example.com');
-    expect(s.search('u', 'dark mode preference')[0]!.text).toContain('dark mode');
+    expect((await s.search('u', 'dark mode preference'))[0]!.text).toContain('dark mode');
   });
 
-  it('mode "semantic" ranks by embedding cosine similarity instead of exact-token overlap', () => {
+  it('mode "semantic" ranks by embedding cosine similarity instead of exact-token overlap', async () => {
     const s = makeStoreWithEmbeddings();
     s.write('u', 'the database connection timed out with an error');
     s.write('u', 'user prefers dark mode in the UI');
-    const results = s.search('u', 'database connection timeout error', { mode: 'semantic' });
+    const results = await s.search('u', 'database connection timeout error', { mode: 'semantic' });
     expect(results[0]!.text).toContain('database');
   });
 
-  it('mode "semantic" without a configured embedding provider falls back to lexical (no crash)', () => {
+  it('mode "semantic" without a configured embedding provider falls back to lexical (no crash)', async () => {
     const s = new InMemoryStore(); // no provider
     s.write('u', 'user prefers dark mode');
-    expect(s.search('u', 'dark mode', { mode: 'semantic' })[0]!.text).toContain('dark mode');
+    expect((await s.search('u', 'dark mode', { mode: 'semantic' }))[0]!.text).toContain('dark mode');
   });
 
-  it('mode "hybrid" surfaces a match that only the lexical scorer would find highly relevant', () => {
+  it('mode "hybrid" surfaces a match that only the lexical scorer would find highly relevant', async () => {
     const s = makeStoreWithEmbeddings();
     s.write('u', 'deploy pipeline failed at step 3: docker build error');
     s.write('u', 'remember to water the office plants on Fridays');
-    const results = s.search('u', 'docker build error', { mode: 'hybrid', limit: 1 });
+    const results = await s.search('u', 'docker build error', { mode: 'hybrid', limit: 1 });
     expect(results[0]!.text).toContain('docker build error');
   });
 
-  it('a custom EmbeddingProvider can be injected (dependency injection over the concrete hashing default)', () => {
+  it('a custom EmbeddingProvider can be injected (dependency injection over the concrete hashing default)', async () => {
     // A stub provider that makes two specific memories identical in embedding space,
     // proving the store actually delegates ranking to the injected provider.
     const stub: EmbeddingProvider = {
@@ -174,7 +182,81 @@ describe('MemoryStore semantic / hybrid search modes', () => {
     const s = makeStoreWithEmbeddings(stub);
     s.write('u', 'unrelated MATCH memory');
     s.write('u', 'totally different note');
-    const results = s.search('u', 'MATCH', { mode: 'semantic' });
+    const results = await s.search('u', 'MATCH', { mode: 'semantic' });
     expect(results[0]!.text).toContain('MATCH');
+  });
+
+  it('accepts an async EmbeddingProvider (remote-API shaped)', async () => {
+    let calls = 0;
+    const asyncStub: EmbeddingProvider = {
+      async embed(text) {
+        calls++;
+        await Promise.resolve(); // simulate network hop
+        return text.includes('MATCH') ? [1, 0] : [0, 1];
+      },
+    };
+    const s = makeStoreWithEmbeddings(asyncStub);
+    s.write('u', 'async MATCH memory');
+    s.write('u', 'other note');
+    const results = await s.search('u', 'MATCH', { mode: 'semantic' });
+    expect(results[0]!.text).toContain('MATCH');
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  it('uses embedMany when provided (one batch instead of N+1 embeds)', async () => {
+    let embedCalls = 0;
+    let embedManyCalls = 0;
+    const batchStub: EmbeddingProvider = {
+      embed: () => {
+        embedCalls++;
+        return [0, 1];
+      },
+      embedMany: async (texts) => {
+        embedManyCalls++;
+        await Promise.resolve();
+        return texts.map((t) => (t.includes('MATCH') ? [1, 0] : [0, 1]));
+      },
+    };
+    const s = makeStoreWithEmbeddings(batchStub);
+    s.write('u', 'MATCH one');
+    s.write('u', 'MATCH two');
+    s.write('u', 'noise');
+    const results = await s.search('u', 'MATCH', { mode: 'semantic' });
+    expect(results[0]!.text).toContain('MATCH');
+    expect(embedManyCalls).toBe(1);
+    expect(embedCalls).toBe(0);
+  });
+});
+
+describe('CachingEmbeddingProvider + createHttpEmbeddingProvider', () => {
+  it('caches vectors so repeated texts do not re-call the inner provider', async () => {
+    let calls = 0;
+    const inner: EmbeddingProvider = {
+      embed: (text) => {
+        calls++;
+        return text === 'a' ? [1, 0] : [0, 1];
+      },
+    };
+    const cached = new CachingEmbeddingProvider(inner);
+    expect(await cached.embed('a')).toEqual([1, 0]);
+    expect(await cached.embed('a')).toEqual([1, 0]);
+    expect(calls).toBe(1);
+    expect(cached.size).toBe(1);
+  });
+
+  it('createHttpEmbeddingProvider adapts a batch fetchVectors function', async () => {
+    const seen: string[][] = [];
+    const provider = createHttpEmbeddingProvider({
+      async fetchVectors(texts) {
+        seen.push([...texts]);
+        return texts.map((t) => (t === 'q' ? [1, 0] : [0, 1]));
+      },
+    });
+    expect(await provider.embed('q')).toEqual([1, 0]);
+    expect(await provider.embedMany!(['a', 'b'])).toEqual([
+      [0, 1],
+      [0, 1],
+    ]);
+    expect(seen).toEqual([['q'], ['a', 'b']]);
   });
 });

@@ -87,9 +87,9 @@
 
 | 模块 | 一句话 |
 |------|--------|
-| `memory/store.ts` | 跨会话持久记忆：分 scope + 内容哈希幂等写；FileMemoryStore 原子写；`mode: lexical/semantic/hybrid` 可选检索策略 |
+| `memory/store.ts` | 跨会话持久记忆：分 scope + 内容哈希幂等写；FileMemoryStore 原子写；`search` async；`mode: lexical/semantic/hybrid` |
 | `memory/lexical.ts` | 零依赖 mini-BM25 词法打分（含 常见 CJK），确定性检索 |
-| `memory/embedding.ts` | `EmbeddingProvider` 可插拔接口 + `HashingEmbeddingProvider` + `reciprocalRankFusion` / `reciprocalRankFusionScored`（RRF；hybrid 对外分即 RRF） |
+| `memory/embedding.ts` | async-first `EmbeddingProvider`（可选 `embedMany`）+ 默认 `HashingEmbeddingProvider` + `CachingEmbeddingProvider` + `createHttpEmbeddingProvider` + RRF |
 | `retrieval/` | 文档 RAG：`DocumentStore` / `StoreRetriever` / `RetrievalPolicy`（默认 `once`）/ `systemRetrieveOnce`；search 可选 `maxTextChars` |
 | `app/document-tools.ts` | `document_search` / `document_read`（corpus 绑定；走 durable seam） |
 | harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策 / token 估价（非 event-log） |
