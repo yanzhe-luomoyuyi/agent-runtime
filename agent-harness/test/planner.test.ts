@@ -114,3 +114,99 @@ describe('planner — runPlannedAgent', () => {
     expect(res.plan.steps).toEqual(['retry step']);
   });
 });
+
+describe('planner — plan review', () => {
+  it('edit replaces the plan before execution', async () => {
+    const tools = new MockToolInvoker([makeTool('noop', 'noop', { type: 'object' }, () => ({}))]);
+    const model = new ScriptedChatModel([
+      finalResponse('{"steps":["bad a","bad b"]}'),
+      finalResponse('edited done'),
+    ]);
+    const res = await runPlannedAgent({
+      goal: 'g',
+      model,
+      tools,
+      planReviewer: {
+        review: async () => ({ action: 'edit', plan: newPlan(['only this']) }),
+      },
+    });
+    expect(res.plan.steps).toEqual(['only this']);
+    expect(res.plan.statuses).toEqual(['completed']);
+    expect(res.finished).toBe(true);
+    expect(model.requests.length).toBe(2); // plan + one step
+  });
+
+  it('reject without remake aborts before any step', async () => {
+    const tools = new MockToolInvoker([makeTool('noop', 'noop', { type: 'object' }, () => ({}))]);
+    const model = new ScriptedChatModel([
+      finalResponse('{"steps":["a","b"]}'),
+    ]);
+    const res = await runPlannedAgent({
+      goal: 'g',
+      model,
+      tools,
+      planReviewer: {
+        review: async () => ({ action: 'reject', remake: false, feedback: 'nope' }),
+      },
+    });
+    expect(res.stopReason).toBe('aborted');
+    expect(res.finished).toBe(false);
+    expect(res.turns).toBe(0);
+    expect(model.requests.length).toBe(1); // only makePlan
+  });
+
+  it('reject with remake asks the model again then can approve', async () => {
+    const tools = new MockToolInvoker([makeTool('noop', 'noop', { type: 'object' }, () => ({}))]);
+    let reviews = 0;
+    const model = new ScriptedChatModel([
+      finalResponse('{"steps":["bad"]}'),
+      finalResponse('{"steps":["good"]}'), // remake
+      finalResponse('step done'),
+    ]);
+    const res = await runPlannedAgent({
+      goal: 'g',
+      model,
+      tools,
+      planReviewer: {
+        review: async (req) => {
+          reviews++;
+          if (req.plan.steps[0] === 'bad') {
+            return { action: 'reject', feedback: 'try again', remake: true };
+          }
+          return { action: 'approve' };
+        },
+      },
+    });
+    expect(reviews).toBe(2);
+    expect(res.plan.steps).toEqual(['good']);
+    expect(res.finished).toBe(true);
+  });
+
+  it('reviewReplans:false skips review on replan path', async () => {
+    const tools = new MockToolInvoker([makeTool('noop', 'noop', { type: 'object' }, () => ({}))]);
+    const attempts: number[] = [];
+    const model = new ScriptedChatModel([
+      finalResponse('{"steps":["bad step"]}'),
+      toolCallResponse([toolCall('c1', 'noop', {})]),
+      finalResponse('{"steps":["retry step"]}'),
+      finalResponse('retry done'),
+    ]);
+    const res = await runPlannedAgent({
+      goal: 'g',
+      model,
+      tools,
+      maxReplans: 1,
+      maxTurns: 1,
+      reviewReplans: false,
+      planReviewer: {
+        review: async (req) => {
+          attempts.push(req.attempt);
+          return { action: 'approve' };
+        },
+      },
+    });
+    expect(attempts).toEqual([0]); // only initial plan
+    expect(res.replans).toBe(1);
+    expect(res.plan.steps).toEqual(['retry step']);
+  });
+});

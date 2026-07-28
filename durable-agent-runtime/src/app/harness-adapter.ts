@@ -37,6 +37,7 @@ import {
   type AgentRunResult,
   type Approver,
   type RetrievalHit,
+  type RunInterrupter,
   type SkillLoadMode,
   type SkillSpec,
 } from '@agent/harness';
@@ -208,6 +209,12 @@ export interface HarnessWorkflowOptions {
    */
   approver?: Approver;
   /**
+   * Mid-run interrupt / steer gate (see `@agent/harness` `control/interrupt.ts`).
+   * Steer and abort decisions are also appended as `HumanIntervention` events
+   * for audit; the harness applies the effect in-process.
+   */
+  interrupter?: RunInterrupter;
+  /**
    * Query-time RAG. Default strategy is `once` (system retrieves before the
    * loop). Prefer registering `document_search` on the ToolRegistry so the
    * read is event-logged; otherwise pass `retriever` for a direct search.
@@ -286,6 +293,9 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                 conversationHistory: ctx.input.conversationHistory as import('@agent/contracts').Message[] | undefined,
                 crashAfterTurn: opts.crashAfterTurn,
                 approver: opts.approver,
+                interrupter: opts.interrupter
+                  ? recordingInterrupter(opts.interrupter, ctx)
+                  : undefined,
                 retrieval: retrievalHits
                   ? {
                       hits: retrievalHits,
@@ -302,6 +312,27 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
         ],
       },
     ],
+  };
+}
+
+/** Wrap a RunInterrupter so steer/abort decisions land in the event log. */
+function recordingInterrupter(delegate: RunInterrupter, ctx: StepContext): RunInterrupter {
+  return {
+    atTurnBoundary: async (interruptCtx) => {
+      const decision = await delegate.atTurnBoundary(interruptCtx);
+      if (decision.action === 'steer' || decision.action === 'abort') {
+        ctx.emit({
+          type: 'HumanIntervention',
+          action: decision.action,
+          turn: interruptCtx.nextTurn,
+          inject: decision.action === 'steer' ? decision.inject : undefined,
+          goal: decision.action === 'steer' ? decision.goal : undefined,
+          reason: decision.reason,
+          ts: new Date().toISOString(),
+        });
+      }
+      return decision;
+    },
   };
 }
 

@@ -157,6 +157,8 @@ console.log(renderTimeline(trace));
 | `replayedCalls` / `replayHitRate` | resume 时从日志重放而未重执行的调用占比 |
 | `cachedModelCalls` / `costSavedUsd` | 内容缓存命中次数 / 按标价估算省下的钱 |
 
+> `HumanIntervention`（steer / abort）是 observability-only 事件：写入日志供审计，**不**进入 `TraceTotals` 计数；与 `PolicyDenied` 一样不改派生态 `RunState`。
+
 `renderTimeline(trace)` 打印缩进时间线 + totals / replay / cache / policy / by-phase。
 
 ### 3.5 Runtime trace **没有**什么
@@ -240,6 +242,8 @@ EvalReport { results[], passed, failed, total, allPassed }
 | `humanInterventionRequested(stats, min)` | 至少触发 min 次（防闸门被静默绕过） |
 
 场景带 `approver` 时隐含 `harness: true`。
+
+> Mid-run `RunInterrupter` / `HumanIntervention` 事件目前**没有**对应 eval scorer——介入审计走事件日志；工具级介入率仍读 `ApprovalStats`。
 
 #### Policy / 护栏（读 `trace.totals.policyDenials`）
 

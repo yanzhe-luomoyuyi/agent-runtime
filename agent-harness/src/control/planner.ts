@@ -10,6 +10,10 @@
  * If a step fails, the planner can optionally re-plan the remaining steps,
  * asking the model to adjust its approach based on what went wrong.
  *
+ * Optional `PlanReviewer` gates each generated plan (initial + replan) so a
+ * human can approve, edit steps, or reject (optionally remaking with feedback)
+ * before execution starts.
+ *
  * Each execution (plan generation + each step's run) gets its own idempotency
  * key namespace via `keyScope` (`plan`, `s:{n}`, `replan:{n}`, …) so the whole
  * plan-execute cycle replays deterministically on a durable host.
@@ -19,12 +23,12 @@
  *  - Progress-tracked plan (✓ / → / ○) injected into the system prompt.
  *  - Re-plan on failure: when a step fails, re-generate remaining steps.
  *  - Plan feasibility check: detect when no available tools are referenced.
+ *  - Human plan review gate after makePlan / replan.
  */
 
 import type { ChatModel, Message, ToolInvoker } from '@agent/contracts';
 import { keyScope, systemMessage, userMessage } from '@agent/contracts';
 
-import type { AgentConfig } from '../agent.js';
 import { extractJsonObject } from '@agent/contracts';
 import { DEFAULT_SYSTEM_PROMPT, runAgent, type AgentRunResult, type AgentStopReason, type RunAgentOptions } from './loop.js';
 
@@ -39,12 +43,47 @@ export interface PlanState {
   currentStep: number;
 }
 
+/** Input to a plan review gate (after makePlan / replan). */
+export interface PlanReviewRequest {
+  plan: PlanState;
+  goal: string;
+  /** 0 = initial plan; n ≥ 1 = after the n-th replan. */
+  attempt: number;
+}
+
+/**
+ * Human (or scripted) decision on a generated plan.
+ * - `approve` — execute as-is
+ * - `edit` — replace with the supplied plan (statuses reset)
+ * - `reject` — stop, or remake once with optional feedback (`remake` defaults true)
+ */
+export type PlanReviewDecision =
+  | { action: 'approve' }
+  | { action: 'edit'; plan: PlanState }
+  | { action: 'reject'; feedback?: string; remake?: boolean };
+
+export interface PlanReviewer {
+  review(req: PlanReviewRequest): Promise<PlanReviewDecision>;
+}
+
+/** Approve every plan — the default for headless runs. */
+export const autoApprovePlan: PlanReviewer = {
+  review: async () => ({ action: 'approve' }),
+};
+
 export interface PlannedAgentOptions extends RunAgentOptions {
   planKey?: string;
   /** Re-plan remaining steps when a step fails. Default true. */
   replanOnFailure?: boolean;
   /** Max re-planning attempts across the run. Default 2. */
   maxReplans?: number;
+  /**
+   * Gate after each `makePlan` (initial + replan). Default: auto-approve.
+   * Set `reviewReplans: false` to only review the first plan.
+   */
+  planReviewer?: PlanReviewer;
+  /** When false, only the initial plan is reviewed (replans auto-approve). Default true. */
+  reviewReplans?: boolean;
 }
 
 export interface PlannedAgentResult extends AgentRunResult {
@@ -137,12 +176,51 @@ export function parsePlanSteps(text: string): string[] {
     .filter((l) => l.length > 0);
 }
 
+/**
+ * Run a plan through the reviewer. Returns the (possibly edited) plan, or
+ * `null` when the reviewer rejects without a usable remake.
+ */
+async function reviewGeneratedPlan(
+  plan: PlanState,
+  goal: string,
+  attempt: number,
+  reviewer: PlanReviewer,
+  model: ChatModel,
+  tools: ToolInvoker,
+  remakeKey: string,
+): Promise<PlanState | null> {
+  let current = plan.steps.length === 0 ? newPlan(['Accomplish the goal']) : plan;
+  let rejectRemakes = 0;
+
+  while (true) {
+    const decision = await reviewer.review({ plan: current, goal, attempt });
+    if (decision.action === 'approve') return current;
+    if (decision.action === 'edit') {
+      const edited = decision.plan.steps.length > 0 ? decision.plan : current;
+      return newPlan(edited.steps);
+    }
+    // reject
+    const remake = decision.remake !== false;
+    if (!remake || rejectRemakes >= 1) return null;
+    rejectRemakes++;
+    const feedback = decision.feedback ?? 'Plan rejected by reviewer.';
+    current = await makePlan(goal, model, {
+      key: remakeKey,
+      tools,
+      previousFailures: [feedback],
+    });
+    if (current.steps.length === 0) current = newPlan(['Accomplish the goal']);
+  }
+}
+
 // ── Plan-driven execution ───────────────────────────────────────────
 
 export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<PlannedAgentResult> {
   const scope = keyScope(opts.keyPrefix);
   const maxReplans = opts.maxReplans ?? 2;
   const replanOnFailure = opts.replanOnFailure ?? true;
+  const reviewer = opts.planReviewer ?? autoApprovePlan;
+  const reviewReplans = opts.reviewReplans ?? true;
 
   // Resolve model/tools from explicit override or agent config (backward compat).
   const model = opts.model ?? opts.agent?.model;
@@ -154,8 +232,23 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
     key: opts.planKey ?? scope.plan(),
     tools,
   });
-  if (plan.steps.length === 0) plan = newPlan(['Accomplish the goal']);
-  plan = advancePlan(plan, 0);
+  const reviewed = await reviewGeneratedPlan(
+    plan, opts.goal, 0, reviewer, model, tools, `${scope.plan()}:review-remake`,
+  );
+  if (!reviewed) {
+    return {
+      answer: 'Stopped: plan rejected by reviewer.',
+      finished: false,
+      stopReason: 'aborted',
+      turns: 0,
+      messages: [],
+      toolsUsed: [],
+      durationMs: 0,
+      plan: plan.steps.length === 0 ? newPlan(['Accomplish the goal']) : plan,
+      replans: 0,
+    };
+  }
+  plan = advancePlan(reviewed, 0);
 
   let replans = 0;
   const allMessages: Message[] = [];
@@ -194,12 +287,27 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
       const failures = plan.steps
         .filter((_, i) => plan.statuses[i] === 'failed')
         .map((s) => `Step "${s}" was not completed.`);
-      plan = await makePlan(opts.goal, model, {
+      let next = await makePlan(opts.goal, model, {
         key: scope.replan(replans),
         tools,
         previousFailures: failures,
       });
-      plan = advancePlan(plan, 0);
+      if (reviewReplans) {
+        const reReviewed = await reviewGeneratedPlan(
+          next, opts.goal, replans + 1, reviewer, model, tools,
+          `${scope.replan(replans)}:review-remake`,
+        );
+        if (!reReviewed) {
+          stopReason = 'aborted';
+          finished = false;
+          finalAnswer = 'Stopped: replan rejected by reviewer.';
+          break;
+        }
+        next = reReviewed;
+      } else if (next.steps.length === 0) {
+        next = newPlan(['Accomplish the goal']);
+      }
+      plan = advancePlan(next, 0);
       replans++;
     } else {
       plan = failCurrentStep(plan);

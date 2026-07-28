@@ -103,6 +103,7 @@ export function eventDurability(type: AgentEvent['type']): EventDurability {
     case 'ToolCallRequested':
     case 'ToolCallFailed':
     case 'PolicyDenied':
+    case 'HumanIntervention':
     case 'PhaseStarted':
     case 'StepStarted':
       return 'relaxed';

@@ -13,7 +13,7 @@
  */
 
 import type { ToolRegistry } from './tools/registry.js';
-import type { RunState } from './types.js';
+import type { AgentEvent, RunState } from './types.js';
 
 /**
  * Options for a single tool/model call. A `key` disambiguates multiple calls
@@ -37,6 +37,11 @@ export interface StepContext {
   callModel: (prompt: string, opts?: CallOptions) => Promise<string>;
   /** Read the output an earlier step produced (e.g. "analyze.1"). */
   getStepOutput: <R = unknown>(stepId: string) => R | undefined;
+  /**
+   * Append an observability event (no RunState transition). Used for HITL
+   * audit — e.g. mid-run steer / abort — so the log records who changed what.
+   */
+  emit: (event: Extract<AgentEvent, { type: 'HumanIntervention' }>) => void;
 }
 
 export interface StepDef {

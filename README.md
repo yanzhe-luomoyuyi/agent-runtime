@@ -19,7 +19,7 @@ Agent harness，以及让两者在互不依赖的前提下协作的共享契约�
 `agent-harness` 与 `durable-agent-runtime` 各自有详细的 README
 （[harness](agent-harness/README.md) / README + [TESTING](durable-agent-runtime/TESTING.md)）。
 
-待做方向见 [`docs/TODO.md`](docs/TODO.md)（可插拔策略对照评测、人工随时介入、Planner plan review）。
+待做方向见 [`docs/TODO.md`](docs/TODO.md)（当前主要剩：可插拔策略对照评测 / ablation eval cases）。
 
 ## 总体架构
 
@@ -53,7 +53,7 @@ flowchart TB
       HA["A 协议 protocol/ + schema/<br/>解析 tool call · 参数校验"]
       HB["B 恢复 recovery/<br/>瞬时重试退避 · 死循环检测"]
       HC["C 上下文 context/<br/>token 预算 · 压缩 · untrusted 隔离"]
-      HD["D 控制 control/<br/>runAgent · planner · reflection · subagent · human"]
+      HD["D 控制 control/<br/>runAgent · planner · reflection · subagent · human · interrupt"]
     end
 
     subgraph RUNTIME["⚙️ durable-agent-runtime — 执行底座（事件溯源 · 可恢复）"]
@@ -136,7 +136,7 @@ sequenceDiagram
 | **A 协议** | [protocol/tool-calling.ts](agent-harness/src/protocol/tool-calling.ts) · [schema/validate.ts](agent-harness/src/schema/validate.ts) | 把 `ChatResponse` 解释成已校验的 tool call 或最终答案；执行**前**按各工具的 `inputSchema` 校验参数——非法调用变成结构化错误而非崩溃；内置一个为不支持原生 tool-calling 的模型准备的容错文本解析器。 |
 | **B 恢复** | [recovery/retry.ts](agent-harness/src/recovery/retry.ts) · [recovery/loop-detector.ts](agent-harness/src/recovery/loop-detector.ts) | 只对**瞬时性**失败执行退避重试（HTTP 429/5xx 分类 + `Retry-After` 头 + 指数退避 + full jitter）；把工具抛出的异常转化为模型能理解的 observation；检测无进展的死循环——包括单次重复调用和重复序列模式（A→B→A→B）。 |
 | **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) · [context/retrieval.ts](agent-harness/src/context/retrieval.ts) | 在 token 预算内组装 prompt + 滚动压缩；**atomic tool-call 单元**淘汰（不拆 assistant/tool）；**近期 pin + `ImportanceClass` 计分**硬顶裁剪（`retrieval` ≪ 真人指令）；compact 用显式 **`protectVerbatimClasses`** 名单 verbatim 保护；observation 截断；**untrusted 输出隔离**（工具结果与检索命中只当数据）；宿主传入的 retrieval hits 经 gate 后以 `kind: 'retrieval'` 注入 Goal 之前。 |
-| **D 控制** | [control/loop.ts](agent-harness/src/control/loop.ts) · [planner.ts](agent-harness/src/control/planner.ts) · [reflection.ts](agent-harness/src/control/reflection.ts) · [subagent.ts](agent-harness/src/control/subagent.ts) · [human.ts](agent-harness/src/control/human.ts) | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行）、`runReflectiveAgent`（自我批评并修订）、`makeSubagentTool`（把子任务委派封装成一个工具）、以及 human-in-the-loop 的 `Approver`。 |
+| **D 控制** | [control/loop.ts](agent-harness/src/control/loop.ts) · [planner.ts](agent-harness/src/control/planner.ts) · [reflection.ts](agent-harness/src/control/reflection.ts) · [subagent.ts](agent-harness/src/control/subagent.ts) · [human.ts](agent-harness/src/control/human.ts) · [interrupt.ts](agent-harness/src/control/interrupt.ts) | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行 + `PlanReviewer` 闸门）、`runReflectiveAgent`（自我批评并修订）、`makeSubagentTool`（把子任务委派封装成一个工具）、工具级 `Approver`，以及 turn 边界的 mid-run `RunInterrupter`（pause / steer / abort）。 |
 | **Skills** | [skills/](agent-harness/src/skills) · [agent.ts](agent-harness/src/agent.ts) | Playbook 注册：`SkillSpec`（含可选 `corpusId`）+ markdown loader；`createAgent` 默认 **on_demand**（catalog + `skill_list`/`skill_read`），可选 **eager**；`subAgents` → `delegate_<name>`；skills 与 sub-agent 正交，**不自动 inherit**。 |
 
 另外：`tracing/collector.ts`（结构化 trace：token 用量统计、每次调用的成本估算、每 turn 决策记录）+ `testkit/`（确定性的 `ChatModel` / `ToolInvoker` 测试替身）+ `demo.ts`（可离线运行的 demo）。
@@ -150,11 +150,13 @@ flowchart LR
   B1 --> MODEL{{"ChatModel.chat · key=t·turn"}}
   MODEL --> A["A 协议 解释响应 + 校验参数"]
   A -->|final answer| DONE([返回答案])
-  A -->|tool calls| D["D 审批 approver 门"]
+  A -->|tool calls| D["D 审批 Approver 门"]
   D --> B2["B 死循环检测"]
   B2 --> TOOL{{"ToolInvoker.call · key=t·turn:callId"}}
   TOOL -->|抛错也变成 observation| C
 ```
+
+Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterrupter.atTurnBoundary` —— 默认 `autoContinue`；宿主可用 `createInterruptHandle` 在边界 pause / steer / abort（salvage transcript，`stopReason: 'aborted'`）。
 
 ### ⚙️ durable-agent-runtime — 执行底座（平台 vs 工作负载）
 
@@ -168,8 +170,8 @@ flowchart LR
 | [eventlog.ts](durable-agent-runtime/src/eventlog.ts) | append-only；乐观并发（`wx` 独占创建）。**分级持久化**：`critical` 事件（会导致 resume 算错的状态转换）同步落盘，`relaxed` 事件（无状态转换，或可从静态 `WorkflowDef` 无损重算，如 `PhaseStarted`/`StepStarted`）先缓存、与下一个 critical 事件合并成一次写——真实工作流 benchmark 实测减少 ~49% 写入。 |
 | [reducer.ts](durable-agent-runtime/src/reducer.ts) | 纯函数 `(state, event) => state`，唯一构建状态的途径。 |
 | [runtime.ts](durable-agent-runtime/src/runtime.ts) | 驱动工作流、追加事件、从日志恢复，用确定性 `callId` 让工具调用幂等。 |
-| [workflow.ts](durable-agent-runtime/src/workflow.ts) | `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 契约——描述工作流长什么样。 |
-| [types.ts](durable-agent-runtime/src/types.ts) | `AgentEvent`（所有事件类型）+ 派生态 `RunState`（永不落盘，靠 reducer 重建）。 |
+| [workflow.ts](durable-agent-runtime/src/workflow.ts) | `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 契约——描述工作流长什么样；`emit` 可追加 observability 事件（如 `HumanIntervention`）。 |
+| [types.ts](durable-agent-runtime/src/types.ts) | `AgentEvent`（含 `HumanIntervention` 等）+ 派生态 `RunState`（永不落盘，靠 reducer 重建）。 |
 | [model/provider.ts](durable-agent-runtime/src/model/provider.ts) · [model/caching.ts](durable-agent-runtime/src/model/caching.ts) | 可换的模型 provider + 内容寻址的响应缓存装饰器。 |
 | [pricing.ts](durable-agent-runtime/src/pricing.ts) | 配置驱动（`agent.config.json`）的 token 定价，供成本核算使用。 |
 | [tools/registry.ts](durable-agent-runtime/src/tools/registry.ts) | 遵循 MCP 规范的 `ToolDef` / `ToolRegistry`——本地工具和远程 MCP 工具在 runtime 眼里一模一样。 |
@@ -189,7 +191,7 @@ flowchart LR
 
 | 模块 | 职责 |
 | --- | --- |
-| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker`；`createHarnessWorkflow` + 可选 `retrieval`（`once` / `once_rewrite` / `capped_agentic`；corpus 可来自 skill）。 |
+| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker`；`createHarnessWorkflow` 支持 `approver` / `interrupter`（steer·abort → `HumanIntervention`）+ 可选 `retrieval`（`once` / `once_rewrite` / `capped_agentic`；corpus 可来自 skill）。 |
 | [issue-workflow.ts](durable-agent-runtime/src/app/issue-workflow.ts) | demo 的 `issue → fix` Agent，声明为 `analyze → locate → propose` 三阶段。 |
 | [tools.ts](durable-agent-runtime/src/app/tools.ts) · [document-tools.ts](durable-agent-runtime/src/app/document-tools.ts) · [memory-tools.ts](durable-agent-runtime/src/app/memory-tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性 mock 工具 / 文档检索工具 / 记忆工具、MCP 封装、eval 场景、内置 agent 循环的 mock 模型大脑。 |
 

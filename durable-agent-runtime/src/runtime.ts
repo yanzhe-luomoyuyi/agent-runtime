@@ -266,6 +266,9 @@ export class Runtime {
       },
       tools: this.opts.tools,
       getStepOutput: <R>(stepId: string): R | undefined => getState().stepOutputs[stepId] as R | undefined,
+      emit: (event) => {
+        record(event);
+      },
       callModel: async (prompt: string, opts?: { key?: string }): Promise<string> => {
         const state = getState();
         const callId = runtimeModelCallId(state.currentPhase!, state.currentStep!, opts?.key);

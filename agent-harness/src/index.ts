@@ -42,6 +42,7 @@ export * from './recovery/dead-letter.js';
 
 // D — control flow
 export * from './control/human.js';
+export * from './control/interrupt.js';
 export * from './control/loop.js';
 export * from './control/planner.js';
 export * from './control/reflection.js';

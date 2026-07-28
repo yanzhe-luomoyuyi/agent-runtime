@@ -299,9 +299,9 @@ prompt 进入 callModel
 |------|------|---------|
 | **Groundedness 检测** | 验证 LLM 响应是否基于提供的文档（而非幻觉） | Azure Groundedness Detection |
 | **受保护材料检测** | 检测响应是否包含受版权保护的文本 | Azure Protected Material Detection |
-| **人机审批 (HITL)** | 高风险操作暂停等待人类批准（而非直接拒绝） | `requireApproval: true` 配置 + 审批队列 |
+| **Policy 层审批队列** | 策略中间件内 `requireApproval: true` 挂起（与 harness HITL 分离） | Azure Content Safety + 审批队列。**注：** harness 已有工具级 `Approver` + run 级 `RunInterrupter`；缺的是 *policy 漏斗内* 的统一审批队列 |
 | **动态/上下文感知策略** | 基于 role、phase、content 决定是否允许 | 将静态 `allowedTools` 扩展为 `(ctx) => boolean` |
-| **JSON schema 输出校验** | 验证模型输出是否符合预期结构 | Zod / Pydantic validation |
+| **JSON schema 输出校验** | 验证模型输出是否符合预期结构 | Zod / Pydantic validation（harness `outputSchema` 已覆盖一部分） |
 
 ### Policy 设计原则
 

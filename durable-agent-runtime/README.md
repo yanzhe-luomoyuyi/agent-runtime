@@ -48,10 +48,10 @@ flowchart LR
 ### 运行时 — 平台层 (`src/`)
 
 - **事件日志** ([src/eventlog.ts](src/eventlog.ts)) — append-only；每个事件一个独占创建的文件（乐观并发）。以目录方式组织，支持 `listRunIds()` 列出所有 run。
-- **Reducer** ([src/reducer.ts](src/reducer.ts)) — 纯函数 `(state, event) => state`；构建状态的唯一途径。`AgentEvent` 是 13 种事件类型的 discriminated union。
+- **Reducer** ([src/reducer.ts](src/reducer.ts)) — 纯函数 `(state, event) => state`；构建状态的唯一途径。`AgentEvent` 是 14 种事件类型的 discriminated union（含 observability-only 的 `HumanIntervention`）。
 - **Runtime** ([src/runtime.ts](src/runtime.ts)) — 驱动工作流、追加事件、从日志恢复，用确定性 `callId` 让工具调用幂等。支持 `run()` / `resume()` / `status()` / `trace()` / `recover()`。
 - **快照** ([src/snapshot.ts](src/snapshot.ts)) — 周期性状态快照，用于快速恢复。原子写入（tmp + rename），加载时校验完整性；损坏的快照会被忽略并回退到事件重放。
-- **工作流契约** ([src/workflow.ts](src/workflow.ts)) — `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 类型，描述*工作流长什么样*。运行时驱动任何符合此形状的工作流，对 demo 一无所知。
+- **工作流契约** ([src/workflow.ts](src/workflow.ts)) — `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 类型，描述*工作流长什么样*。`StepContext.emit` 可追加 observability 事件（如 mid-run `HumanIntervention`），不改变派生态。运行时驱动任何符合此形状的工作流，对 demo 一无所知。
 - **模型 Provider** ([src/model/provider.ts](src/model/provider.ts)) — 可换的 LLM；mock 是确定性的，用于离线开发和稳定测试。
 - **响应缓存** ([src/model/caching.ts](src/model/caching.ts)) — `CachingModelProvider` 装饰器：内容寻址（规范化 prompt → sha256），LRU 淘汰，可选文件持久化。在一次次的 run 之间削减重复 prompt 的 token 消耗和成本。
 - **定价** ([src/pricing.ts](src/pricing.ts)) — 配置驱动（`agent.config.json`）的 token 定价，供 trace 做成本汇总。
@@ -96,7 +96,7 @@ flowchart LR
 
 ### Demo 工作负载 — Agent (`src/app/`)
 
-- **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。`createHarnessWorkflow({ agent?: { name, instructions, skills, skillLoadMode } })` 把 `runAgent` 封装为单个 durable step，并可注册 harness skills（默认 on_demand）。启用方式：`HARNESS=1`。
+- **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。`createHarnessWorkflow({ agent?, approver?, interrupter?, … })` 把 `runAgent` 封装为单个 durable step；传入 `interrupter` 时，steer/abort 会经 `recordingInterrupter` 写成 `HumanIntervention` 事件。启用方式：`HARNESS=1`。
 - **工作流** ([src/app/issue-workflow.ts](src/app/issue-workflow.ts)) — `issue → fix` Agent，声明为 `analyze → locate → propose` 三个阶段。
 - **工具** ([src/app/tools.ts](src/app/tools.ts)) — 确定性的 mock 工具 `getIssue` / `searchCode`。设置 `AGENT_MCP=1` 可通过 MCP base SDK 提供同一批工具——运行时完全无法区分。
 - **模型响应** ([src/app/responses.ts](src/app/responses.ts)) — 为 mock 模型预设的确定性输出。`AGENT_REGRESS=1` 会故意降级输出质量，用于验证 eval 框架能否捕获回归。

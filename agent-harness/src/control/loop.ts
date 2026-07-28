@@ -36,7 +36,7 @@
  */
 
 import type { ChatModel, ChatResponse, ChatStreamOutput, JSONSchema, Message, StopReason, ToolCall, ToolInvoker, ToolSpec, Usage } from '@agent/contracts';
-import { goalMessage, keyScope, systemMessage, toolResultMessage } from '@agent/contracts';
+import { goalMessage, isGoalMessage, keyScope, systemMessage, toolResultMessage, userMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
 import { ContextManager } from '../context/manager.js';
@@ -51,6 +51,7 @@ import { withRetry, type RetryOptions } from '../recovery/retry.js';
 import { validate, formatErrors, type ValidationError } from '../schema/validate.js';
 import { type TraceCollector } from '../tracing/collector.js';
 import { autoApprove, type Approver } from './human.js';
+import { autoContinue, type InterruptDecision, type InterruptContext, type RunInterrupter } from './interrupt.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -60,7 +61,8 @@ export type AgentStopReason =
   | 'loop_detected'
   | 'retry_budget_exhausted'
   | 'model_refusal'
-  | 'invalid_output';
+  | 'invalid_output'
+  | 'aborted';
 
 /** Context passed to error handlers so they can craft a meaningful fallback. */
 export interface ErrorHandlerContext {
@@ -108,6 +110,8 @@ export interface AgentHooks {
   onToolResult?(turn: number, tool: string, observation: string, ok: boolean): void;
   /** Structured-output validation failed; the loop will retry. */
   onValidationRetry?(turn: number, errors: string): void;
+  /** Turn-boundary interrupt resolved (continue is not reported). */
+  onInterrupt?(ctx: InterruptContext, decision: InterruptDecision): void;
 }
 
 export interface RunAgentOptions {
@@ -142,6 +146,11 @@ export interface RunAgentOptions {
   /** Hard cap on turns so a misbehaving model cannot loop forever. Default 12. */
   maxTurns?: number;
   approver?: Approver;
+  /**
+   * Mid-run interrupt gate (pause / steer / abort) consulted before each turn.
+   * Distinct from `approver`, which gates individual tool calls. Default: never pause.
+   */
+  interrupter?: RunInterrupter;
   retry?: RetryOptions;
   /** Identical-call repeats before the loop stops. Default 3. */
   loopLimit?: number;
@@ -223,6 +232,8 @@ export type AgentStreamEvent =
   | { type: 'loop_detected'; turn: number; message: string }
   | { type: 'model_refusal'; turn: number; reason: string }
   | { type: 'validation_retry'; turn: number; errors: string }
+  | { type: 'steered'; turn: number; inject?: string; goal?: string; reason?: string }
+  | { type: 'aborted'; turn: number; reason?: string }
   | { type: 'turn_end'; turn: number }
   | { type: 'done'; result: AgentRunResult };
 
@@ -235,6 +246,9 @@ interface LoopState {
   context: ContextManager;
   maxTurns: number;
   approver: Approver;
+  interrupter: RunInterrupter;
+  /** Mutable — may be rewritten by mid-run steer. */
+  goal: string;
   prefix: string;
   detector: LoopDetector;
   convo: Message[];
@@ -263,6 +277,8 @@ function initLoopState(opts: RunAgentOptions): LoopState {
     context,
     maxTurns: maxTurnsRaw > 0 ? maxTurnsRaw : DEFAULT_MAX_TURNS,
     approver: opts.approver ?? autoApprove,
+    interrupter: opts.interrupter ?? autoContinue,
+    goal: opts.goal,
     prefix: opts.keyPrefix ?? '',
     detector: new LoopDetector(opts.loopOptions ?? (opts.loopLimit ?? 3)),
     convo: [
@@ -284,8 +300,59 @@ function initLoopState(opts: RunAgentOptions): LoopState {
   };
 }
 
-function errorHandlerCtx(st: LoopState, goal: string, turns: number, extra?: Partial<ErrorHandlerContext>): ErrorHandlerContext {
-  return { goal, turns, messages: [...st.convo], ...extra };
+function errorHandlerCtx(st: LoopState, turns: number, extra?: Partial<ErrorHandlerContext>): ErrorHandlerContext {
+  return { goal: st.goal, turns, messages: [...st.convo], ...extra };
+}
+
+/** Apply a steer decision onto mutable loop state (goal rewrite + inject). */
+function applySteer(st: LoopState, decision: Extract<InterruptDecision, { action: 'steer' }>): void {
+  if (decision.goal !== undefined) {
+    st.goal = decision.goal;
+    const idx = st.convo.findIndex(isGoalMessage);
+    if (idx >= 0) st.convo[idx] = goalMessage(decision.goal);
+    else st.convo.push(goalMessage(decision.goal));
+  }
+  if (decision.inject) {
+    st.convo.push(userMessage(decision.inject));
+  }
+}
+
+/**
+ * Consult the interrupter before a turn. Returns an abort result when the human
+ * stops the run; otherwise mutates state for steer and continues.
+ */
+async function checkInterrupt(
+  st: LoopState,
+  turnsCompleted: number,
+  opts: RunAgentOptions,
+  emit: (ev: AgentStreamEvent) => void,
+): Promise<AgentRunResult | undefined> {
+  const ctx: InterruptContext = {
+    turnsCompleted,
+    nextTurn: turnsCompleted + 1,
+    goal: st.goal,
+    messages: [...st.convo],
+  };
+  const decision = await st.interrupter.atTurnBoundary(ctx);
+  if (decision.action === 'continue') return undefined;
+
+  opts.hooks?.onInterrupt?.(ctx, decision);
+
+  if (decision.action === 'abort') {
+    const reason = decision.reason ?? 'Stopped: run aborted by human.';
+    emit({ type: 'aborted', turn: turnsCompleted, reason: decision.reason });
+    return makeResult(st, reason, false, 'aborted', turnsCompleted);
+  }
+
+  applySteer(st, decision);
+  emit({
+    type: 'steered',
+    turn: turnsCompleted,
+    inject: decision.inject,
+    goal: decision.goal,
+    reason: decision.reason,
+  });
+  return undefined;
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────
@@ -324,7 +391,7 @@ async function _handleResponse(
 
   if (resp.stopReason === 'refusal') {
     const refusalText = resp.refusalReason ?? resp.message.content ?? 'The model refused to answer.';
-    const result = opts.errorHandlers?.modelRefusal?.(errorHandlerCtx(st, opts.goal, turn, { refusal: refusalText }))
+    const result = opts.errorHandlers?.modelRefusal?.(errorHandlerCtx(st, turn, { refusal: refusalText }))
       ?? makeResult(st, refusalText, false, 'model_refusal', turn);
     return { done: true, result };
   }
@@ -343,7 +410,7 @@ async function _handleResponse(
       opts.hooks?.onValidationRetry?.(turn, formatErrors(errors));
       return { done: false, calls: [] };
     }
-    const h = opts.errorHandlers?.invalidFinalOutput?.(errorHandlerCtx(st, opts.goal, turn, { answer: decision.answer, validationErrors: errors.map(e => `${e.path} ${e.message}`) }));
+    const h = opts.errorHandlers?.invalidFinalOutput?.(errorHandlerCtx(st, turn, { answer: decision.answer, validationErrors: errors.map(e => `${e.path} ${e.message}`) }));
     if (h) return { done: true, result: h };
     return { done: true, result: makeResult(st, `Stopped: structured output validation failed. ${formatErrors(errors)}`, false, 'invalid_output', turn) };
   }
@@ -445,6 +512,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
   opts.hooks?.onAgentStart?.(opts.goal);
 
   for (let turn = 1; turn <= st.maxTurns; turn++) {
+    const aborted = await checkInterrupt(st, turn - 1, opts, noop);
+    if (aborted) { opts.hooks?.onAgentEnd?.(aborted); return aborted; }
+
     opts.hooks?.onTurnStart?.(turn);
     opts.trace?.startTurn(turn);
     const assembled = await _prepareTurn(st, turn, opts.trace);
@@ -484,7 +554,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
     }
   }
 
-  const maxResult = opts.errorHandlers?.maxTurns?.(errorHandlerCtx(st, opts.goal, st.maxTurns));
+  const maxResult = opts.errorHandlers?.maxTurns?.(errorHandlerCtx(st, st.maxTurns));
   const result = maxResult ?? makeResult(st, `Stopped after ${st.maxTurns}-turn budget without a final answer.`, false, 'max_turns', st.maxTurns);
   opts.hooks?.onAgentEnd?.(result);
   return result;
@@ -508,6 +578,10 @@ export async function* runAgentStreamed(
 
   for (let turn = 1; turn <= st.maxTurns; turn++) {
     yield* flush();
+    const aborted = await checkInterrupt(st, turn - 1, opts, emit);
+    yield* flush();
+    if (aborted) { opts.hooks?.onAgentEnd?.(aborted); yield { type: 'done', result: aborted }; return aborted; }
+
     yield { type: 'turn_start', turn };
     opts.hooks?.onTurnStart?.(turn);
     opts.trace?.startTurn(turn);
@@ -607,7 +681,7 @@ export async function* runAgentStreamed(
     }
   }
 
-  const maxResult = opts.errorHandlers?.maxTurns?.(errorHandlerCtx(st, opts.goal, st.maxTurns));
+  const maxResult = opts.errorHandlers?.maxTurns?.(errorHandlerCtx(st, st.maxTurns));
   const result = maxResult ?? makeResult(st, `Stopped after ${st.maxTurns}-turn budget without a final answer.`, false, 'max_turns', st.maxTurns);
   opts.hooks?.onAgentEnd?.(result);
   yield { type: 'done', result };

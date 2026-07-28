@@ -23,6 +23,11 @@ export type AgentEvent =
   | { type: 'ToolCallSucceeded'; callId: string; tool: string; result: unknown; ts: string }
   | { type: 'ToolCallFailed'; callId: string; tool: string; error: string; ts: string }
   | { type: 'PolicyDenied'; scope: 'tool' | 'model'; target: string; code: string; reason: string; ts: string }
+  /**
+   * Mid-run human intervention (steer / abort). Observability + audit only —
+   * does not alter derived RunState; the harness applies the effect in-process.
+   */
+  | { type: 'HumanIntervention'; action: 'steer' | 'abort'; turn: number; inject?: string; goal?: string; reason?: string; ts: string }
   | { type: 'ModelCalled'; callId: string; phase: string; step: number; prompt: string; response: string; promptTokens: number; completionTokens: number; costUsd: number; latencyMs: number; cached?: boolean; ts: string }
   | { type: 'StepCompleted'; phase: string; step: number; stepId: string; output: unknown; ts: string }
   | { type: 'PhaseCompleted'; phase: string; ts: string }

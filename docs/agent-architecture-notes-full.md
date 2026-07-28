@@ -28,7 +28,7 @@ ProtocolDecision =
 - `aside` 保留 tool-call 同时返回的文字旁白（Anthropic multi-block 模式）
 - `thinking` 保留推理链（o1/Claude Extended Thinking/DeepSeek-R1）
 - Schema validator 刻意不做完整 JSON Schema（无 $ref/oneOf），只覆盖 tool input 需要的子集，零依赖
-- ✅ Streaming（`runAgentStreamed`：async generator，13 种事件类型，chatStream 实时流式 + batch fallback）
+- ✅ Streaming（`runAgentStreamed`：async generator，15 种事件类型含 `steered`/`aborted`，chatStream 实时流式 + batch fallback）
 - ✅ Structured Output（`outputSchema` + auto-retry，校验失败反馈给模型自我纠正）
 
 ### 工业界对照
@@ -169,9 +169,10 @@ ProtocolDecision =
 - **Tool use behavior**：`stopOnUse` → 工具输出直接作为 final answer
 - **Structured output**：`outputSchema` + auto-retry（错误 feed back 给模型）
 - **Error handlers**：`maxTurns` / `modelRefusal` / `invalidFinalOutput`
-- **Streaming**：13 种类型化事件；chatStream 实时流式 + batch fallback
-- **9 Lifecycle hooks**：onAgentStart/End、onTurnStart/End、onModelStart/End/Error、onModelResponse、onToolStart/Result、onValidationRetry
+- **Streaming**：15 种类型化事件（含 `steered` / `aborted`）；chatStream 实时流式 + batch fallback
+- **Lifecycle hooks**：onAgentStart/End、onTurnStart/End、onModelStart/End/Error、onModelResponse、onToolStart/Result、onValidationRetry、onInterrupt
 - **Durable key**：`t{turn}` 给 model、`t{turn}:{callId}` 给 tool
+- **Mid-run interrupt**：每 turn 开始前 `RunInterrupter.atTurnBoundary`（默认 `autoContinue`）；`createInterruptHandle` 支持外部 pause / steer / abort+salvage（`stopReason: 'aborted'`）
 
 ### 工业界 Loop 对比
 
@@ -200,6 +201,7 @@ ProtocolDecision =
 | 子 Agent 并行 | ❌ 同步顺序委派 |
 | Prompt Caching API 对接 | 🟡 |
 | Structured Output 原生对接 | 🟡 post-hoc，未用 API 原生能力 |
+| Turn 级 durable checkpoint（steer 后可跨进程恢复） | ❌ 介入效果在 step 内 in-process；`HumanIntervention` 仅审计 |
 
 ### 要点
 - "Loop 本质：model 决策 → execute → observation → 再决策，直到 stop 或 budget 耗尽"
@@ -267,6 +269,7 @@ ProtocolDecision =
 - `PlanState`：per-step status（pending/in_progress/completed/failed）+ ✓/→/○ 进度标记
 - 逐步执行：每个 step 独立 `runAgent` + 进度上下文注入 system prompt
 - 失败重规划：step 失败 → 模型重新生成剩余步骤
+- `PlanReviewer`：`makePlan` / replan 后闸门 — `approve` / `edit` / `reject`（可选带反馈 remake）；`reviewReplans: false` 可只审首 plan；默认 `autoApprovePlan`
 - `validatePlanFeasibility` + Durable key namespace
 
 ### 工业界 & 前沿
@@ -283,6 +286,7 @@ ProtocolDecision =
 
 ### 要点
 - "Plan-and-Solve 是 ReAct 的升级——先规划再执行，失败可重规划"
+- "Plan review 让 plan-and-solve 真正带上 HITL，而不是模型写完清单就开跑"
 - "ToT/GoT 是探索式规划：每步多条路，不是一条路走到黑"
 
 ---
@@ -290,21 +294,43 @@ ProtocolDecision =
 ## 七、Human-in-the-Loop
 
 ### 本项目实现
+
+两层 HITL，职责分开：
+
+**1. 工具级 `Approver`（`control/human.ts`）** — 「这一次工具该不该调」
 - `autoApprove` / `denyAll` / `requireApprovalFor`（glob：`deploy*`）
 - `withApprovalCache`：时间缓存，N 分钟内同类请求自动放行
 - `modifiedArgs`：人工可修改参数后批准 + `decidedAt` 审计 trail
+- `countingApprover`：介入率统计，供 eval scorers 读取
+
+**2. Run 级 `RunInterrupter`（`control/interrupt.ts`）** — 「整条 run 还要不要按原计划走」
+- 默认 `autoContinue`：turn 边界不挡
+- `createInterruptHandle`：外部 `pause` → 下一拍边界挂起 → `resume` / `steer`（inject 消息或改写 goal）/ `abort`（salvage transcript，`stopReason: 'aborted'`）
+- 也可自实现 `atTurnBoundary`（脚本化 / 固定策略）
+- Durable：`HumanIntervention` 事件 + `StepContext.emit`；adapter 的 `interrupter` 选项经 `recordingInterrupter` 入日志（审计用，不改 RunState）
+
+**3. Plan 级 `PlanReviewer`（见上节）** — plan 产出后的人工审阅
 
 ### 工业界 & 前沿
 | 做法 | 说明 |
 |------|------|
-| **LangGraph interrupt** | 节点暂停，等人工审批后 resume |
+| **LangGraph interrupt** | 节点暂停，等人工审批后 resume — 对齐本项目的 turn-boundary pause |
 | **AutoGPT / CrewAI** | 简单 yes/no，无参数修改 |
 | **参数级审批 UI** | 审批界面显示参数编辑表单 |
 | **条件审批策略** | 基于 args 内容/历史记录动态决定 |
 | **审批超时** | N 秒无响应 → 自动拒绝/降级 |
 
+### 当前 vs production-grade 差距
+| 差距 | 状态 |
+|------|------|
+| 审批超时 / 自动降级 | ❌ |
+| Policy 层 `requireApproval` 队列（与 harness Approver 分离） | ❌ 仍靠 harness 注入 |
+| Steer 跨进程 durable 恢复（turn checkpoint） | ❌ 事件仅审计 |
+
 ### 要点
 - "HITL 不只是 yes/no——参数修改、时效缓存、glob 模式匹配，缺一不可"
+- "Approver 管单次工具；Interrupter 管整条 run；PlanReviewer 管清单本身——三道闸门不要混"
+- "默认全部 auto-continue / auto-approve：人只在主动 pause 或挂 reviewer 时介入"
 
 ---
 
