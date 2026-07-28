@@ -21,8 +21,12 @@
  *  - Output & tool-definition token reservation so the model always has room
  *    to respond.
  *  - Goal-message protection: the user's goal is never evicted.
- *  - Importance-weighted eviction: tool errors, write operations, and recent
- *    messages survive longer than routine read-only successes.
+ *  - Importance-weighted eviction: each message maps to an `ImportanceClass`
+ *    with a 0–100 score (gaps express magnitude for the discount curve; new
+ *    types insert between peers). Compact verbatim protection uses an explicit
+ *    `protectVerbatimClasses` list — not a magic score floor — so operators
+ *    see exactly which classes survive. Query-time RAG (`retrieval`) scores
+ *    below trusted user instructions.
  *  - Cache-friendly output ordering: static content (system, summary) first,
  *    dynamic content (recent turns) last — maximises server-side prompt-cache
  *    hit rates (OpenAI / Anthropic).
@@ -36,10 +40,128 @@
  */
 
 import type { ChatModel, Message } from '@agent/contracts';
-import { keyScope } from '@agent/contracts';
+import { isGoalMessage, keyScope } from '@agent/contracts';
 
 import { resolveModelLimit } from './model-limits.js';
 import { cjkAwareTokenizer, type Tokenizer } from './tokenizer.js';
+
+// ── Importance classes (identity) + scores (magnitude) ─────────────
+//
+// Scores are continuous 0–100 so applyImportanceDiscount can express
+// non-uniform gaps (goal ≈ free, read ≈ no discount). New message kinds:
+// pick the nearest peer class, place a score between neighbours, and — if
+// compact should keep them verbatim — add the class to protectVerbatimClasses.
+// Ops-facing "tiers" (critical / elevated / …) are documentation only.
+
+const TOOL_ERROR_PATTERN = /(ERROR|FAILED|DENIED|error|failed|denied)/;
+const WRITE_TOOL_PATTERN = /^(create|write|update|delete|deploy|publish|merge|commit|push|send|post|patch|put)/i;
+const READ_TOOL_PATTERN  = /^(read|get|fetch|search|find|list|query|grep|cat|head|tail|ls|dir|stat)/i;
+
+/** Structural importance identity used for scoring and compact protection. */
+export type ImportanceClass =
+  | 'goal'
+  | 'system'
+  | 'tool_error'
+  | 'user_instruction'
+  | 'tool_write'
+  | 'assistant_tool_call'
+  | 'tool_other'
+  | 'tool_read'
+  | 'retrieval'
+  | 'assistant_text'
+  | 'unknown';
+
+export interface ImportanceClassInfo {
+  class: ImportanceClass;
+  /** 0–100; larger → stronger assemble discount / harder to evict. */
+  score: number;
+  /** One-line operator description. */
+  description: string;
+  /** Optional human grouping hint (not a control-plane enum). */
+  opsHint?: string;
+}
+
+/**
+ * Canonical registry. Order is high→low score for readable dumps; identity
+ * is by `class`, not array index.
+ */
+export const IMPORTANCE_CLASSES: readonly ImportanceClassInfo[] = [
+  { class: 'goal', score: 100, description: 'Run goal (also goal-pinned)', opsHint: 'critical' },
+  { class: 'system', score: 90, description: 'System / instruction messages', opsHint: 'critical' },
+  { class: 'tool_error', score: 80, description: 'Tool result containing ERROR/FAILED/DENIED', opsHint: 'high' },
+  { class: 'user_instruction', score: 60, description: 'Trusted user follow-up / instruction', opsHint: 'elevated' },
+  { class: 'tool_write', score: 55, description: 'Write / mutate tool result', opsHint: 'elevated' },
+  { class: 'assistant_tool_call', score: 35, description: 'Assistant turn that requested tools', opsHint: 'medium' },
+  { class: 'tool_other', score: 30, description: 'Unclassified tool result', opsHint: 'medium' },
+  { class: 'tool_read', score: 25, description: 'Read / search tool result', opsHint: 'low' },
+  { class: 'retrieval', score: 20, description: 'Query-time RAG (untrusted evidence)', opsHint: 'low' },
+  { class: 'assistant_text', score: 15, description: 'Plain assistant text (no tool calls)', opsHint: 'low' },
+  { class: 'unknown', score: 10, description: 'Unrecognized message shape', opsHint: 'minimal' },
+] as const;
+
+const IMPORTANCE_SCORE: Record<ImportanceClass, number> = Object.fromEntries(
+  IMPORTANCE_CLASSES.map((e) => [e.class, e.score]),
+) as Record<ImportanceClass, number>;
+
+/** Default compact verbatim protect list — explicit classes, not a score floor. */
+export const DEFAULT_PROTECT_VERBATIM_CLASSES: readonly ImportanceClass[] = [
+  'tool_error',
+  'user_instruction',
+  'tool_write',
+];
+
+/** Map a transcript message to its importance class. */
+export function classifyImportance(m: Message): ImportanceClass {
+  if (isGoalMessage(m)) return 'goal';
+  if (m.role === 'system') return 'system';
+
+  if (m.role === 'user') {
+    // Query-time RAG: tagged kind, or legacy untrusted user injection.
+    if (m.kind === 'retrieval' || m.untrusted) return 'retrieval';
+    return 'user_instruction';
+  }
+
+  if (m.role === 'tool') {
+    const content = m.content ?? '';
+    if (TOOL_ERROR_PATTERN.test(content)) return 'tool_error';
+    if (m.name && WRITE_TOOL_PATTERN.test(m.name)) return 'tool_write';
+    if (m.name && READ_TOOL_PATTERN.test(m.name)) return 'tool_read';
+    return 'tool_other';
+  }
+
+  if (m.role === 'assistant') {
+    if (m.toolCalls && m.toolCalls.length > 0) return 'assistant_tool_call';
+    return 'assistant_text';
+  }
+
+  return 'unknown';
+}
+
+export function messageImportance(m: Message): number {
+  return IMPORTANCE_SCORE[classifyImportance(m)];
+}
+
+export interface ImportancePolicyRow {
+  class: ImportanceClass;
+  score: number;
+  protected: boolean;
+  description: string;
+  opsHint?: string;
+}
+
+/** Operator-facing dump: which classes exist, scores, and whether compact protects them. */
+export function describeImportancePolicy(
+  protectVerbatimClasses: readonly ImportanceClass[] = DEFAULT_PROTECT_VERBATIM_CLASSES,
+): ImportancePolicyRow[] {
+  const protect = new Set(protectVerbatimClasses);
+  return IMPORTANCE_CLASSES.map((e) => ({
+    class: e.class,
+    score: e.score,
+    protected: protect.has(e.class),
+    description: e.description,
+    ...(e.opsHint !== undefined ? { opsHint: e.opsHint } : {}),
+  }));
+}
 
 // ── Types ──────────────────────────────────────────────
 
@@ -120,6 +242,15 @@ export interface ContextManagerOptions {
    */
   importanceScoring?: boolean;
 
+  /**
+   * Importance classes kept verbatim during `compactIfNeeded` (outside the
+   * recent window), subject to `PROTECTED_BUDGET_FRACTION`. Default:
+   * tool errors, trusted user instructions, and write-tool results.
+   * Retrieval / read evidence are intentionally omitted — they can be
+   * re-fetched or summarized.
+   */
+  protectVerbatimClasses?: ImportanceClass[];
+
   // ── Legacy (deprecated — prefer `tokenizer`) ─────────────────────
 
   /** @deprecated Use `tokenizer` instead. */
@@ -171,48 +302,7 @@ export interface CompactResult {
   decision: CompactDecision;
 }
 
-// ── Importance scores (0–100) ──────────────────────────────────────
-
-const TOOL_ERROR_PATTERN = /(ERROR|FAILED|DENIED|error|failed|denied)/;
-const WRITE_TOOL_PATTERN = /^(create|write|update|delete|deploy|publish|merge|commit|push|send|post|patch|put)/i;
-const READ_TOOL_PATTERN  = /^(read|get|fetch|search|find|list|query|grep|cat|head|tail|ls|dir|stat)/i;
-
-function messageImportance(m: Message): number {
-  // Goal messages (first user message) are priceless.
-  if (m.role === 'user' && m.content?.includes('Goal:')) return 100;
-
-  if (m.role === 'tool') {
-    const content = m.content ?? '';
-    // Tool errors are critical — the model needs to know what broke.
-    if (TOOL_ERROR_PATTERN.test(content)) return 80;
-    // Write operations change state — more important than reads.
-    if (m.name && WRITE_TOOL_PATTERN.test(m.name)) return 55;
-    if (m.name && READ_TOOL_PATTERN.test(m.name)) return 25;
-    return 30; // unclassified tool result
-  }
-
-  if (m.role === 'assistant') {
-    // Assistant messages that make tool calls are more valuable (they show
-    // the agent's reasoning chain) than pure text replies.
-    if (m.toolCalls && m.toolCalls.length > 0) return 35;
-    return 15;
-  }
-
-  // system messages are always kept, but if one somehow enters scoring:
-  if (m.role === 'system') return 90;
-  // regular user messages
-  if (m.role === 'user') return 45;
-  return 10;
-}
-
-/**
- * Importance floor above which `compactIfNeeded` protects an older message
- * verbatim (keeps it in `recent`) instead of folding it into the LLM summary.
- * Covers tool errors (80) and write-tool results (55) — the same messages
- * `assemble`'s importance discount protects during hard-cap eviction — so the
- * two compaction layers agree on what matters, not just on recency.
- */
-const IMPORTANCE_PROTECT_THRESHOLD = 55;
+// ── Assemble / compact helpers (importance scoring lives at top of file) ─
 
 /**
  * At most this fraction of the available prompt budget may be spent keeping
@@ -244,6 +334,7 @@ export class ContextManager {
   private readonly toolDefReserve: number;
   private readonly goalProtected: boolean;
   private readonly importanceScoring: boolean;
+  private readonly protectVerbatimClasses: ReadonlySet<ImportanceClass>;
 
   constructor(opts: ContextManagerOptions = {}) {
     this.maxPromptTokens = opts.maxPromptTokens ?? 64_000;
@@ -261,6 +352,9 @@ export class ContextManager {
     this.toolDefReserve = opts.toolDefReserveTokens ?? 0;
     this.goalProtected = opts.goalProtected ?? true;
     this.importanceScoring = opts.importanceScoring ?? true;
+    this.protectVerbatimClasses = new Set(
+      opts.protectVerbatimClasses ?? DEFAULT_PROTECT_VERBATIM_CLASSES,
+    );
   }
 
   /**
@@ -349,7 +443,7 @@ export class ContextManager {
 
     // Separate system, goal, and the rest.
     const system = messages.filter((m) => m.role === 'system');
-    const goalIdx = this.goalProtected ? messages.findIndex((m) => m.role === 'user' && m.content?.includes('Goal:')) : -1;
+    const goalIdx = this.goalProtected ? messages.findIndex(isGoalMessage) : -1;
     const goal = goalIdx >= 0 ? [messages[goalIdx]!] : [];
     const nonSystem = messages.filter((m) => m.role !== 'system' && !(this.goalProtected && m === goal[0]));
     const units = groupAtomicUnits(nonSystem);
@@ -513,7 +607,7 @@ export class ContextManager {
     const systemAll = messages.filter((m) => m.role === 'system');
     const priorSummaries = systemAll.filter(isSummaryMessage);
     const system = systemAll.filter((m) => !isSummaryMessage(m));
-    const goalIdx = this.goalProtected ? messages.findIndex((m) => m.role === 'user' && m.content?.includes('Goal:')) : -1;
+    const goalIdx = this.goalProtected ? messages.findIndex(isGoalMessage) : -1;
     const goal = goalIdx >= 0 ? [messages[goalIdx]!] : [];
     const rest = messages.filter((m) => m.role !== 'system' && m !== goal[0]);
     const units = groupAtomicUnits(rest);
@@ -524,15 +618,15 @@ export class ContextManager {
     const candidateOlderUnits = units.slice(0, recentUnitStart);
 
     // Importance-weighted protection, budget-capped: a high-value *unit*
-    // (tool error / write result, scored as max over the unit) outside the
-    // positional window stays verbatim in `recent` rather than being folded
-    // into prose — aligning with assemble's hard-cap eviction. Whole units
-    // only, so a protected tool result never appears without its assistant.
-    // Capped by `PROTECTED_BUDGET_FRACTION` so a long history of errors can't
-    // prevent compaction from actually shrinking the transcript.
+    // (class in protectVerbatimClasses, scored as max over the unit) outside
+    // the positional window stays verbatim in `recent` rather than being
+    // folded into prose — aligning with assemble's hard-cap eviction. Whole
+    // units only, so a protected tool result never appears without its
+    // assistant. Capped by `PROTECTED_BUDGET_FRACTION` so a long history of
+    // errors can't prevent compaction from actually shrinking the transcript.
     const protectedBudget = Math.floor(availableBudget * PROTECTED_BUDGET_FRACTION);
     const importantOlderUnits = this.importanceScoring
-      ? candidateOlderUnits.filter((u) => unitImportance(u, messageImportance) >= IMPORTANCE_PROTECT_THRESHOLD)
+      ? candidateOlderUnits.filter((u) => this.protectVerbatimClasses.has(unitImportanceClass(u)))
       : [];
     const protectedOlderUnits = selectUnitsByBudget(
       importantOlderUnits,
@@ -710,6 +804,21 @@ function unitCost(unit: AtomicUnit, tokenizer: Tokenizer): number {
 function unitImportance(unit: AtomicUnit, score: (m: Message) => number): number {
   let best = 0;
   for (const m of unit.messages) best = Math.max(best, score(m));
+  return best;
+}
+
+/** Unit class = class of the highest-scoring member (same max rule as unitImportance). */
+function unitImportanceClass(unit: AtomicUnit): ImportanceClass {
+  let best: ImportanceClass = 'unknown';
+  let bestScore = -1;
+  for (const m of unit.messages) {
+    const cls = classifyImportance(m);
+    const s = IMPORTANCE_SCORE[cls];
+    if (s > bestScore) {
+      bestScore = s;
+      best = cls;
+    }
+  }
   return best;
 }
 

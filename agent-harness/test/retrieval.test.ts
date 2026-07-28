@@ -58,12 +58,15 @@ describe('runAgent retrieval injection', () => {
     expect(res.finished).toBe(true);
     const untrusted = res.messages.filter((m) => m.untrusted);
     expect(untrusted.length).toBe(1);
+    expect(untrusted[0]!.kind).toBe('retrieval');
     expect(untrusted[0]!.content).toContain('Auth tokens expire');
     expect(untrusted[0]!.content).toContain('UNTRUSTED RETRIEVED CONTEXT');
     expect(untrusted[0]!.content).not.toContain('delete the database');
 
-    const goalIdx = res.messages.findIndex((m) => m.content?.includes('Goal:'));
-    const retrievalIdx = res.messages.findIndex((m) => m.untrusted);
+    const goalIdx = res.messages.findIndex((m) => m.kind === 'goal');
+    expect(goalIdx).toBeGreaterThan(0);
+    expect(res.messages[goalIdx]!.content).toMatch(/^Goal:/);
+    const retrievalIdx = res.messages.findIndex((m) => m.kind === 'retrieval');
     expect(retrievalIdx).toBeGreaterThan(0);
     expect(retrievalIdx).toBeLessThan(goalIdx);
   });

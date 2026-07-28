@@ -75,7 +75,7 @@ ProtocolDecision =
 | Loop 检测（序列模式） | ✅ 强于多数框架 | A→B→A→B 序列检测 |
 | Dead-Letter Queue | ✅ `DeadLetterToolInvoker` + `retryDeadLetter` | 组合在 `RetryingToolInvoker` 外层，只有耗尽重试的调用才入队；持久化版本见 runtime 的 `FileDeadLetterQueue` |
 | Hedged Requests | ❌ | 慢尾延迟并发请求 |
-| Token-bucket 限流（工具级 ToolInvoker） | ❌ | agent-harness 层暂无；runtime 的 `policy.ts` 已实现（按工具的进程内 token bucket，见 runtime-caching-and-policy.md） |
+| Token-bucket 限流（按工具） | ✅ runtime `policy.ts` | 经典 token bucket（`capacity` + `refillPerSec`）；超限拒绝并返回 `retryAfterMs`。故意进程内、不事件源化（重放不应再扣令牌）。harness 层无独立 ToolInvoker 装饰器——限流挂在 runtime 统一 `callTool` 漏斗上（见 runtime-caching-and-policy.md） |
 | Activity Heartbeat + Timeout | ❌ | 长任务心跳 |
 
 ### 要点
@@ -95,13 +95,13 @@ ProtocolDecision =
 
 | 模块 | 职责 |
 |------|------|
-| 预算 + 硬顶装配 | `maxPromptTokens` − output/tool 预留；system 在前（cache 友好）；goal 保护；重要性折扣扩窗 + 硬顶裁剪 |
+| 预算 + 硬顶装配 | `maxPromptTokens` − output/tool 预留；system 在前（cache 友好）；`kind: 'goal'` 保护；`ImportanceClass` 分数折扣扩窗 + 硬顶裁剪（`retrieval` ≪ `user_instruction`） |
 | 原子 tool-call 单元 | `assistant(toolCalls)` 与匹配的 `tool` 结果整组计分/淘汰/保护，不拆 call/response（API 合法 transcript） |
 | 近期窗口钉住 | `keepRecentMessages` 对齐 unit 后 **pin**：hard-cap 只裁扩出来的 grown 段，最新 user 指令不会输给更老的高分 tool error |
 | CJK-aware tokenizer | CJK ≈ 1 token/字、其余 ≈ 4 字/token；`fromCounter` 可接 tiktoken |
 | 按模型窗口 | `ContextManager.forModel(name)`，128K/200K/1M 注册表 |
-| 主动压缩 | `compactIfNeeded`：keyed LLM 摘要，有状态（压一次固化），durable replay 安全；重要 older **unit** 可 verbatim 保护（预算封顶 25%） |
-| Untrusted 隔离 | 工具输出围栏成"data only"，绝不并入 system（prompt-injection 防御） |
+| 主动压缩 | `compactIfNeeded`：keyed LLM 摘要，有状态（压一次固化），durable replay 安全；`protectVerbatimClasses`（默认 tool_error / user_instruction / tool_write）名单内 older **unit** 可 verbatim 保护（预算封顶 25%）；`describeImportancePolicy()` 可 dump |
+| Untrusted 隔离 | 工具输出与 query-time RAG（`kind: 'retrieval'`）围栏成"data only"，绝不并入 system（prompt-injection 防御） |
 | Scratchpad | 超大工具输出卸载到外部存储，窗口留指针+预览 |
 | 跨会话记忆 | **runtime** `memory/store.ts`：分 scope、内容哈希幂等写，读写走 `ctx.callTool` 被记日志 |
 
@@ -124,7 +124,7 @@ ProtocolDecision =
 | 模型驱动摘要 | ✅ | keyed callModel，durable-safe |
 | 自动压缩阈值 | ✅ | 0.85 触发，留一 turn 余量 |
 | 原子 call/response 淘汰 | ✅ | 按 unit，不按单条 message（修 API 拆对风险） |
-| 近期 pin + 重要性 | ✅ | recency 硬约束（pinned window）+ type 启发式（grown 段）；不做连续时间衰减 |
+| 近期 pin + 重要性 | ✅ | recency 硬约束（pinned window）+ `ImportanceClass` 启发式（grown 段）；compact 保护用显式 class 名单而非分数门槛；不做连续时间衰减 |
 | 压缩/淘汰决策可观测 | ✅ | `assembleDetailed` / `compactIfNeededDetailed` → `TraceCollector`；ablation 见 `test/context-ablation.test.ts`；对照文档 `docs/observability-trace-and-eval.md` |
 | **LLMLingua-2 / LongLLMLingua** | ❌ | 小模型评估每条消息信息贡献度 → 按贡献裁剪，非按位置 |
 | **LLM 自摘要用便宜模型** | 🟡 | 可换 GPT-4o-mini 降成本 |
@@ -133,7 +133,7 @@ ProtocolDecision =
 #### 检索 / Prompt 缓存
 | 做法 | 本项目 | 说明 |
 |------|--------|------|
-| 重要性评分 | ✅ | tool error > write > read；单位是 atomic unit（max 成员分） |
+| 重要性评分 | ✅ | `ImportanceClass` registry（goal > tool_error > user_instruction > tool_write > … > retrieval）；atomic unit 取 max 成员分；compact 用 `protectVerbatimClasses` 显式名单 |
 | 词法检索 | ✅ | 零依赖 mini-BM25（含 CJK）；Memory + DocumentStore |
 | 语义/embedding 检索 | 🟡 | async `EmbeddingProvider` 缝已通（`embed` / 可选 `embedMany`）；默认仍是 `HashingEmbeddingProvider`（确定性 demo，无同义词）；真模型用 `createHttpEmbeddingProvider` / 自实现接入，与 mock chat 正交 |
 | 文档 RAG（query-time） | ✅ | runtime `retrieval/` + `document_*`；默认 `once`；`FileDocumentStore` 可持久化 corpus |
@@ -151,7 +151,7 @@ ProtocolDecision =
 - **跨 run 持久化 → runtime**。记忆读与文档检索读必须走 `ctx.callTool` 被记日志，否则 replay 读到已变 store。
 - **Memory ≠ Document corpus**：短事实 vs 文档 chunk；平行 store，不要混表。
 - **通用引擎默认 `once`**：系统单次检索 + gate；模型连搜是 opt-in（省算力）。
-- **正确性优先于启发式**：淘汰原子单位是 tool-call group；`keepRecent` 是 pin，不是可被重要性推翻的软提示。
+- **正确性优先于启发式**：淘汰原子单位是 tool-call group；`keepRecent` 是 pin，不是可被重要性推翻的软提示；RAG（`retrieval`）分数低于真人指令；compact 保护看 `protectVerbatimClasses` 名单。
 - **暂缓 `score × recencyDecay`**：与 pin 语义重叠、缺 telemetry 前无法证伪；先观测再平滑。
 - "Context engineering 核心矛盾：窗口有限 vs 信息无限 → 解法是信息密度最大化"
 - "LLMLingua 思路：用便宜模型先评估贡献度再决定保留/丢弃——比 LRU 更聪明"

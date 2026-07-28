@@ -23,8 +23,8 @@
 ### C — 上下文层
 | 模块 | 一句话 |
 |------|--------|
-| `context/manager.ts` | Token 预算硬顶；atomic tool-call 单元淘汰；近期 pin + 重要性折扣扩窗；untrusted 隔离；keyed LLM 主动压缩 |
-| `context/retrieval.ts` | Query-time RAG 注入：gate（minScore / maxChunks / char 预算）→ untrusted 消息；不持有索引 |
+| `context/manager.ts` | Token 预算硬顶；atomic tool-call 单元淘汰；近期 pin + `ImportanceClass` 折扣扩窗；`protectVerbatimClasses` 显式保护名单；untrusted 隔离；keyed LLM 主动压缩 |
+| `context/retrieval.ts` | Query-time RAG 注入：gate（minScore / maxChunks / char 预算）→ `kind: 'retrieval'` + untrusted 消息；分数低于真人指令；不持有索引 |
 | `context/tokenizer.ts` | CJK ≈ 1 token/字估算；`fromCounter` 可接 tiktoken |
 | `context/scratchpad.ts` | 超大工具输出卸载到外部存储，窗口留指针 |
 
@@ -110,9 +110,10 @@
 
 | 理念 | 说明 |
 |------|------|
-| **缝** | `@agent/contracts` 纯类型，harness 和 runtime 各不依赖对方 |
+| **缝** | `@agent/contracts` 纯类型，harness 和 runtime 各不依赖对方；`MessageKind`（`goal` / `retrieval`）标识结构意图 |
 | **key 即契约** | `t{turn}` / `t{turn}:{callId}` → adapter 透传 → runtime idempotency cache → crash 后 replay 不重放 |
 | **状态全派生** | RunState 永远从事件日志 reduce 得出，不落盘；snapshot 是可选加速 |
 | **错误→observation** | 工具抛错/参数非法/loop 检测 → 结构化错误喂回模型 → 模型自愈 |
 | **分层** | harness = 无状态 loop 引擎；runtime = 有状态持久化底座；policy = 声明式护栏 |
 | **skills ≠ sub-agent** | skill = 当前 agent 的 playbook（上下文）；sub-agent = 嵌套 run；skills 不自动 inherit |
+| **指令 > 证据** | `ImportanceClass`：真人 `user_instruction` > RAG `retrieval`；compact 保护看 `protectVerbatimClasses` 名单 |

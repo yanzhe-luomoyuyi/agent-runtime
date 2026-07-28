@@ -26,7 +26,7 @@ import type {
   ToolInvoker,
   ToolSpec,
 } from '@agent/contracts';
-import { keyScope, runtimeToolCallId } from '@agent/contracts';
+import { isGoalMessage, keyScope, runtimeToolCallId } from '@agent/contracts';
 import {
   createAgent,
   ContextManager,
@@ -441,10 +441,10 @@ export function extractHarnessMessages(state: RunState): string | undefined {
 
 /** Render the transcript to a text prompt a text model (or the mock brain) understands. */
 function renderPrompt(messages: Message[], tools: ToolSpec[]): string {
-  // Prefer the "Goal:" message (set by the harness loop), falling back to
-  // the first user message so conversation history doesn't shadow the real goal.
+  // Prefer the tagged goal message (kind: 'goal' / legacy Goal: prefix),
+  // falling back to the first user message so history doesn't shadow the goal.
   const goalLine =
-    messages.find((m) => m.role === 'user' && m.content?.includes('Goal:'))?.content ??
+    messages.find(isGoalMessage)?.content ??
     messages.find((m) => m.role === 'user')?.content ??
     '';
 

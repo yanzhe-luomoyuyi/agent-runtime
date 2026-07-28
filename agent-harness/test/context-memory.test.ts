@@ -235,7 +235,7 @@ describe('ContextManager.compactIfNeeded', () => {
     const hasErrAssistant = out.some(
       (m) => m.role === 'assistant' && m.toolCalls?.some((c) => c.id === 'd1'),
     );
-    // Error unit is above the protect threshold — both halves stay verbatim.
+    // Error unit is on the default protectVerbatimClasses list — both halves stay verbatim.
     expect(hasErrTool).toBe(true);
     expect(hasErrAssistant).toBe(true);
 
@@ -253,6 +253,62 @@ describe('ContextManager.compactIfNeeded', () => {
         open = null;
       }
     }
+  });
+
+  it('folds write results when protectVerbatimClasses omits tool_write', async () => {
+    const model = summarizerModel('folded history');
+    const charLen = (m: Message) => {
+      const parts: string[] = [m.role, m.content ?? ''];
+      if (m.toolCalls?.length) parts.push(JSON.stringify(m.toolCalls));
+      if (m.name) parts.push(m.name);
+      return parts.join(' ').length;
+    };
+    const cm = new ContextManager({
+      maxPromptTokens: 400,
+      outputReserveTokens: 0,
+      keepRecentMessages: 2,
+      compactionThreshold: 0.1,
+      importanceScoring: true,
+      goalProtected: true,
+      // Narrow protect list: errors only — writes and retrieval fold into summary.
+      protectVerbatimClasses: ['tool_error'],
+      modelSummarize: createModelSummarizer(model),
+      tokenizer: {
+        count: (t) => t.length,
+        countMessage: charLen,
+        countMessages: (ms) => ms.reduce((s, m) => s + charLen(m), 0),
+      },
+    });
+    const msgs: Message[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Goal: ship', kind: 'goal' },
+      {
+        role: 'assistant',
+        toolCalls: [{ id: 'w1', name: 'write', arguments: {} }],
+      },
+      {
+        role: 'tool',
+        name: 'write',
+        toolCallId: 'w1',
+        content: 'wrote-file-ok',
+        untrusted: true,
+      },
+      {
+        role: 'user',
+        kind: 'retrieval',
+        untrusted: true,
+        content: 'old-rag-chunk-xxxxxxxxxxxx',
+      },
+      { role: 'assistant', content: 'recent-a' },
+      { role: 'user', content: 'recent-u' },
+    ];
+    const out = await cm.compactIfNeeded(msgs, { turn: 1 });
+    expect(model.requests.length).toBe(1);
+    // Write unit and retrieval are outside the protect list and outside the
+    // recent window — they should be folded (not present verbatim).
+    expect(out.some((m) => m.toolCallId === 'w1')).toBe(false);
+    expect(out.some((m) => m.kind === 'retrieval')).toBe(false);
+    expect(out.some((m) => m.content === 'recent-u')).toBe(true);
   });
 });
 

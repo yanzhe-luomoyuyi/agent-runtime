@@ -19,6 +19,8 @@ Agent harness，以及让两者在互不依赖的前提下协作的共享契约�
 `agent-harness` 与 `durable-agent-runtime` 各自有详细的 README
 （[harness](agent-harness/README.md) / README + [TESTING](durable-agent-runtime/TESTING.md)）。
 
+待做方向见 [`docs/TODO.md`](docs/TODO.md)（可插拔策略对照评测、人工随时介入、Planner plan review）。
+
 ## 总体架构
 
 整套仓库的核心是：把 **Agent 的大脑**（`agent-harness`）和**执行底座**（`durable-agent-runtime`）
@@ -123,7 +125,7 @@ sequenceDiagram
 
 | 模块 | 职责 |
 | --- | --- |
-| [messages.ts](agent-contracts/src/messages.ts) | 工具调用对话记录：`Message` / `ToolCall` / `Role`，构造函数 `systemMessage` / `userMessage` / `assistantMessage` / `toolResultMessage`，以及 `untrusted` 标记（防注入的关键设计）。 |
+| [messages.ts](agent-contracts/src/messages.ts) | 工具调用对话记录：`Message` / `ToolCall` / `Role` / `MessageKind`（`goal` · `retrieval`），构造函数 `systemMessage` / `userMessage` / `goalMessage` / `assistantMessage` / `toolResultMessage`，以及 `untrusted` 标记（防注入的关键设计）。 |
 | [tools.ts](agent-contracts/src/tools.ts) | `JSONSchema` 子集 · `ToolSpec` · `ToolInvoker`（`list` / `call`）· 带 `key` 的 `CallOptions`。 |
 | [model.ts](agent-contracts/src/model.ts) | `ChatModel`（`chat`）· `ChatRequest` / `ChatResponse` · `Usage` · `StopReason`。 |
 
@@ -133,7 +135,7 @@ sequenceDiagram
 | --- | --- | --- |
 | **A 协议** | [protocol/tool-calling.ts](agent-harness/src/protocol/tool-calling.ts) · [schema/validate.ts](agent-harness/src/schema/validate.ts) | 把 `ChatResponse` 解释成已校验的 tool call 或最终答案；执行**前**按各工具的 `inputSchema` 校验参数——非法调用变成结构化错误而非崩溃；内置一个为不支持原生 tool-calling 的模型准备的容错文本解析器。 |
 | **B 恢复** | [recovery/retry.ts](agent-harness/src/recovery/retry.ts) · [recovery/loop-detector.ts](agent-harness/src/recovery/loop-detector.ts) | 只对**瞬时性**失败执行退避重试（HTTP 429/5xx 分类 + `Retry-After` 头 + 指数退避 + full jitter）；把工具抛出的异常转化为模型能理解的 observation；检测无进展的死循环——包括单次重复调用和重复序列模式（A→B→A→B）。 |
-| **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) · [context/retrieval.ts](agent-harness/src/context/retrieval.ts) | 在 token 预算内组装 prompt + 滚动压缩；**atomic tool-call 单元**淘汰（不拆 assistant/tool）；**近期 pin + 重要性**硬顶裁剪；observation 截断；**untrusted 输出隔离**（工具结果与检索命中只当数据）；宿主传入的 retrieval hits 经 gate 后注入 Goal 之前。 |
+| **C 上下文** | [context/manager.ts](agent-harness/src/context/manager.ts) · [context/retrieval.ts](agent-harness/src/context/retrieval.ts) | 在 token 预算内组装 prompt + 滚动压缩；**atomic tool-call 单元**淘汰（不拆 assistant/tool）；**近期 pin + `ImportanceClass` 计分**硬顶裁剪（`retrieval` ≪ 真人指令）；compact 用显式 **`protectVerbatimClasses`** 名单 verbatim 保护；observation 截断；**untrusted 输出隔离**（工具结果与检索命中只当数据）；宿主传入的 retrieval hits 经 gate 后以 `kind: 'retrieval'` 注入 Goal 之前。 |
 | **D 控制** | [control/loop.ts](agent-harness/src/control/loop.ts) · [planner.ts](agent-harness/src/control/planner.ts) · [reflection.ts](agent-harness/src/control/reflection.ts) · [subagent.ts](agent-harness/src/control/subagent.ts) · [human.ts](agent-harness/src/control/human.ts) | 核心 `runAgent` 循环，加上 `runPlannedAgent`（先规划后执行）、`runReflectiveAgent`（自我批评并修订）、`makeSubagentTool`（把子任务委派封装成一个工具）、以及 human-in-the-loop 的 `Approver`。 |
 | **Skills** | [skills/](agent-harness/src/skills) · [agent.ts](agent-harness/src/agent.ts) | Playbook 注册：`SkillSpec`（含可选 `corpusId`）+ markdown loader；`createAgent` 默认 **on_demand**（catalog + `skill_list`/`skill_read`），可选 **eager**；`subAgents` → `delegate_<name>`；skills 与 sub-agent 正交，**不自动 inherit**。 |
 

@@ -73,4 +73,22 @@ describe('RuntimeChatModel — textCompletion passthrough', () => {
     expect(resp.thinking).toBe('checked tools first');
     expect(resp.message.thinking).toBe('checked tools first');
   });
+
+  it('prefers kind:goal over later user messages when rendering the prompt', async () => {
+    const { ctx, prompts } = stubCtx('{"action":"finish","answer":"ok"}');
+    const model = new RuntimeChatModel(ctx);
+
+    await model.chat({
+      messages: [
+        { role: 'user', content: 'ship the fix', kind: 'goal' },
+        { role: 'user', content: 'also mention Goal: in the docs' },
+      ],
+      tools: [],
+      key: 't:1',
+    });
+
+    expect(prompts[0]).toContain('Goal: ship the fix');
+    // Incidental Goal: mention must not replace the tagged goal.
+    expect(prompts[0]).not.toMatch(/^Goal: also mention/m);
+  });
 });

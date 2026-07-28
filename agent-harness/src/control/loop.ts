@@ -36,7 +36,7 @@
  */
 
 import type { ChatModel, ChatResponse, ChatStreamOutput, JSONSchema, Message, StopReason, ToolCall, ToolInvoker, ToolSpec, Usage } from '@agent/contracts';
-import { keyScope, systemMessage, toolResultMessage, userMessage } from '@agent/contracts';
+import { goalMessage, keyScope, systemMessage, toolResultMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
 import { ContextManager } from '../context/manager.js';
@@ -271,7 +271,7 @@ function initLoopState(opts: RunAgentOptions): LoopState {
       ...(opts.retrieval
         ? buildRetrievalMessages(opts.retrieval.hits, opts.retrieval.inject).messages
         : []),
-      userMessage(`Goal: ${opts.goal}`),
+      goalMessage(opts.goal),
     ],
     toolsUsed: [],
     retryCount: 0,

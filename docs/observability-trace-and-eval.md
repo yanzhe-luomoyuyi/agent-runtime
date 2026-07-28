@@ -98,7 +98,7 @@ Loop 在 `_prepareTurn` 里调用 `compactIfNeededDetailed` + `assembleDetailed`
 | `outcome` | `noop` / `compacted` |
 | `reason` | `no_summarizer` / `under_threshold` / `nothing_to_fold` / `no_budget` / `compacted` |
 | `inputTokens` / `outputTokens` | 压缩前后 |
-| `protectedUnits` / `summarizedMessages` | 重要性保护留下的 unit 数 / 折进 LLM 摘要的条数 |
+| `protectedUnits` / `summarizedMessages` | `protectVerbatimClasses` 名单内留下的 unit 数 / 折进 LLM 摘要的条数 |
 | `key?` | durable 摘要 key（如 `compact-t3`） |
 
 ### 2.5 Harness trace **没有**什么

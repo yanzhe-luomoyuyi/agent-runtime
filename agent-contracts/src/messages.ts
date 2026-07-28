@@ -13,6 +13,13 @@
 /** Who authored a message. `tool` messages carry the result of a tool call. */
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
+/**
+ * Structural purpose of a message, independent of its display text.
+ * Used by context protection / prompt assembly — do not infer identity from
+ * substrings like `"Goal:"` alone.
+ */
+export type MessageKind = 'goal' | 'retrieval';
+
 /** A single tool invocation the model requested in one assistant turn. */
 export interface ToolCall {
   /** Unique within a turn; correlates the eventual `tool` result message. */
@@ -50,6 +57,12 @@ export interface Message {
    * instruction region.
    */
   thinking?: string;
+  /**
+   * Structural tag for harness control (e.g. pin the run goal during
+   * compaction, or mark query-time RAG as `retrieval`). Prefer this over
+   * scanning `content` for display prefixes.
+   */
+  kind?: MessageKind;
 }
 
 /** Construct a system (instruction) message. Always trusted. */
@@ -58,8 +71,27 @@ export function systemMessage(content: string): Message {
 }
 
 /** Construct a user (goal / request) message. */
-export function userMessage(content: string): Message {
-  return { role: 'user', content };
+export function userMessage(content: string, opts?: { kind?: MessageKind }): Message {
+  const msg: Message = { role: 'user', content };
+  if (opts?.kind) msg.kind = opts.kind;
+  return msg;
+}
+
+/**
+ * The run's primary goal message: tagged `kind: 'goal'` for machine identity,
+ * with a `Goal: …` display prefix for humans / text-model prompts.
+ */
+export function goalMessage(goal: string): Message {
+  return userMessage(`Goal: ${goal}`, { kind: 'goal' });
+}
+
+/**
+ * True when `m` is the run goal. Prefers `kind: 'goal'`; falls back to a
+ * legacy `Goal:` prefix so older transcripts still protect/extract correctly.
+ */
+export function isGoalMessage(m: Message): boolean {
+  if (m.kind === 'goal') return true;
+  return m.role === 'user' && !!m.content?.startsWith('Goal:');
 }
 
 /** Construct an assistant message, optionally carrying tool calls. */

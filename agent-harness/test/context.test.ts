@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '@agent/contracts';
 
-import { ContextManager } from '../src/context/manager.js';
+import {
+  ContextManager,
+  classifyImportance,
+  describeImportancePolicy,
+  messageImportance,
+} from '../src/context/manager.js';
 import { heuristicTokenizer } from '../src/context/tokenizer.js';
 
 // ---------------------------------------------------------------------------
@@ -95,18 +100,63 @@ describe('ContextManager — goal protection', () => {
     });
     const msgs: Message[] = [
       { role: 'system', content: 'S' },
-      { role: 'user', content: 'Goal: fix login bug' },    // goal
+      { role: 'user', content: 'Goal: fix login bug', kind: 'goal' },
       { role: 'assistant', content: 'thinking...' },
       { role: 'tool', name: 'search', content: 'result1' },
       { role: 'assistant', content: 'still thinking...' },
       { role: 'tool', name: 'grep', content: 'result2' },
       { role: 'assistant', content: 'almost there...' },
-      { role: 'user', content: 'latest' },                  // most recent
+      { role: 'user', content: 'latest' },
     ];
     const out = cm.assemble(msgs);
     // The goal message must appear verbatim in the output (not just in summary).
     const hasGoalVerbatim = out.some((m) => m.role === 'user' && m.content === 'Goal: fix login bug');
     expect(hasGoalVerbatim).toBe(true);
+  });
+
+  it('protects kind:goal even without a Goal: display prefix', () => {
+    const cm = new ContextManager({
+      maxPromptTokens: 60,
+      keepRecentMessages: 1,
+      outputReserveTokens: 0,
+      goalProtected: true,
+      importanceScoring: false,
+      tokenizer: { count: (t) => t.length, countMessage: (m) => messageTextLen(m), countMessages: (ms) => ms.reduce((s, m) => s + messageTextLen(m), 0) },
+    });
+    const msgs: Message[] = [
+      { role: 'system', content: 'S' },
+      { role: 'user', content: 'fix login without prefix', kind: 'goal' },
+      { role: 'assistant', content: 'thinking...' },
+      { role: 'tool', name: 'search', content: 'result1' },
+      { role: 'assistant', content: 'still thinking...' },
+      { role: 'tool', name: 'grep', content: 'result2' },
+      { role: 'user', content: 'latest' },
+    ];
+    const out = cm.assemble(msgs);
+    expect(out.some((m) => m.kind === 'goal' && m.content === 'fix login without prefix')).toBe(true);
+  });
+
+  it('does not treat an incidental Goal: mention as the run goal', () => {
+    const cm = new ContextManager({
+      maxPromptTokens: 60,
+      keepRecentMessages: 1,
+      outputReserveTokens: 0,
+      goalProtected: true,
+      importanceScoring: false,
+      tokenizer: { count: (t) => t.length, countMessage: (m) => messageTextLen(m), countMessages: (ms) => ms.reduce((s, m) => s + messageTextLen(m), 0) },
+    });
+    const msgs: Message[] = [
+      { role: 'system', content: 'S' },
+      { role: 'user', content: 'Please document the Goal: field in README' },
+      { role: 'assistant', content: 'thinking...' },
+      { role: 'tool', name: 'search', content: 'result1' },
+      { role: 'assistant', content: 'still thinking...' },
+      { role: 'tool', name: 'grep', content: 'result2' },
+      { role: 'user', content: 'latest' },
+    ];
+    const out = cm.assemble(msgs);
+    // Incidental mention must not be mandatory-kept as a goal (tight budget may drop it).
+    expect(out.some((m) => m.content === 'Please document the Goal: field in README')).toBe(false);
   });
 
   it('can disable goal protection', () => {
@@ -120,7 +170,7 @@ describe('ContextManager — goal protection', () => {
     });
     const msgs: Message[] = [
       { role: 'system', content: 'S' },
-      { role: 'user', content: 'Goal: fix login bug' },
+      { role: 'user', content: 'Goal: fix login bug', kind: 'goal' },
       { role: 'assistant', content: 'thinking...' },
       { role: 'tool', name: 'search', content: 'result1' },
       { role: 'assistant', content: 'still...' },
@@ -209,6 +259,66 @@ describe('ContextManager — importance-weighted eviction', () => {
     expect(out.some((m) => m.content === 'most-recent')).toBe(true);
     // Error might or might not survive — doesn't matter; we just check no crash.
     expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('evicts retrieval before a trusted user instruction under hard-cap', () => {
+    // retrieval=20 < user_instruction=60. Pin keeps only the newest user;
+    // grown trim must drop RAG evidence before the older trusted instruction.
+    const cm = new ContextManager({
+      maxPromptTokens: 90,
+      keepRecentMessages: 1,
+      outputReserveTokens: 0,
+      goalProtected: false,
+      importanceScoring: true,
+      tokenizer: {
+        count: (t) => t.length,
+        countMessage: (m) => messageTextLen(m),
+        countMessages: (ms) => ms.reduce((s, m) => s + messageTextLen(m), 0),
+      },
+    });
+    const ragBody = 'RAG-EVIDENCE-'.repeat(4);
+    const msgs: Message[] = [
+      { role: 'system', content: 'S' },
+      {
+        role: 'user',
+        kind: 'retrieval',
+        untrusted: true,
+        content: ragBody,
+      },
+      { role: 'user', content: 'please-fix-the-login-bug' },
+      { role: 'user', content: 'now' },
+    ];
+    const out = cm.assemble(msgs);
+    expect(out.some((m) => m.content === 'please-fix-the-login-bug')).toBe(true);
+    expect(out.some((m) => m.kind === 'retrieval' || m.content === ragBody)).toBe(false);
+  });
+
+  it('scores kind:retrieval and legacy untrusted user as retrieval class', () => {
+    expect(classifyImportance({
+      role: 'user',
+      kind: 'retrieval',
+      untrusted: true,
+      content: 'chunk',
+    })).toBe('retrieval');
+    expect(classifyImportance({
+      role: 'user',
+      untrusted: true,
+      content: 'legacy rag',
+    })).toBe('retrieval');
+    expect(classifyImportance({ role: 'user', content: 'fix it' })).toBe('user_instruction');
+    expect(messageImportance({ role: 'user', content: 'fix it' })).toBeGreaterThan(
+      messageImportance({ role: 'user', kind: 'retrieval', untrusted: true, content: 'chunk' }),
+    );
+  });
+
+  it('describeImportancePolicy marks default protect classes', () => {
+    const rows = describeImportancePolicy();
+    const byClass = Object.fromEntries(rows.map((r) => [r.class, r]));
+    expect(byClass.tool_error!.protected).toBe(true);
+    expect(byClass.user_instruction!.protected).toBe(true);
+    expect(byClass.tool_write!.protected).toBe(true);
+    expect(byClass.retrieval!.protected).toBe(false);
+    expect(byClass.tool_read!.protected).toBe(false);
   });
 });
 
@@ -333,7 +443,7 @@ describe('ContextManager — atomic tool-call units', () => {
   });
 
   it('never evicts a pinned recent user message in favour of an older tool error', () => {
-    // Regular user score=45 < tool ERROR=80. Without pinning the keepRecent
+    // user_instruction=60 < tool_error=80. Without pinning the keepRecent
     // window, hard-cap trim would keep the error unit and drop the latest
     // user instruction — the model would never see what the user just asked.
     const cm = new ContextManager({
@@ -429,7 +539,7 @@ describe('ContextManager — cache-friendly ordering', () => {
     });
     const msgs: Message[] = [
       { role: 'system', content: 'system-prompt' },
-      { role: 'user', content: 'Goal: do stuff' },
+      { role: 'user', content: 'Goal: do stuff', kind: 'goal' },
       { role: 'assistant', content: 'a1' },
       { role: 'tool', name: 't', content: 'obs1' },
       { role: 'assistant', content: 'a2' },
