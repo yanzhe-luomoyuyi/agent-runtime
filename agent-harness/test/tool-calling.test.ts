@@ -47,6 +47,16 @@ describe('tool-calling protocol', () => {
     expect(parseTextToolCall('sure: {"action":"finish","answer":"hi"}')).toEqual({ kind: 'final', answer: 'hi' });
   });
 
+  it('forwards optional thinking from the decision JSON', () => {
+    expect(
+      parseTextToolCall('{"action":"finish","answer":"hi","thinking":"step by step"}'),
+    ).toEqual({ kind: 'final', answer: 'hi', thinking: 'step by step' });
+    const d = parseTextToolCall(
+      '{"action":"call_tool","tool":"searchCode","args":{"query":"x"},"thinking":"need code"}',
+    );
+    expect(d).toMatchObject({ kind: 'tool_calls', thinking: 'need code' });
+  });
+
   it('extractJsonObject respects nested braces and strings', () => {
     expect(extractJsonObject('prefix {"a":{"b":"}"}} suffix')).toBe('{"a":{"b":"}"}}');
   });

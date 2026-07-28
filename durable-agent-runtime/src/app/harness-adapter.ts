@@ -128,17 +128,37 @@ export class RuntimeChatModel implements ChatModel {
     const text = await this.ctx.callModel(prompt, { key: req.key });
 
     // A text model returns one decision as JSON; parse it into a structured reply.
+    // Forward optional `thinking` so the harness loop can persist it on the
+    // transcript (and renderPrompt can feed it back next turn).
     const decision = parseTextToolCall(text, 'c1');
     if (decision?.kind === 'tool_calls') {
-      return {
-        message: { role: 'assistant', toolCalls: decision.calls.map((c) => c.call) },
-        stopReason: 'tool_calls',
-        usage: usage(prompt, text),
-      };
+      return attachThinking(
+        {
+          message: { role: 'assistant', toolCalls: decision.calls.map((c) => c.call) },
+          stopReason: 'tool_calls',
+          usage: usage(prompt, text),
+        },
+        decision.thinking,
+      );
     }
     const answer = decision?.kind === 'final' ? decision.answer : text;
-    return { message: { role: 'assistant', content: answer }, stopReason: 'stop', usage: usage(prompt, text) };
+    return attachThinking(
+      {
+        message: { role: 'assistant', content: answer },
+        stopReason: 'stop',
+        usage: usage(prompt, text),
+      },
+      decision?.thinking,
+    );
   }
+}
+
+/** Mirror thinking onto both ChatResponse and Message (contracts convenience). */
+function attachThinking(resp: ChatResponse, thinking?: string): ChatResponse {
+  if (!thinking) return resp;
+  resp.thinking = thinking;
+  resp.message.thinking = thinking;
+  return resp;
 }
 
 /**
@@ -490,8 +510,15 @@ function renderPrompt(messages: Message[], tools: ToolSpec[]): string {
   }
   const transcript = lines.length > 0 ? lines.join('\n') : '(no tools called yet)';
 
+  // Keep the output protocol in the stable prefix (before the growing
+  // transcript) so multi-turn requests share a longer provider KV-cache hit.
   return [
     systemBlock,
+    '',
+    'Reply with EXACTLY ONE JSON object and nothing else:',
+    '- to call a tool:  {"action":"call_tool","tool":"<name>","args":{...},"thinking":"<reasoning>"}',
+    '- when finished:   {"action":"finish","answer":"<final answer>","thinking":"<reasoning>"}',
+    '- always include "thinking" with your reasoning for this decision',
     '',
     goalLine.startsWith('Goal:') ? goalLine : `Goal: ${goalLine}`,
     '',
@@ -500,10 +527,6 @@ function renderPrompt(messages: Message[], tools: ToolSpec[]): string {
     '',
     'Transcript so far:',
     transcript,
-    '',
-    'Reply with EXACTLY ONE JSON object and nothing else:',
-    '- to call a tool:  {"action":"call_tool","tool":"<name>","args":{...}}',
-    '- when finished:   {"action":"finish","answer":"<final answer>"}',
   ].join('\n');
 }
 

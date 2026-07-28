@@ -85,14 +85,22 @@ export function parseTextToolCall(raw: string, idHint = 'call-1'): ProtocolDecis
   }
   if (!isRecord(parsed)) return undefined;
 
+  // Optional chain-of-thought from text models that emit it alongside the
+  // decision JSON (mirrors ChatResponse.thinking / Message.thinking).
+  const thinking = typeof parsed.thinking === 'string' ? parsed.thinking : undefined;
+
   if (parsed.action === 'finish' && typeof parsed.answer === 'string') {
-    return { kind: 'final', answer: parsed.answer };
+    return thinking
+      ? { kind: 'final', answer: parsed.answer, thinking }
+      : { kind: 'final', answer: parsed.answer };
   }
   const name = typeof parsed.tool === 'string' ? parsed.tool : undefined;
   if (name) {
     const args = 'args' in parsed ? parsed.args : {};
     const call: ToolCall = { id: idHint, name, arguments: args ?? {} };
-    return { kind: 'tool_calls', calls: [{ call, valid: true }] };
+    return thinking
+      ? { kind: 'tool_calls', calls: [{ call, valid: true }], thinking }
+      : { kind: 'tool_calls', calls: [{ call, valid: true }] };
   }
   return undefined;
 }

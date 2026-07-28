@@ -83,8 +83,14 @@ export function buildAgentPrompt(
       : transcript
           .map((h) => `(turn ${h.turn}) called ${h.tool}(${JSON.stringify(h.args)}) -> ${JSON.stringify(h.observation)}`)
           .join('\n');
+  // Keep the output protocol in the stable prefix (before the growing
+  // transcript) so multi-turn requests share a longer provider KV-cache hit.
   return [
     '[agent] You are a durable, tool-using agent. Achieve the goal by calling tools one at a time.',
+    '',
+    'Reply with EXACTLY ONE JSON object and nothing else:',
+    '- to call a tool:  {"action":"call_tool","tool":"<name>","args":{...}}',
+    '- when finished:   {"action":"finish","answer":"<final answer>"}',
     '',
     `Goal: ${goal}`,
     historyBlock,
@@ -94,10 +100,6 @@ export function buildAgentPrompt(
     '',
     'Transcript so far:',
     historyLines,
-    '',
-    'Reply with EXACTLY ONE JSON object and nothing else:',
-    '- to call a tool:  {"action":"call_tool","tool":"<name>","args":{...}}',
-    '- when finished:   {"action":"finish","answer":"<final answer>"}',
   ].join('\n');
 }
 

@@ -55,4 +55,22 @@ describe('RuntimeChatModel — textCompletion passthrough', () => {
     // The agent path DID reshape the prompt into the decision format.
     expect(prompts[0]).toContain('Reply with EXACTLY ONE JSON');
   });
+
+  it('forwards thinking from the decision JSON onto ChatResponse + message', async () => {
+    const { ctx } = stubCtx(
+      '{"action":"finish","answer":"done","thinking":"checked tools first"}',
+    );
+    const model = new RuntimeChatModel(ctx);
+
+    const resp = await model.chat({
+      messages: [{ role: 'user', content: 'Goal: finish' }],
+      tools: [],
+      key: 't:1',
+    });
+
+    expect(resp.stopReason).toBe('stop');
+    expect(resp.message.content).toBe('done');
+    expect(resp.thinking).toBe('checked tools first');
+    expect(resp.message.thinking).toBe('checked tools first');
+  });
 });
