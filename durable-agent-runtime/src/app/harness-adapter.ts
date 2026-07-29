@@ -38,6 +38,7 @@ import {
   type RunInterrupter,
   type SkillLoadMode,
   type SkillSpec,
+  type TraceCollector,
 } from '@agent/harness';
 import type { Approver } from '@agent/contracts';
 
@@ -241,6 +242,12 @@ export interface HarnessWorkflowOptions {
     /** Used when `document_search` is not registered on the run's tools. */
     retriever?: Retriever;
   };
+  /**
+   * Optional harness TraceCollector — per-turn retries, tool args, context
+   * assemble/compact decisions, and provider cached-prompt tokens.
+   * Complements runtime `buildTrace` (event-log spans); they do not merge.
+   */
+  trace?: TraceCollector;
 }
 
 /**
@@ -317,6 +324,7 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                 interrupter: opts.interrupter
                   ? recordingInterrupter(opts.interrupter, ctx)
                   : undefined,
+                trace: opts.trace,
                 retrieval: retrievalHits
                   ? {
                       hits: retrievalHits,

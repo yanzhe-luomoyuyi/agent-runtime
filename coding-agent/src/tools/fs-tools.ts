@@ -7,6 +7,8 @@ import { dirname, join } from 'node:path';
 
 import type { ToolDef } from 'durable-agent-runtime';
 
+import { createWorkspaceIgnorer } from '../gitignore.js';
+import { walkWorkspace } from '../walk-workspace.js';
 import { Workspace, WorkspaceEscapeError } from '../workspace.js';
 
 const DEFAULT_READ_LIMIT = 200;
@@ -14,19 +16,27 @@ const MAX_READ_CHARS = 80_000;
 const DEFAULT_GREP_MATCHES = 40;
 
 export function createFsTools(workspace: Workspace): ToolDef[] {
+  const ignorer = createWorkspaceIgnorer(workspace.rootDir);
+
   const list_dir: ToolDef<{ path?: string }, { entries: Array<{ name: string; type: 'file' | 'dir' }> }> = {
     name: 'list_dir',
-    description: 'List files and directories under a workspace-relative path (default ".").',
+    description: 'List files and directories under a workspace-relative path (default "."). Honors .gitignore.',
     inputSchema: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Relative path inside the workspace.' } },
     },
     run: ({ path }) => {
       const abs = workspace.resolve(path ?? '.');
-      const entries = readdirSync(abs, { withFileTypes: true }).map((d) => ({
-        name: d.name,
-        type: d.isDirectory() ? ('dir' as const) : ('file' as const),
-      }));
+      const baseRel = workspace.relative(abs);
+      const entries = readdirSync(abs, { withFileTypes: true })
+        .map((d) => ({
+          name: d.name,
+          type: d.isDirectory() ? ('dir' as const) : ('file' as const),
+        }))
+        .filter((e) => {
+          const rel = baseRel === '.' ? e.name : join(baseRel, e.name).split('\\').join('/');
+          return !(ignorer.ignores(rel) || (e.type === 'dir' && ignorer.ignores(`${rel}/`)));
+        });
       return { entries };
     },
   };
@@ -36,7 +46,7 @@ export function createFsTools(workspace: Workspace): ToolDef[] {
     { matches: Array<{ path: string; line: number; text: string }> }
   > = {
     name: 'grep',
-    description: 'Search file contents for a substring or JS regex. Scoped to the workspace.',
+    description: 'Search file contents for a substring or JS regex. Scoped to the workspace; skips gitignored paths.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -55,9 +65,18 @@ export function createFsTools(workspace: Workspace): ToolDef[] {
         pattern = new RegExp(escapeRegExp(query), 'i');
       }
       const cap = Math.min(maxMatches ?? DEFAULT_GREP_MATCHES, 200);
-      const root = workspace.resolve(path ?? '.');
+      const start = workspace.resolve(path ?? '.');
       const matches: Array<{ path: string; line: number; text: string }> = [];
-      walkFiles(root, (fileAbs) => {
+
+      let st;
+      try {
+        st = statSync(start);
+      } catch (e) {
+        if (e instanceof WorkspaceEscapeError) throw e;
+        return { matches };
+      }
+
+      const considerFile = (fileAbs: string): boolean => {
         if (matches.length >= cap) return false;
         let text: string;
         try {
@@ -79,7 +98,19 @@ export function createFsTools(workspace: Workspace): ToolDef[] {
           }
         }
         return true;
-      });
+      };
+
+      if (st.isFile()) {
+        const rel = workspace.relative(start);
+        if (!ignorer.ignores(rel)) considerFile(start);
+        return { matches };
+      }
+
+      walkWorkspace(
+        workspace.rootDir,
+        (fileAbs) => considerFile(fileAbs),
+        { startDir: start, ignorer },
+      );
       return { matches };
     },
   };
@@ -143,35 +174,4 @@ export function createFsTools(workspace: Workspace): ToolDef[] {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** Depth-first file walk; callback return false to stop. */
-function walkFiles(abs: string, fn: (fileAbs: string) => boolean): void {
-  let st;
-  try {
-    st = statSync(abs);
-  } catch (e) {
-    if (e instanceof WorkspaceEscapeError) throw e;
-    return;
-  }
-  if (st.isFile()) {
-    fn(abs);
-    return;
-  }
-  if (!st.isDirectory()) return;
-  const names = readdirSync(abs);
-  for (const name of names) {
-    if (name === 'node_modules' || name === '.git' || name === 'dist') continue;
-    const child = join(abs, name);
-    let childSt;
-    try {
-      childSt = statSync(child);
-    } catch {
-      continue;
-    }
-    if (childSt.isDirectory()) walkFiles(child, fn);
-    else if (childSt.isFile()) {
-      if (!fn(child)) return;
-    }
-  }
 }

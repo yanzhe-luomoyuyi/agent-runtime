@@ -13,3 +13,8 @@ export {
   PACKAGE_ROOT,
   type CodingRuntimeOptions,
 } from './runtime-factory.js';
+export {
+  CODING_PROMPT_SOFT_CAP,
+  resolveCodingMaxPromptTokens,
+  resolveModelIdFromEnv,
+} from './prompt-budget.js';

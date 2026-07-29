@@ -2,6 +2,7 @@
  * coding-agent CLI — independent of durable-agent-runtime's demo CLI.
  *
  *   coding-agent "<goal>"
+ *   coding-agent --workspace <path> "<goal>"
  *   coding-agent resume <runId>
  *   coding-agent status <runId>
  *   coding-agent trace <runId>
@@ -9,22 +10,31 @@
 
 import type { RunState } from 'durable-agent-runtime';
 import { extractAnswer, renderTimeline } from 'durable-agent-runtime';
+import { join } from 'node:path';
 
-import { createCodingRuntime, loadCodingConfigFile, resolveWorkspaceRoot } from './runtime-factory.js';
+import { parseArgs } from './cli-args.js';
+import { loadEnvFile } from './load-env.js';
+import { createCodingRuntime, loadCodingConfigFile, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
+
+loadEnvFile(join(PACKAGE_ROOT, '.env'));
+loadEnvFile(join(PACKAGE_ROOT, '.env.local'));
 
 const BASE_DIR = process.env.AGENT_RUNS_DIR ?? '.coding-agent-runs';
 
 async function main(): Promise<void> {
-  const [cmd, ...rest] = process.argv.slice(2);
+  const { workspace: workspaceFlag, args } = parseArgs(process.argv.slice(2));
+  const [cmd, ...rest] = args;
   if (!cmd || cmd === 'help' || cmd === '--help') {
     printHelp();
     return;
   }
 
+  const workspaceRoot = resolveWorkspaceRoot(workspaceFlag);
+
   if (cmd === 'resume' || cmd === 'status' || cmd === 'trace') {
     const runId = rest[0];
     if (!runId) throw new Error(`${cmd} requires <runId>`);
-    const rt = buildRuntime();
+    const rt = buildRuntime(workspaceRoot);
     if (cmd === 'status') {
       console.log(JSON.stringify(rt.status(runId), null, 2));
       return;
@@ -45,16 +55,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const workspace = resolveWorkspaceRoot();
-  process.stderr.write(`▶ coding-agent workspace=${workspace}\n`);
-  printResult(await buildRuntime().run(goal));
+  process.stderr.write(`▶ coding-agent workspace=${workspaceRoot}\n`);
+  printResult(await buildRuntime(workspaceRoot).run(goal));
 }
 
-function buildRuntime() {
+function buildRuntime(workspaceRoot: string) {
   const cfg = loadCodingConfigFile();
   return createCodingRuntime({
     baseDir: BASE_DIR,
-    workspaceRoot: resolveWorkspaceRoot(),
+    workspaceRoot,
     pricing: cfg.pricing,
     policy: cfg.policy,
     maxTurns: numFromEnv('AGENT_MAX_TURNS'),
@@ -87,9 +96,13 @@ function printHelp(): void {
   console.log(`Usage:
   coding-agent "<goal>"
   coding-agent run "<goal>"
+  coding-agent --workspace <path> "<goal>"
   coding-agent resume <runId>
   coding-agent status <runId>
   coding-agent trace <runId>
+
+Flags:
+  --workspace <path> / -W <path>   override workspace (else AGENT_WORKSPACE / fixture)
 
 Env:
   DEEPSEEK_API_KEY      required for live model

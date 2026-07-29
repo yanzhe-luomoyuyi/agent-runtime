@@ -7,19 +7,20 @@ Agent harness，以及让两者在**平台层互不依赖**的前提下协作的
 > **Agent 的大脑**（模型驱动循环）和**执行底座**（持久化、恢复、幂等、可观测、策略）
 > 拆开，再用一条极小的缝 (seam) 把它们连起来。
 
-## 四个 project
+## 五个 project
 
 | Project | 是什么 | 依赖 |
 | --- | --- | --- |
 | [`agent-contracts`](agent-contracts) | **缝 (seam)。** messages / tools / model，加上两侧共享的 DLQ、approval、corpus 绑定与 idempotency keys。 | — |
 | [`agent-harness`](agent-harness) | **Agent 的大脑。** 模型驱动循环 + recovery / context / control。与运行时平台无关。 | `@agent/contracts` |
 | [`durable-agent-runtime`](durable-agent-runtime) | **执行底座。** 事件溯源、可恢复、幂等；`src/` 平台层只依赖 contracts；`src/app/` 适配器可选依赖 harness。 | `@agent/contracts`（平台）；`@agent/harness`（仅 adapter） |
+| [`coding-agent`](coding-agent) | **示例宿主。** 沙箱 coding workbench（CLI + UI），单向依赖 harness + durable-runtime，验证 E2E。 | `@agent/contracts`、`@agent/harness`、`durable-agent-runtime` |
 | [`fabric-shell`](fabric-shell) | 启发整个研究的真实 Copilot-CLI Agent（MCP servers + skills + agent 配置）。 | —（独立工具） |
 
 `agent-harness` 与 `durable-agent-runtime` 各自有详细的 README
-（[harness](agent-harness/README.md) / README + [TESTING](durable-agent-runtime/TESTING.md)）。
+（[harness](agent-harness/README.md) / README + [TESTING](durable-agent-runtime/TESTING.md)）；coding-agent 见 [coding-agent/README.md](coding-agent/README.md)。
 
-待做方向见 [`docs/TODO.md`](docs/TODO.md)（当前主要剩：可插拔策略对照评测 / ablation eval cases）。
+待做方向见 [`docs/TODO.md`](docs/TODO.md)（ablation eval、统一配置、UI session/HITL、EventLog 单文件模式等）。
 
 ## 总体架构
 
@@ -192,7 +193,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 
 | 模块 | 职责 |
 | --- | --- |
-| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker`；`createHarnessWorkflow` 支持 `approver` / `interrupter`（steer·abort → `HumanIntervention`）+ 可选 `retrieval`（`once` / `once_rewrite` / `capped_agentic`；corpus 可来自 skill）。 |
+| [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker`；`createHarnessWorkflow` 支持 `approver` / `interrupter`（steer·abort → `HumanIntervention`）+ 可选 `trace`（`TraceCollector`）+ 可选 `retrieval`（`once` / `once_rewrite` / `capped_agentic`；corpus 可来自 skill）。 |
 | [issue-workflow.ts](durable-agent-runtime/src/app/issue-workflow.ts) | demo 的 `issue → fix` Agent，声明为 `analyze → locate → propose` 三阶段。 |
 | [tools.ts](durable-agent-runtime/src/app/tools.ts) · [demo-fixtures.ts](durable-agent-runtime/src/app/demo-fixtures.ts) · [demo-runtime.ts](durable-agent-runtime/src/app/demo-runtime.ts) · [document-tools.ts](durable-agent-runtime/src/app/document-tools.ts) · [memory-tools.ts](durable-agent-runtime/src/app/memory-tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性 mock 工具 / 共享 fixtures+Runtime 工厂 / 文档检索 / 记忆工具、MCP 封装、eval 场景、harness mock 大脑。 |
 
@@ -304,8 +305,9 @@ agent/                        # workspace 根（本仓库）
   agent-contracts/            # @agent/contracts — 共享的缝（仅类型）
   agent-harness/              # @agent/harness — 模型驱动循环 (A/B/C/D) + testkit + demo
   durable-agent-runtime/      # 事件溯源的持久化 runtime + app 工作负载 + harness adapter
+  coding-agent/               # @agent/coding-agent — 沙箱 coding workbench（CLI + UI）
   fabric-shell/               # 启发本研究的 Copilot-CLI Agent
-  package.json                # npm workspaces：agent-contracts、agent-harness、durable-agent-runtime
+  package.json                # npm workspaces：contracts、harness、durable-runtime、coding-agent
 ```
 
 ## 设计说明

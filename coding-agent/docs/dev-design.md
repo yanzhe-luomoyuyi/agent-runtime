@@ -10,7 +10,7 @@
 | 项 | 选择 |
 | --- | --- |
 | 形态 | **沙箱 Coding Agent（阶段 A）**：分析 → 改代码 → 写文档 |
-| 演进 | 工具层已按 `workspaceRoot` 绑定；日后加 `--workspace` 即可变**通用** coding agent，不必重写工具 |
+| 演进 | 工具按 `workspaceRoot` 注入；CLI `--workspace` / UI 路径 / `AGENT_WORKSPACE` 即可指向任意仓 |
 | 工程边界 | **独立 npm workspace** `@agent/coding-agent`，不把业务塞进 harness / durable-runtime |
 | 解耦含义 | 包边界解耦 + **单向依赖平台**（仍用 harness + runtime 做 durable 验证）；**不是**零依赖自建循环 |
 | LLM | **DeepSeek**（OpenAI 兼容协议）；`DEEPSEEK_API_KEY` |
@@ -72,7 +72,9 @@ Chat 结果以 JSON envelope 存在 `ModelCalled.response`（`kind: 'chat'`）�
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/cli.ts` | 独立 CLI：`run` / `resume` / `status` / `trace` |
+| `src/cli.ts` | 独立 CLI：`run` / `resume` / `status` / `trace`；`--workspace` / `-W` |
+| `src/ui-server.ts` + `ui/static/` | 本地 Workbench：SSE 跑 agent、Analysis、unified diff |
+| `src/workspace-diff.ts` | run 前后快照与 unified diff |
 | `src/runtime-factory.ts` | 组装 Workspace、工具、skill、approver、Runtime |
 | `src/workspace.ts` | 路径沙箱（防 `..` 逃逸） |
 | `src/tools/fs-tools.ts` | `list_dir` / `grep` / `read_file` / `write_file` |
@@ -103,7 +105,8 @@ Chat 结果以 JSON envelope 存在 `ModelCalled.response`（`kind: 'chat'`）�
 | `write_file` | 整文件写；内容幂等；默认 **stdin HITL** |
 | `run_tests` | 仅白名单 `npm test`，无任意 shell |
 
-- 默认 workspace：`fixtures/coding-sandbox`；覆盖：`AGENT_WORKSPACE`
+- 默认 workspace：`fixtures/coding-sandbox`；覆盖：`--workspace` / UI path / `AGENT_WORKSPACE`
+- 快照 / `list_dir` / `grep` 遵守根目录 `.gitignore` + 硬默认（`node_modules`、`.git`、`.coding-agent-runs`、`dist`）
 - 自动批准写：`AGENT_AUTO_APPROVE=1`
 - Policy allow-list 在 `agent.config.json` / `defaultCodingPolicy()`
 
@@ -115,7 +118,8 @@ Chat 结果以 JSON envelope 存在 `ModelCalled.response`（`kind: 'chat'`）�
 | --- | --- |
 | `DEEPSEEK_API_KEY`（或 `LLM_API_KEY`） | 必填才能 live |
 | `DEEPSEEK_BASE_URL` / `LLM_BASE_URL` | 默认 `https://api.deepseek.com` |
-| `DEEPSEEK_MODEL` / `LLM_MODEL` | 默认 `deepseek-chat` |
+| `DEEPSEEK_MODEL` / `LLM_MODEL` | 默认 `deepseek-chat`；用于查 context 窗口并算 soft cap |
+| `AGENT_MAX_PROMPT_TOKENS` | 产品 soft cap 覆盖（默认 128000）；最终 `min(modelWindow, softCap)` |
 | `AGENT_WORKSPACE` | 工作区 root |
 | `AGENT_AUTO_APPROVE` | `1` 跳过 write 审批 |
 | `AGENT_RUNS_DIR` | 默认 `.coding-agent-runs` |
@@ -137,6 +141,9 @@ npm test -w @agent/coding-agent
 export DEEPSEEK_API_KEY=...
 export AGENT_AUTO_APPROVE=1   # 试跑可先开
 npm run dev -w @agent/coding-agent -- "Fix getUserName null session, run tests, write ANALYSIS.md"
+
+# 任意本地仓库
+npm run dev -w @agent/coding-agent -- --workspace /path/to/repo "Summarize src/"
 ```
 
 Fixture 需求见 `fixtures/coding-sandbox/REQUIREMENT.md`。
@@ -156,9 +163,15 @@ Fixture 需求见 `fixtures/coding-sandbox/REQUIREMENT.md`。
 
 ### 建议下一步（接手时可选）
 
-- [ ] **统一配置文件**（见仓库 `docs/TODO.md` §4）：把 default instructions、skill 路径、compaction、模型默认值等从 `runtime-factory.ts` 收进配置
-- [ ] CLI `--workspace <path>`（通用化；工具已支持换 root）
-- [ ] Live DeepSeek smoke + 真机调优（context / cost / turns）
+- [x] **Workbench UI** — `npm run ui`：goal / 事件流 / ANALYSIS / code diff / reset fixture；**可填任意 repo path**
+- [x] CLI `--workspace <path>`（与 UI 对齐；短旗 `-W`，避免与 npm `-w` 冲突）
+- [x] `.gitignore` 感知快照 / walk（`list_dir`、`grep`、UI diff）
+- [x] UI **Trace** 页：runtime `buildTrace` + harness `TraceCollector`（cost / duration / cache / retry）
+- [ ] **统一配置文件**（见仓库 `docs/TODO.md` §4）
+- [ ] EventLog 乐观并发可关 → 单 run 单文件（`docs/TODO.md` §5）
+- [ ] UI：Session / crash / resume / pause / HITL（`docs/TODO.md` §6）
+- [ ] UI：手动调 max prompt tokens（`docs/TODO.md` §7）
+- [ ] 真机调优；UI 可继续增强（流式 token、多文件侧栏、嵌套 `.gitignore`）
 - [ ] `apply_patch`、受限 git、更丰富 HITL UX
 - [ ] 代码 review 通过后，再按仓库 skill 更新根 README / cheatsheet 等正式文档
 

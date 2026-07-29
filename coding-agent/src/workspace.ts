@@ -1,8 +1,8 @@
 /**
  * Path sandbox for a coding workspace.
  *
- * Tools never see absolute user paths that escape `rootDir`. Phase A binds a
- * default fixture root; a later `--workspace` flag only changes the constructor arg.
+ * Tools never see absolute user paths that escape `rootDir`.
+ * Injected via CLI `--workspace`, UI path, or `AGENT_WORKSPACE`.
  */
 
 import { existsSync } from 'node:fs';

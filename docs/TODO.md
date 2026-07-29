@@ -53,3 +53,46 @@
 | 策略 / 计价 | maxCostUsd、pricing、redactions |
 
 **落地注意：** 配置是数据、策略仍走现有 `Policy` / factory 注入；先从 `@agent/coding-agent` 收拢，再考虑 runtime demo 是否共用同一加载器。
+
+---
+
+## 5. EventLog 乐观并发写入改为可选项
+
+**现状：** `durable-agent-runtime` 的 `EventLog.append` 默认按版本做乐观并发（多文件 / 冲突检测，`ConflictError`）；单机单 worker 调试时一个 run 目录下会散落大量序号 JSON。
+
+**目标：** 把「乐观并发多文件写入」做成 **Runtime / EventLog 可选项**：
+
+| 模式 | 行为 |
+| --- | --- |
+| 开（默认，现行为） | 按 version 乐观写入；适合多 worker / 并发 append |
+| 关 | **一个 `runId` 对应单个（或极少）日志文件**（例如整 log append-only 单文件，或关闭 CAS 的简化布局），降低本地调试噪音、方便肉眼翻 run 目录 |
+
+**落地注意：** 关模式下仍需保证 resume 可读完整事件序；snapshot 与 `ConflictError` 路径要明确「单写者」假设；在 `docs/runtime-caching-and-policy.md` / cheatsheet 里写清何时开/关。
+
+---
+
+## 6. coding-agent Workbench：Session / crash / resume / pause / HITL
+
+**现状：** UI 能开单次 `run`、看 SSE 进度与 Trace；CLI 已有 `resume` / `status` / `trace`。harness / runtime 侧已有 `RunInterrupter`、`HumanIntervention`、`crashAfterTurn`、durable resume，但 **Workbench 未暴露**。
+
+**目标：** 在 UI 上接上会话与运维控制面：
+
+| 能力 | 说明 |
+| --- | --- |
+| **Session** | 多轮对话 / 会话列表与当前 session 绑定（延续 `conversationHistory` 或 runtime session API） |
+| **主动 crash** | 注入 / 触发 crash（对齐 `crashAfterTurn` 或「立即失败」），用于验证 durable resume |
+| **Resume** | 对已有 `runId` 一键 resume，展示与新建 run 相同的进度 / Trace |
+| **Pause** | turn 边界暂停（`RunInterrupter` pause），UI 显示 paused 并可继续 |
+| **人工介入** | steer / abort /（写工具）approval：UI 表单注入，写入 `HumanIntervention` / approver 路径 |
+
+**落地注意：** SSE 协议扩展 `paused` / `needs_input` 等事件；busy 锁改为 per-run；与 §4 统一配置里的 HITL 开关对齐。
+
+---
+
+## 7. coding-agent UI：手动调整 max prompt tokens
+
+**现状：** `maxPromptTokens = min(modelWindow, softCap)`，softCap 默认 128k，可由 `AGENT_MAX_PROMPT_TOKENS` / 环境决定；UI 只读展示 model 与预算。
+
+**目标：** Workbench 上提供 **可编辑的 max prompt tokens**（滑条或输入框），对本 run / 本 session 生效，并与 Trace Overview 的 assemble/compact 行为对齐。
+
+**落地注意：** 校验范围（例如 ≥ 输出 reserve、≤ model window）；是否写回 `.env` / 仅内存覆盖要产品上二选一；改预算后正在跑的 run 不热更新（下一 run 生效即可）。

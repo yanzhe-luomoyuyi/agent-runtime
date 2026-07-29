@@ -20,7 +20,7 @@
 
 | 模块 | 做什么 |
 | --- | --- |
-| [tracing/collector.ts](src/tracing/collector.ts) | 结构化的 per-run 指标：token 用量统计、成本估算、每 turn 耗时、retry 次数、A/B 对比。`TraceCollector` 在循环的关键埋点处挂载，loop 通过 `hooks` / 直接调用驱动。可配置定价模型。 |
+| [tracing/collector.ts](src/tracing/collector.ts) | 结构化的 per-run 指标：token 用量统计、成本估算、每 turn 耗时、retry 次数、A/B 对比。`TraceCollector` 经 `runAgent({ trace })` 挂到 loop 埋点；durable 宿主也可 `createHarnessWorkflow({ trace })`。可配置定价模型。 |
 
 #### Trace 数据结构
 
@@ -219,23 +219,20 @@ await runPlannedAgent({
 ### 使用 TraceCollector
 
 ```ts
-import { runAgent, TraceCollector, estimateCost } from '@agent/harness';
+import { runAgent, TraceCollector, formatTraceReport, FALLBACK_PRICING } from '@agent/harness';
 
-const trace = new TraceCollector();
+const collector = new TraceCollector(FALLBACK_PRICING);
 const res = await runAgent({
   goal: 'Fix the login bug',
   model,
   tools,
-  hooks: {
-    onModelCall: (call) => trace.recordModelCall(call),
-    onToolCall: (call) => trace.recordToolCall(call),
-    onTurnComplete: (turn) => trace.recordTurn(turn),
-    onAgentComplete: (result) => trace.finalize(result),
-  },
+  trace: collector,
 });
-console.log(trace.summary());
-// { turns: 3, modelCalls: 3, toolCalls: 2, totalTokens: 4500, estimatedCostUsd: 0.023, ... }
+const agentTrace = collector.snapshot(/* runDurationMs */ 0);
+console.log(formatTraceReport(agentTrace));
 ```
+
+Durable 宿主可把同一个 collector 传给 `createHarnessWorkflow({ trace: collector })`，与 runtime `buildTrace(eventLog)` 并排使用（两套不自动合并）。
 
 ### Structured output
 

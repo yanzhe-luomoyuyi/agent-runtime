@@ -274,9 +274,9 @@ runEval
 Harness TraceCollector  ← 默认不进 eval
 ```
 
-当前内置 scorer **不读取** harness 的 `AssembleDecision` / `CompactDecision`。若要对上下文策略做回归，可以：
+当前内置 scorer **不读取** harness 的 `AssembleDecision` / `CompactDecision`。适配层**已支持** `createHarnessWorkflow({ trace })` 挂上 `TraceCollector`（coding-agent Workbench Trace 页即 runtime `buildTrace` + harness snapshot 并排展示）。若要对上下文策略做 **eval 回归**，还可以：
 
-1. 在 `buildRuntime` / harness 适配层同时挂 `TraceCollector`，把 `AgentTrace` 写入 `state.summary` 或旁路文件；或  
+1. 把 `AgentTrace` 写入 `state.summary` 或旁路文件，供 scorer 读取；或  
 2. 新增读 summary 字段的 scorer（与现有 `turnsUnder` 模式一致）。
 
 Ablation 级对比（pure-recency vs importance+pin）目前在 harness 单测 `test/context-ablation.test.ts`，尚未并入 `runEval`。

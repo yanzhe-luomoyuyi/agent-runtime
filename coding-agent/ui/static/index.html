@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>coding-agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+
+    <div class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Local workbench</p>
+          <h1>coding-agent</h1>
+          <p class="lede">Point at a repo, describe the change, review analysis and diffs.</p>
+        </div>
+        <div class="hero-meta">
+          <span class="pill" id="keyPill">API key</span>
+          <span class="pill mono" id="modelPill" title="DEEPSEEK_MODEL / LLM_MODEL">model</span>
+          <span class="pill mono" id="budgetPill" title="maxPromptTokens = min(model window, soft cap)">max prompt</span>
+        </div>
+      </header>
+
+      <main class="board">
+        <section class="card compose">
+          <label class="field-label" for="workspace">Repository path</label>
+          <div class="path-row">
+            <input id="workspace" type="text" spellcheck="false" placeholder="/absolute/path/to/repo" />
+            <button type="button" class="ghost" id="useSandboxBtn" title="Use built-in fixture">Sandbox</button>
+          </div>
+          <p class="fine" id="workspaceHint"></p>
+
+          <label class="field-label" for="goal">Goal</label>
+          <textarea id="goal" rows="7" spellcheck="false" placeholder="What should the agent do?"></textarea>
+
+          <div class="actions">
+            <button type="button" class="primary" id="runBtn">Run</button>
+            <button type="button" class="ghost" id="resetBtn" hidden>Reset sandbox</button>
+            <span class="hint" id="runHint"></span>
+          </div>
+
+          <div class="activity">
+            <h2>Activity</h2>
+            <div class="log" id="eventLog" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <section class="card results">
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab active" data-tab="analysis" role="tab">Analysis</button>
+            <button type="button" class="tab" data-tab="diffs" role="tab">Diffs</button>
+            <button type="button" class="tab" data-tab="trace" role="tab">Trace</button>
+            <button type="button" class="tab" data-tab="answer" role="tab">Answer</button>
+          </div>
+          <div class="tab-body">
+            <article id="view-analysis" class="view active">
+              <p class="empty">ANALYSIS.md appears after code fixes (or when you ask for a doc). Q&amp;A goes to Answer.</p>
+            </article>
+            <article id="view-diffs" class="view">
+              <p class="empty">File diffs appear when the agent edits the workspace.</p>
+            </article>
+            <article id="view-trace" class="view">
+              <p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries).</p>
+            </article>
+            <article id="view-answer" class="view">
+              <p class="empty">The agent’s final answer lands here.</p>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js" type="module"></script>
+  </body>
+</html>

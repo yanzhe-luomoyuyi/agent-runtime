@@ -116,7 +116,7 @@
 ### 桥接
 | 模块 | 一句话 |
 |------|--------|
-| `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；优先 `callChat`，否则文本桥+`parseTextToolCall`；retrieve 预算 / skill corpus；`createHarnessWorkflow({ agent, approver, interrupter, … })` |
+| `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；优先 `callChat`，否则文本桥+`parseTextToolCall`；retrieve 预算 / skill corpus；`createHarnessWorkflow({ agent, approver, interrupter, trace, … })` |
 | `app/demo-fixtures.ts` · `app/demo-runtime.ts` | 共享 demo 答案与 Runtime 工厂（CLI run/eval + 测试同一接线） |
 
 ---

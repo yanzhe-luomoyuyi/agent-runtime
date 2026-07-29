@@ -17,12 +17,14 @@
   "files": [
     "dist",
     "skills",
-    "fixtures"
+    "fixtures",
+    "ui"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/cli.ts",
+    "ui": "tsx src/ui-server.ts",
     "start": "node dist/cli.js",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -34,7 +36,8 @@
   "dependencies": {
     "@agent/contracts": "*",
     "@agent/harness": "*",
-    "durable-agent-runtime": "*"
+    "durable-agent-runtime": "*",
+    "ignore": "^7.0.6"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

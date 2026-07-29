@@ -214,10 +214,10 @@ ProtocolDecision =
 ## 五、Tracing / Observability
 
 ### 本项目实现
-- `TraceCollector`：token 用量/成本/每 turn 耗时/retry 次数
+- `TraceCollector`：token 用量/成本/每 turn 耗时/retry 次数；`runAgent({ trace })` / `createHarnessWorkflow({ trace })` 挂载
 - 可配置 PricingModel（GPT-4o / Claude 等）
 - `formatTraceReport()` 终端友好输出；`compareTraces()` A/B 对比
-- **durable-agent-runtime 侧**：`trace.ts` 从事件日志派生 span 时间线（纯数据模型，不碰 IO）；`otel.ts` 将其桥接成真正的 OpenTelemetry span（`NodeTracerProvider` + `OTLPTraceExporter`）——未配置 collector 时退回 `ConsoleSpanExporter`离线运行，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往 Jaeger/Tempo/Honeycomb 等标准后端。导出层放在 runtime 而非 harness，因为导出是真实网络 IO，harness 保持 host-agnostic。
+- **durable-agent-runtime 侧**：`trace.ts` 从事件日志派生 span 时间线（纯数据模型，不碰 IO）；`otel.ts` 将其桥接成真正的 OpenTelemetry span（`NodeTracerProvider` + `OTLPTraceExporter`）——未配置 collector 时退回 `ConsoleSpanExporter`离线运行，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往 Jaeger/Tempo/Honeycomb 等标准后端。导出层放在 runtime 而非 harness，因为导出是真实网络 IO，harness 保持 host-agnostic。两套 Trace（harness 现场埋点 vs runtime 事件投影）不自动合并。
 
 ### 工业界
 | 工具 | 定位 |
@@ -425,7 +425,7 @@ L5: 反思记忆化 + 跨 run 复用
 | `skills/load.ts` | `parseSkillMarkdown` / `loadSkillFile`（轻量 frontmatter，零 YAML 依赖） |
 | `skills/tools.ts` | on_demand：`skill_list` + `skill_read`（静态正文 → `AugmentedToolInvoker` 本地挂载，durable 重放安全） |
 | `skills/resolve.ts` | `createAgent` 物化：catalog 注入 instructions；eager 内联正文；subAgents → `delegate_<name>` |
-| runtime adapter | `createHarnessWorkflow({ agent: { skills, skillLoadMode } })` |
+| runtime adapter | `createHarnessWorkflow({ agent: { skills, skillLoadMode }, trace? })` |
 
 **加载策略：**
 - **默认 `on_demand`**：instructions 只注入 name + description 目录；模型按需 `skill_read`

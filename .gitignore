@@ -10,6 +10,10 @@ dist/
 .agent-cache.json
 *.log
 
+# Local secrets (coding-agent / repo root)
+.env
+.env.local
+
 # Generated documents
 *.docx
 
