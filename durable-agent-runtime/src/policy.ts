@@ -32,12 +32,13 @@
  * (durable, event-sourced) cost budget above. Deliberately kept OUT of the
  * event-sourced state: a cost budget must replay consistently (it's checked
  * against durably-recorded spend, so re-deriving it from the log on resume is
- * correct and required), but a rate limit is about pacing REAL wall-clock
- * traffic — replaying history should never re-enforce a rate limit against
- * events that already happened. So token-bucket state lives only on the
- * `PolicyEnforcer` instance (in memory, reset on process restart), the same
- * way a real API gateway's rate limiter is a runtime concern, not a ledger
- * entry.
+ * correct and required), but a rate limit is about pacing REAL live traffic —
+ * replaying history should never re-enforce a rate limit against events that
+ * already happened. So token-bucket state lives only on the `PolicyEnforcer`
+ * instance (in memory, reset on process restart), the same way a real API
+ * gateway's rate limiter is a runtime concern, not a ledger entry. Refill uses
+ * a monotonic clock (`performance.now`) so NTP / wall-clock jumps don't
+ * suddenly empty or refill the bucket.
  */
 
 import type { ContentSafetyProvider } from './policy/content-safety.js';
@@ -93,8 +94,9 @@ export interface Policy {
 /**
  * Classic token bucket: starts full (`capacity`), refills continuously at
  * `refillPerSec`, never exceeds `capacity`. `clock` is injected so tests don't
- * need real timers — refill is computed from elapsed wall-clock time between
- * calls, not a background timer.
+ * need real timers — refill is computed from elapsed monotonic time between
+ * calls, not a background timer. Production default is `performance.now`
+ * (immune to wall-clock drift); callers may still inject a fake clock in tests.
  */
 class TokenBucket {
   private tokens: number;
@@ -153,7 +155,8 @@ export class PolicyEnforcer {
   constructor(
     private readonly policy: Policy,
     contentSafety?: ContentSafetyProvider,
-    private readonly clock: () => number = Date.now,
+    /** Monotonic ms clock for token refill. Defaults to `performance.now`. */
+    private readonly clock: () => number = () => performance.now(),
   ) {
     this.contentSafety = contentSafety ?? new NoOpContentSafety();
   }

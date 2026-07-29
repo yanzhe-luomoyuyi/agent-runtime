@@ -225,7 +225,7 @@ describe('policy layer on the runtime funnel', () => {
 
   it('KNOWN LIMITATION: the token bucket is in-memory per Runtime instance, so it resets across a process restart', async () => {
     // Rate limiting is deliberately NOT event-sourced (see policy.ts's module
-    // doc comment): it paces real wall-clock traffic, and replaying history
+    // doc comment): it paces real live traffic, and replaying history
     // should never re-enforce it. The flip side of that design choice is that
     // bucket state has nowhere durable to live — a fresh process (a new
     // Runtime instance, exactly what a real crash-recovery restart looks
