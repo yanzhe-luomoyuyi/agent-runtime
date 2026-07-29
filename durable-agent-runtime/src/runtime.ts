@@ -11,22 +11,16 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { runtimeModelCallId, runtimeToolCallId } from '@agent/contracts';
 import { deadLetterId, type DeadLetterQueue } from '@agent/contracts';
 
 import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
+import type { ChatModelProvider } from './model/chat-provider.js';
 import type { ModelProvider } from './model/provider.js';
-import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
+import type { ModelPricing } from './pricing.js';
 import { PolicyEnforcer, type Policy } from './policy.js';
-import {
-  enforceBudget,
-  enforceContentSafety,
-  enforceOutputSafety,
-  enforceRateLimit,
-  enforceToolAllowed,
-} from './policy/enforcement.js';
 import { applyEvent, reduce } from './reducer.js';
 import { readSnapshot, writeSnapshot } from './snapshot.js';
+import { createStepContext } from './step-context.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { buildTrace, type Trace } from './trace.js';
 import type { AgentEvent, RunInput, RunState } from './types.js';
@@ -34,7 +28,16 @@ import type { StepContext, WorkflowDef } from './workflow.js';
 
 export interface RuntimeOptions {
   baseDir: string;
-  model: ModelProvider;
+  /**
+   * Text completion provider. Required unless `chatModel` is set (coding hosts
+   * may only supply chat). `callModel` throws if this is missing.
+   */
+  model?: ModelProvider;
+  /**
+   * Native tool-calling provider. When set, `StepContext.callChat` is available
+   * and the harness adapter prefers it over the text bridge.
+   */
+  chatModel?: ChatModelProvider;
   tools: ToolRegistry;
   workflow: WorkflowDef;
   /** Inject a crash immediately after this stepId's side effects (demo/tests). */
@@ -67,6 +70,9 @@ export class Runtime {
   private readonly policy?: PolicyEnforcer;
 
   constructor(private readonly opts: RuntimeOptions) {
+    if (!opts.model && !opts.chatModel) {
+      throw new Error('Runtime requires at least one of model or chatModel');
+    }
     this.policy = opts.policy ? new PolicyEnforcer(opts.policy) : undefined;
   }
 
@@ -108,6 +114,9 @@ export class Runtime {
    * Delegates directly to the configured ModelProvider.
    */
   async completeText(prompt: string): Promise<string> {
+    if (!this.opts.model) {
+      throw new Error('completeText: Runtime was constructed without a text ModelProvider');
+    }
     const { text } = await this.opts.model.complete(prompt);
     return text;
   }
@@ -265,92 +274,22 @@ export class Runtime {
     getSpentUsd: () => number,
     issue: string,
   ): StepContext {
-    return {
+    return createStepContext({
       runId,
-      input: { issue, conversationHistory: getState().input?.conversationHistory },
-      get state() {
-        return getState();
-      },
+      issue,
       tools: this.opts.tools,
-      getStepOutput: <R>(stepId: string): R | undefined => getState().stepOutputs[stepId] as R | undefined,
-      emit: (event) => {
-        record(event);
-      },
-      callModel: async (prompt: string, opts?: { key?: string }): Promise<string> => {
-        const state = getState();
-        const callId = runtimeModelCallId(state.currentPhase!, state.currentStep!, opts?.key);
-        // Idempotency: a completed model call is replayed from the log, never re-issued.
-        if (callId in state.modelResults) return state.modelResults[callId]!;
-
-        // Policy funnel: enforce the cost budget, then redact PII before the prompt
-        // ever leaves the runtime — the model sees, and the log stores, only the
-        // redacted text.
-        enforceBudget(this.policy, getSpentUsd(), callId, record);
-
-        // Pre-model content safety: detect prompt injection & harmful content
-        // BEFORE the prompt is sent. The raw (pre-redaction) prompt is checked
-        // so that injection attacks can't hide behind PII redaction markers.
-        if (this.policy) {
-          await enforceContentSafety(this.policy, prompt, callId, record);
-        }
-
-        const outbound = this.policy ? this.policy.redact(prompt).text : prompt;
-
-        const startedAt = Date.now();
-        const { text, promptTokens, completionTokens, cached } = await this.opts.model.complete(outbound);
-        const pricing = this.opts.pricing ?? DEFAULT_PRICING;
-        const costUsd = promptTokens * pricing.promptUsdPerToken + completionTokens * pricing.completionUsdPerToken;
-
-        // Post-model content safety: check the model's response for harmful or
-        // ungrounded output before it flows back into the workflow.
-        if (this.policy) {
-          await enforceOutputSafety(this.policy, text, callId, record);
-        }
-
-        record({
-          type: 'ModelCalled',
-          callId,
-          phase: state.currentPhase!,
-          step: state.currentStep!,
-          prompt: outbound,
-          response: text,
-          promptTokens,
-          completionTokens,
-          costUsd,
-          latencyMs: Date.now() - startedAt,
-          cached: cached ?? false,
-          ts: now(),
-        });
-        return text;
-      },
-      callTool: async <R>(tool: string, args: unknown, opts?: { key?: string }): Promise<R> => {
-        const state = getState();
-        const callId = runtimeToolCallId(state.currentPhase!, state.currentStep!, tool, opts?.key);
-        // Idempotency: a completed tool call is replayed from the log, never re-run.
-        if (callId in state.toolResults) return state.toolResults[callId] as R;
-
-        // Policy funnel: refuse any tool that is not on the allow-list, then
-        // check its rate limit (allow-list is a static/cheap check, so it goes
-        // first; rate limiting is stateful and only worth paying for once the
-        // tool is actually permitted).
-        enforceToolAllowed(this.policy, tool, record);
-        enforceRateLimit(this.policy, tool, record);
-
-        record({ type: 'ToolCallRequested', callId, tool, args, ts: now() });
-        try {
-          const result = await this.opts.tools.get(tool).run(args);
-          record({ type: 'ToolCallSucceeded', callId, tool, result, ts: now() });
-          return result as R;
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          record({ type: 'ToolCallFailed', callId, tool, error: message, ts: now() });
-          if (this.opts.deadLetterQueue) {
-            await this.enqueueDeadLetter(this.opts.deadLetterQueue, tool, args, message, callId);
-          }
-          throw e;
-        }
-      },
-    };
+      model: this.opts.model,
+      chatModel: this.opts.chatModel,
+      policy: this.policy,
+      pricing: this.opts.pricing,
+      record,
+      getState,
+      getSpentUsd,
+      onToolFailure: this.opts.deadLetterQueue
+        ? (tool, args, error, callId) =>
+            this.enqueueDeadLetter(this.opts.deadLetterQueue!, tool, args, error, callId)
+        : undefined,
+    });
   }
 
   /**
@@ -375,7 +314,6 @@ export class Runtime {
     });
   }
 }
-
 function now(): string {
   return new Date().toISOString();
 }

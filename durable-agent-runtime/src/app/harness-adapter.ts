@@ -109,13 +109,25 @@ export class RuntimeToolInvoker implements ToolInvoker {
   }
 }
 
-/** Bridges the harness's tool-calling `ChatModel` onto the runtime's text `callModel`. */
+/** Bridges the harness's tool-calling `ChatModel` onto the runtime's callModel/callChat. */
 export class RuntimeChatModel implements ChatModel {
   readonly name = 'runtime-bridge';
 
   constructor(private readonly ctx: StepContext) {}
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
+    // Prefer durable native tool-calling when the host wired a chatModel.
+    if (this.ctx.callChat) {
+      return this.ctx.callChat(
+        {
+          messages: req.messages,
+          tools: req.tools,
+          textCompletion: req.textCompletion,
+        },
+        { key: req.key },
+      );
+    }
+
     // A plain text completion (e.g. summarisation) must NOT be reshaped into the
     // agent-decision prompt, nor parsed as a tool call — pass it through as-is.
     if (req.textCompletion) {

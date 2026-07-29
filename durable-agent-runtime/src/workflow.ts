@@ -12,6 +12,9 @@
  * ./app/issue-workflow.ts).
  */
 
+import type { ChatResponse } from '@agent/contracts';
+
+import type { ChatModelRequest } from './model/chat-provider.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { AgentEvent, RunState } from './types.js';
 
@@ -35,6 +38,11 @@ export interface StepContext {
   callTool: <R = unknown>(tool: string, args: unknown, opts?: CallOptions) => Promise<R>;
   /** Call the model; recorded as a ModelCalled event (tokens/cost/latency) and idempotent across resumes. */
   callModel: (prompt: string, opts?: CallOptions) => Promise<string>;
+  /**
+   * Native tool-calling chat turn. Recorded/replayed like `callModel` under the
+   * same key space. Present when Runtime was constructed with `chatModel`.
+   */
+  callChat?: (req: ChatModelRequest, opts?: CallOptions) => Promise<ChatResponse>;
   /** Read the output an earlier step produced (e.g. "analyze.1"). */
   getStepOutput: <R = unknown>(stepId: string) => R | undefined;
   /**

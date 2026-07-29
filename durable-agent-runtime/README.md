@@ -32,9 +32,9 @@ flowchart LR
     ST --> RT
     SESS -->|manifest| SMF[(sessions/*.json<br/>runIds + runSummaries)]
     RT --> WF[Workflow<br/>phases + steps]
-    WF -->|callTool / callModel| POL{{Policy<br/>allow-list · 预算 · PII}}
+    WF -->|callTool / callModel / callChat| POL{{Policy<br/>allow-list · 预算 · PII}}
     POL -->|tool| TR[Tool Registry]
-    POL -->|model| MP[缓存模型 Provider]
+    POL -->|model| MP[缓存模型 Provider / ChatModelProvider]
     TR --> LOCAL[本地 ToolDef]
     TR --> ADP[MCP adapter] --> SDK["MCP base SDK<br/>JSON-RPC · transport · 共享 token cache"] --> SRV[(MCP servers)]
     MP --> BASE[Base Model]
@@ -49,15 +49,17 @@ flowchart LR
 
 - **事件日志** ([src/eventlog.ts](src/eventlog.ts)) — append-only；每个事件一个独占创建的文件（乐观并发）。以目录方式组织，支持 `listRunIds()` 列出所有 run。
 - **Reducer** ([src/reducer.ts](src/reducer.ts)) — 纯函数 `(state, event) => state`；构建状态的唯一途径。`AgentEvent` 是 14 种事件类型的 discriminated union（含 observability-only 的 `HumanIntervention`）。
-- **Runtime** ([src/runtime.ts](src/runtime.ts)) — 驱动工作流、追加事件、从日志恢复，用确定性 `callId` 让工具调用幂等。支持 `run()` / `resume()` / `status()` / `trace()` / `recover()`。
+- **Runtime** ([src/runtime.ts](src/runtime.ts)) — 驱动工作流、追加事件、从日志恢复。支持 `run()` / `resume()` / `status()` / `trace()` / `recover()`。可选 `model`（文本）和/或 `chatModel`（native tool-calling）。
+- **Step 漏斗** ([src/step-context.ts](src/step-context.ts)) — 从 Runtime 拆出的 `callModel` / `callChat` / `callTool`：幂等 key、policy、落 `ModelCalled`/`ToolCall*` 事件。`callChat` 把结构化 `ChatResponse` 以 envelope 写入日志，resume 时重放而非再打 API。
 - **快照** ([src/snapshot.ts](src/snapshot.ts)) — 周期性状态快照，用于快速恢复。原子写入（tmp + rename），加载时校验完整性；损坏的快照会被忽略并回退到事件重放。
-- **工作流契约** ([src/workflow.ts](src/workflow.ts)) — `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 类型，描述*工作流长什么样*。`StepContext.emit` 可追加 observability 事件（如 mid-run `HumanIntervention`），不改变派生态。运行时驱动任何符合此形状的工作流，对 demo 一无所知。
-- **模型 Provider** ([src/model/provider.ts](src/model/provider.ts)) — 可换的 LLM；mock 是确定性的，用于离线开发和稳定测试。
-- **响应缓存** ([src/model/caching.ts](src/model/caching.ts)) — `CachingModelProvider` 装饰器：内容寻址（规范化 prompt → sha256），LRU 淘汰，可选文件持久化。在一次次的 run 之间削减重复 prompt 的 token 消耗和成本。
-- **定价** ([src/pricing.ts](src/pricing.ts)) — 配置驱动（`agent.config.json`）的 token 定价，供 trace 做成本汇总。
+- **工作流契约** ([src/workflow.ts](src/workflow.ts)) — `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 类型，描述*工作流长什么样*。`StepContext` 含 `callModel`、可选 `callChat`、`callTool`、`emit`。运行时驱动任何符合此形状的工作流，对 demo 一无所知。
+- **模型 Provider** ([src/model/provider.ts](src/model/provider.ts)) — 文本 LLM（`complete`）；mock 用于离线开发和稳定测试。
+- **Chat Provider** ([src/model/chat-provider.ts](src/model/chat-provider.ts)) — `ChatModelProvider.chat(messages, tools) → ChatResponse`；与文本 provider 并列，供 harness native tool-calling。
+- **库导出** ([src/index.ts](src/index.ts)) — 外部宿主（如 `@agent/coding-agent`）可 `import … from 'durable-agent-runtime'`：`Runtime`、`createHarnessWorkflow`、`ToolRegistry`、`callChat` 相关类型等。Demo CLI 仍在本包 `bin`。
+- **响应缓存** ([src/model/caching.ts](src/model/caching.ts)) — `CachingModelProvider` 装饰器：内容寻址（规范化 prompt → sha256），LRU 淘汰，可选文件持久化。在一次次的 run 之间削减重复 prompt 的 token 消耗和成本。- **定价** ([src/pricing.ts](src/pricing.ts)) — 配置驱动（`agent.config.json`）的 token 定价，供 trace 做成本汇总。
 - **工具注册表** ([src/tools/registry.ts](src/tools/registry.ts)) — 遵循 MCP 规范的 `ToolDef` / `ToolRegistry` 契约，本地工具和远程 MCP 工具在运行时眼里完全一样。
 - **声明式策略层** ([src/policy.ts](src/policy.ts)) — 可复用的护栏中间件，作用于统一的工具/模型调用通道：以数据声明 `Policy`（工具 allow-list · 成本预算 · PII 脱敏 · **按工具的 token-bucket 限流**）。拒绝操作记录为 `PolicyDenied` 事件，护栏可观测、可 eval 测试——而不是硬编码在 server 代码里。限流 bucket 故意不事件源化（进程内存状态，重启重置满额）——重放历史不应该重新触发限流判断。
-- **共享 MCP base SDK** ([src/mcp/](src/mcp/)) — 把每个 MCP server 都要重复实现的横切逻辑一次性提取出来：JSON-RPC 框架、可替换 transport、**共享** token cache。adapter 把 server 的工具投影进 `ToolRegistry`，让 N 个 server 共享一个 client + 一个 auth cache，而不是每个 server 各自实现一遍 curl / JSON-RPC / token 缓存。
+- **共享 MCP base SDK** ([src/mcp/](src/mcp/)) — 把每个 MCP server 都要重复实现的横切逻辑一次性提取出来：JSON-RPC 框架、可替换 transport、**共享** token cache。adapter 把 server 的工具投影进 `ToolRegistry`。N 个 server 各有一个 `McpClient` 实例（各自一个 transport），但共用同一套 client 实现 + 同一个 `TokenCache`，而不是每个 server 各自实现一遍 curl / JSON-RPC / token 缓存。
 - **跨会话记忆** ([src/memory/store.ts](src/memory/store.ts)) — 持久、分 scope、活过单次 run 的知识（事实 / 偏好 / how-to）。与 per-run 事件日志**完全分开**：一个 scope 一个 JSON 文件、原子写（tmp+rename）、**内容哈希 id 保证幂等写**（崩溃重放不产生重复）。支持 `mode: lexical`（默认，零依赖词法检索）/ `semantic` / `hybrid`（RRF）。`search` 为 **async**，以便接入远端 embedding API。语义路径靠可插拔 `EmbeddingProvider`（见下）；读写走 `ctx.callTool` 被记日志，所以即使其他会话改了 store，replay 仍确定。
 - **Embedding 缝** ([src/memory/embedding.ts](src/memory/embedding.ts)) — 与 chat `ModelProvider` **正交**：默认 `HashingEmbeddingProvider`（feature-hashing 词袋，本地/确定性/无同义词，仅供离线跑通 semantic/hybrid）。真模型通过实现 `embed`（可选 `embedMany` batch）接入；`CachingEmbeddingProvider` 做进程内缓存；`createHttpEmbeddingProvider` 提供 HTTP API 适配骨架。mock chat 不妨碍接真 embedding。
 - **文档 RAG / Retriever** ([src/retrieval/](src/retrieval/)) — 与 Memory **平行**：corpus 级文档 chunk + `Retriever` + `RetrievalPolicy`。存储：`InMemoryDocumentStore` / **`FileDocumentStore`**（一 corpus 一 JSON，原子写）。策略：默认 `once`；`once_rewrite`（keyed `callModel` 改写 goal 后再搜一次）；`capped_agentic`（模型可见 search，硬顶 `maxRetrieves`）。`once*` 命中经 harness gate 后以 `kind: 'retrieval'` + `untrusted` 注入（重要性低于真人指令）。corpus 解析：`retrieval.corpusId` 或 skill 的 `corpusId`（`resolveRunCorpusId`）；每次 search 只打 **一个** corpus，多库需多次调用。hybrid 暴露 RRF 分；search 可选 `maxTextChars`。
@@ -95,7 +97,7 @@ flowchart LR
 
 ### Demo 工作负载 — Agent (`src/app/`)
 
-- **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。`createHarnessWorkflow({ agent?, approver?, interrupter?, … })` 把 `runAgent` 封装为单个 durable step；传入 `interrupter` 时，steer/abort 会经 `recordingInterrupter` 写成 `HumanIntervention` 事件。启用方式：`HARNESS=1`。
+- **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。有 `callChat` 时走 native tool-calling（直接返回结构化 `ChatResponse`）；否则走文本 `callModel` + `parseTextToolCall`。`createHarnessWorkflow({ agent?, approver?, interrupter?, … })` 把 `runAgent` 封装为单个 durable step。启用方式：`HARNESS=1`。
 - **Demo 工厂** ([src/app/demo-fixtures.ts](src/app/demo-fixtures.ts) · [src/app/demo-runtime.ts](src/app/demo-runtime.ts)) — 共享 canned 答案 / 工具注册，以及 CLI `run`/`eval` 共用的 `createDemoRuntime`。
 - **工作流** ([src/app/issue-workflow.ts](src/app/issue-workflow.ts)) — `issue → fix` Agent，声明为 `analyze → locate → propose` 三个阶段。
 - **工具** ([src/app/tools.ts](src/app/tools.ts)) — 确定性的 mock 工具 `getIssue` / `searchCode`。设置 `AGENT_MCP=1` 可通过 MCP base SDK 提供同一批工具——运行时完全无法区分。

@@ -217,7 +217,7 @@ response = model.generate_content("query", cached_content=cache)
 ```
 
 **为什么策略应该放在 Runtime 层**：
-- 工具调用和模型调用都经过同一个 funnel（`callTool` / `callModel`）
+- 工具调用和模型调用都经过同一个 funnel（`callTool` / `callModel` / **`callChat`**；实现见 `step-context.ts`）
 - 策略是**数据**，不是散落在各个 server 里的硬编码
 - 同一个策略对所有 workflow、所有工具生效——不管工具是本地还是 MCP 的
 
@@ -268,7 +268,9 @@ ContentSafetyProvider (interface)
 | **OpenAI Moderation API** | 同上，调 `moderations.create()` |
 | **Nvidia NeMo Guardrails** | 同上，调 gRPC/HTTP 端点 |
 
-#### 集成流程（在 runtime.ts 的 `callModel` funnel 中）
+#### 集成流程（在 `step-context.ts` 的 `callModel` / `callChat` funnel 中）
+
+文本 `callModel`：
 
 ```
 prompt 进入 callModel
@@ -290,6 +292,8 @@ prompt 进入 callModel
   │
   └─ record ModelCalled       ← 写入事件日志
 ```
+
+`callChat` 走同一套 budget / safety / 落盘，但 provider 为 `ChatModelProvider.chat`，`ModelCalled.response` 存 chat envelope（结构化 `ChatResponse`），供 resume 重放。
 
 每次拒绝都记录为 `PolicyDenied` 事件（带机器可读的 `code`），因此所有护栏动作都是可观测、可审计、可 eval 测试的。
 

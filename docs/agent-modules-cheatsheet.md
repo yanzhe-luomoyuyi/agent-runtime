@@ -66,13 +66,14 @@
 ### 平台核心
 | 模块 | 一句话 |
 |------|--------|
-| `runtime.ts` | 驱动 phase→step 执行；统一漏斗 callModel/callTool；幂等 idempotency cache |
+| `runtime.ts` | 驱动 phase→step 执行；组装 StepContext；幂等 / resume / recover |
+| `step-context.ts` | 统一漏斗 `callModel` / `callChat` / `callTool`（幂等 key + policy + 落盘） |
 | `eventlog.ts` | Append-only 事件日志；乐观并发（wx + ConflictError）；**分级持久化**——critical 事件（状态转换）同步落盘，relaxed 事件（无状态转换 + PhaseStarted/StepStarted 这种可无损重算的）先缓存、与下一个 critical 事件合并成一次写。真实工作流 benchmark 实测减少 49% 写入 |
 | `reducer.ts` | 纯函数 fold：`(state, event) => state`；State 永远派生，不落盘 |
 | `snapshot.ts` | 周期性状态快照，tmp+rename 原子写，加速 resume |
 | `session.ts` | 多轮对话 `SessionManager`：串联 run→对话线程，两种 history 模式（`qa-pairs` / `full-summary` 增量 LLM 摘要缓存）；JSON manifest + `runSummaries`；`createConversationSummarizer` 工厂 |
 | `types.ts` | `AgentEvent`（14 种 discriminated union，含 `HumanIntervention`）+ 派生态 `RunState` |
-| `workflow.ts` | `WorkflowDef/PhaseDef/StepDef/StepContext` — 工作流契约；`emit` 追加 observability 事件 |
+| `workflow.ts` | `WorkflowDef/PhaseDef/StepDef/StepContext` — 工作流契约；可选 `callChat`；`emit` 追加 observability 事件 |
 
 ### 策略 & 安全
 | 模块 | 一句话 |
@@ -84,9 +85,11 @@
 ### 模型 & 工具
 | 模块 | 一句话 |
 |------|--------|
-| `model/provider.ts` | `ModelProvider.complete(text) → ModelResult` — 可换 LLM |
+| `model/provider.ts` | `ModelProvider.complete(text) → ModelResult` — 文本 LLM |
+| `model/chat-provider.ts` | `ChatModelProvider.chat(messages, tools) → ChatResponse` + envelope 编解码（durable `callChat`） |
 | `model/caching.ts` | 内容寻址 LRU 缓存装饰器（sha256 正则化 prompt） |
 | `tools/registry.ts` | `ToolDef/ToolRegistry` — 本地工具和 MCP 工具统一接口 |
+| `index.ts` | 库导出：供外部宿主（如 coding-agent）使用 Runtime / harness-adapter / ToolRegistry |
 
 ### MCP（共享 SDK）
 | 模块 | 一句话 |
@@ -113,7 +116,7 @@
 ### 桥接
 | 模块 | 一句话 |
 |------|--------|
-| `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；retrieve 预算 / `once_rewrite` / skill corpus；`createHarnessWorkflow({ agent, approver, interrupter, … })` |
+| `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；优先 `callChat`，否则文本桥+`parseTextToolCall`；retrieve 预算 / skill corpus；`createHarnessWorkflow({ agent, approver, interrupter, … })` |
 | `app/demo-fixtures.ts` · `app/demo-runtime.ts` | 共享 demo 答案与 Runtime 工厂（CLI run/eval + 测试同一接线） |
 
 ---

@@ -3,6 +3,17 @@
   "version": "0.1.0",
   "description": "A durable, event-sourced agent runtime — resumable multi-phase agent execution with idempotent tool calls and a pluggable model provider.",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "bin": {
     "agent": "dist/cli.js"
   },
