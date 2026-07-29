@@ -1,4 +1,41 @@
 {
+  "agent": {
+    "name": "coding-agent",
+    "instructions": "You are a coding agent operating inside a sandboxed workspace. Follow the coding-agent skill. For Q&A / explain goals with no code change: use read tools only and put the full answer in the final reply — do not write ANALYSIS.md or other files unless the user explicitly names an output file. For fix/implement goals: analyze, edit with write_file, run_tests, then document as the skill says. Never invent file paths — only use paths you observed from tools.",
+    "skillPath": "skills/coding-agent/SKILL.md",
+    "skillLoadMode": "eager"
+  },
+  "model": {
+    "provider": "deepseek",
+    "baseUrl": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "apiKeyEnvFallbacks": ["LLM_API_KEY"],
+    "baseUrlEnv": "DEEPSEEK_BASE_URL",
+    "modelEnv": "DEEPSEEK_MODEL"
+  },
+  "workspace": {
+    "defaultRoot": "fixtures/coding-sandbox"
+  },
+  "tools": {
+    "readFileDefaultLimit": 200,
+    "readFileMaxChars": 80000,
+    "grepDefaultMatches": 40,
+    "runTests": {
+      "command": ["npm", "test"],
+      "timeoutMs": 60000,
+      "maxOutputChars": 40000
+    }
+  },
+  "run": {
+    "maxTurns": 24,
+    "runsDir": ".coding-agent-runs",
+    "autoApproveWrites": false,
+    "compaction": {
+      "softCapTokens": 128000,
+      "threshold": 0.85
+    }
+  },
   "pricing": {
     "promptUsdPerToken": 0.00000014,
     "completionUsdPerToken": 0.00000028

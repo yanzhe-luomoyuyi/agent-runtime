@@ -75,7 +75,8 @@ Chat 结果以 JSON envelope 存在 `ModelCalled.response`（`kind: 'chat'`）�
 | `src/cli.ts` | 独立 CLI：`run` / `resume` / `status` / `trace`；`--workspace` / `-W` |
 | `src/ui-server.ts` + `ui/static/` | 本地 Workbench：SSE 跑 agent、Analysis、unified diff |
 | `src/workspace-diff.ts` | run 前后快照与 unified diff |
-| `src/runtime-factory.ts` | 组装 Workspace、工具、skill、approver、Runtime |
+| `src/runtime-factory.ts` | 组装 Workspace、工具、skill、approver、Runtime（读统一配置） |
+| `src/config.ts` | `agent.config.json` 加载与 env 覆盖 |
 | `src/workspace.ts` | 路径沙箱（防 `..` 逃逸） |
 | `src/tools/fs-tools.ts` | `list_dir` / `grep` / `read_file` / `write_file` |
 | `src/tools/run-tests.ts` | 白名单 `npm test` |
@@ -83,7 +84,7 @@ Chat 结果以 JSON envelope 存在 `ModelCalled.response`（`kind: 'chat'`）�
 | `src/stdin-approver.ts` | `write_file` HITL |
 | `skills/coding-agent/SKILL.md` | Analyze → Edit(+test) → Document |
 | `fixtures/coding-sandbox/` | 默认试跑仓（故意 null-session bug） |
-| `agent.config.json` | pricing + policy allow-list |
+| `agent.config.json` | 统一配置：agent / model / workspace / tools / run / policy / pricing |
 | `test/` | workspace 单测 + 脚本化 E2E |
 
 平台相关（不在本包，但接手时要知道）：
@@ -108,7 +109,7 @@ Chat 结果以 JSON envelope 存在 `ModelCalled.response`（`kind: 'chat'`）�
 - 默认 workspace：`fixtures/coding-sandbox`；覆盖：`--workspace` / UI path / `AGENT_WORKSPACE`
 - 快照 / `list_dir` / `grep` 遵守根目录 `.gitignore` + 硬默认（`node_modules`、`.git`、`.coding-agent-runs`、`dist`）
 - 自动批准写：`AGENT_AUTO_APPROVE=1`
-- Policy allow-list 在 `agent.config.json` / `defaultCodingPolicy()`
+- Policy allow-list / 人设 / 预算等：统一见 `agent.config.json`（`src/config.ts`）
 
 ---
 
@@ -167,7 +168,7 @@ Fixture 需求见 `fixtures/coding-sandbox/REQUIREMENT.md`。
 - [x] CLI `--workspace <path>`（与 UI 对齐；短旗 `-W`，避免与 npm `-w` 冲突）
 - [x] `.gitignore` 感知快照 / walk（`list_dir`、`grep`、UI diff）
 - [x] UI **Trace** 页：runtime `buildTrace` + harness `TraceCollector`（cost / duration / cache / retry）
-- [ ] **统一配置文件**（见仓库 `docs/TODO.md` §2）
+- [x] **统一配置文件**（`agent.config.json` + `src/config.ts`；见仓库 `docs/TODO.md` §2）
 - [x] EventLog 乐观并发可关 → 单 run 单文件（`RuntimeOptions.eventLog.optimisticConcurrency: false`）
 - [ ] UI：Session / crash / resume / pause / HITL（`docs/TODO.md` §3）
 - [ ] UI：手动调 max prompt tokens（`docs/TODO.md` §4）

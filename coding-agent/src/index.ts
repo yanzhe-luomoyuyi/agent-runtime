@@ -11,7 +11,12 @@ export {
   resolveWorkspaceRoot,
   DEFAULT_WORKSPACE,
   PACKAGE_ROOT,
+  loadCodingConfig,
+  loadCodingConfigFile,
+  CODING_CONFIG_DEFAULTS,
   type CodingRuntimeOptions,
+  type CodingConfig,
+  type CodingConfigFile,
 } from './runtime-factory.js';
 export {
   CODING_PROMPT_SOFT_CAP,

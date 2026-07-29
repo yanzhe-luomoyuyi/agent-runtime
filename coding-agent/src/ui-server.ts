@@ -8,14 +8,15 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { extname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { autoApprove, FALLBACK_PRICING, TraceCollector } from '@agent/harness';
 import { extractAnswer } from 'durable-agent-runtime';
 
 import { resetCodingSandbox } from './fixture-reset.js';
-import { createCodingRuntime, DEFAULT_WORKSPACE, loadCodingConfigFile, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
+import { loadCodingConfig } from './config.js';
+import { createCodingRuntime, DEFAULT_WORKSPACE, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
 import { loadEnvFile } from './load-env.js';
 import { resolveCodingMaxPromptTokens, resolveModelIdFromEnv } from './prompt-budget.js';
 import {
@@ -30,7 +31,6 @@ loadEnvFile(join(PACKAGE_ROOT, '.env.local'));
 
 const HOST = process.env.CODING_AGENT_UI_HOST ?? '127.0.0.1';
 const PORT = Number(process.env.CODING_AGENT_UI_PORT ?? 8787);
-const RUNS_DIR = process.env.AGENT_RUNS_DIR ?? join(PACKAGE_ROOT, '.coding-agent-runs');
 const STATIC_DIR = join(PACKAGE_ROOT, 'ui', 'static');
 
 let busy = false;
@@ -49,14 +49,20 @@ function main(): void {
     }
   });
 
-  const modelId = resolveModelIdFromEnv();
-  const maxPromptTokens = resolveCodingMaxPromptTokens({ model: modelId });
+  const cfg = loadCodingConfig();
+  const modelId = resolveModelIdFromEnv(process.env, cfg.model.model);
+  const maxPromptTokens = resolveCodingMaxPromptTokens({
+    model: modelId,
+    softCap: cfg.run.compaction.softCapTokens,
+  });
   server.listen(PORT, HOST, () => {
     process.stderr.write(`coding-agent UI  http://${HOST}:${PORT}\n`);
-    process.stderr.write(`workspace         ${resolveWorkspaceRoot()}\n`);
+    process.stderr.write(`workspace         ${resolveWorkspaceRoot(undefined, process.env, cfg)}\n`);
     process.stderr.write(`model             ${modelId}\n`);
     process.stderr.write(`maxPromptTokens   ${maxPromptTokens}\n`);
-    process.stderr.write(`DEEPSEEK_API_KEY  ${process.env.DEEPSEEK_API_KEY ? 'set' : 'MISSING'}\n`);
+    process.stderr.write(`config            agent.config.json\n`);
+    const keySet = [cfg.model.apiKeyEnv, ...cfg.model.apiKeyEnvFallbacks].some((k) => Boolean(process.env[k]));
+    process.stderr.write(`${cfg.model.apiKeyEnv}  ${keySet ? 'set' : 'MISSING'}\n`);
   });
 }
 
@@ -79,16 +85,21 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
 
   if (req.method === 'GET' && path === '/api/status') {
-    const workspace = resolveWorkspaceRoot();
-    const modelId = resolveModelIdFromEnv();
+    const cfg = loadCodingConfig();
+    const workspace = resolveWorkspaceRoot(undefined, process.env, cfg);
+    const modelId = resolveModelIdFromEnv(process.env, cfg.model.model);
+    const keyEnvs = [cfg.model.apiKeyEnv, ...cfg.model.apiKeyEnvFallbacks];
     return json(res, 200, {
       workspace,
       defaultWorkspace: DEFAULT_WORKSPACE,
-      hasApiKey: Boolean(process.env.DEEPSEEK_API_KEY ?? process.env.LLM_API_KEY),
+      hasApiKey: keyEnvs.some((k) => Boolean(process.env[k])),
       busy,
       defaultGoal: defaultGoal(workspace),
       modelId,
-      maxPromptTokens: resolveCodingMaxPromptTokens({ model: modelId }),
+      maxPromptTokens: resolveCodingMaxPromptTokens({
+        model: modelId,
+        softCap: cfg.run.compaction.softCapTokens,
+      }),
     });
   }
 
@@ -107,8 +118,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = await readJson(req);
     const goal = typeof body.goal === 'string' ? body.goal.trim() : '';
     if (!goal) return json(res, 400, { error: 'goal is required' });
-    if (!(process.env.DEEPSEEK_API_KEY ?? process.env.LLM_API_KEY)) {
-      return json(res, 400, { error: 'Set DEEPSEEK_API_KEY in coding-agent/.env (or the environment)' });
+    const cfg = loadCodingConfig();
+    const keyEnvs = [cfg.model.apiKeyEnv, ...cfg.model.apiKeyEnvFallbacks];
+    if (!keyEnvs.some((k) => Boolean(process.env[k]))) {
+      return json(res, 400, {
+        error: `Set ${cfg.model.apiKeyEnv} in coding-agent/.env (or the environment)`,
+      });
     }
 
     let workspace: string;
@@ -120,7 +135,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
     busy = true;
     const before = snapshotWorkspace(workspace);
-    const cfg = loadCodingConfigFile();
+    const runsDir = isAbsolute(cfg.run.runsDir)
+      ? cfg.run.runsDir
+      : join(PACKAGE_ROOT, cfg.run.runsDir);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -142,13 +159,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
     try {
       const rt = createCodingRuntime({
-        baseDir: RUNS_DIR,
+        baseDir: runsDir,
         workspaceRoot: workspace,
+        config: cfg,
         pricing: cfg.pricing,
         policy: cfg.policy,
         autoApproveWrites: true,
         approver: autoApprove,
-        maxTurns: Number(process.env.AGENT_MAX_TURNS) || 24,
+        maxTurns: cfg.run.maxTurns,
         harnessTrace,
         onEvent: (e) => {
           if (e.type === 'RunStarted') send('run', { runId: e.runId });

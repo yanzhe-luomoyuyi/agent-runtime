@@ -11,11 +11,20 @@ import { createWorkspaceIgnorer } from '../gitignore.js';
 import { walkWorkspace } from '../walk-workspace.js';
 import { Workspace, WorkspaceEscapeError } from '../workspace.js';
 
+export interface FsToolsOptions {
+  readFileDefaultLimit?: number;
+  readFileMaxChars?: number;
+  grepDefaultMatches?: number;
+}
+
 const DEFAULT_READ_LIMIT = 200;
 const MAX_READ_CHARS = 80_000;
 const DEFAULT_GREP_MATCHES = 40;
 
-export function createFsTools(workspace: Workspace): ToolDef[] {
+export function createFsTools(workspace: Workspace, opts: FsToolsOptions = {}): ToolDef[] {
+  const readLimit = opts.readFileDefaultLimit ?? DEFAULT_READ_LIMIT;
+  const maxReadChars = opts.readFileMaxChars ?? MAX_READ_CHARS;
+  const grepMatches = opts.grepDefaultMatches ?? DEFAULT_GREP_MATCHES;
   const ignorer = createWorkspaceIgnorer(workspace.rootDir);
 
   const list_dir: ToolDef<{ path?: string }, { entries: Array<{ name: string; type: 'file' | 'dir' }> }> = {
@@ -64,7 +73,7 @@ export function createFsTools(workspace: Workspace): ToolDef[] {
       } catch {
         pattern = new RegExp(escapeRegExp(query), 'i');
       }
-      const cap = Math.min(maxMatches ?? DEFAULT_GREP_MATCHES, 200);
+      const cap = Math.min(maxMatches ?? grepMatches, 200);
       const start = workspace.resolve(path ?? '.');
       const matches: Array<{ path: string; line: number; text: string }> = [];
 
@@ -136,12 +145,12 @@ export function createFsTools(workspace: Workspace): ToolDef[] {
       if (!st.isFile()) throw new Error(`not a file: ${path}`);
       const lines = readFileSync(abs, 'utf8').split(/\r?\n/);
       const start = Math.max(1, offset ?? 1);
-      const maxLines = Math.min(limit ?? DEFAULT_READ_LIMIT, 2000);
+      const maxLines = Math.min(limit ?? readLimit, 2000);
       const slice = lines.slice(start - 1, start - 1 + maxLines);
       let content = slice.map((l, i) => `${start + i}|${l}`).join('\n');
       let truncated = start - 1 + maxLines < lines.length;
-      if (content.length > MAX_READ_CHARS) {
-        content = content.slice(0, MAX_READ_CHARS);
+      if (content.length > maxReadChars) {
+        content = content.slice(0, maxReadChars);
         truncated = true;
       }
       return { path: workspace.relative(abs), content, truncated };

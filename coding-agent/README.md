@@ -36,7 +36,11 @@ npm run ui -w @agent/coding-agent
 | 任意 `workspace`（CLI `--workspace` / UI / env）+ 路径沙箱 | `apply_patch`、终端命令白名单扩展、git status/diff/commit |
 | `.gitignore` 感知 walk / UI diff | 嵌套 `.gitignore`、更完整的大仓索引 |
 | 读/写/grep/测 + Analysis/Diff UI | 权限分级、流式 token 输出 |
-| DeepSeek + durable resume | 统一配置文件（`docs/TODO.md` §2） |
+| DeepSeek + durable resume | Workbench Session / crash / resume / pause / HITL（`docs/TODO.md` §3） |
+
+## 配置（`agent.config.json`）
+
+可调默认值集中在包根 [`agent.config.json`](./agent.config.json)（加载器：`src/config.ts`）：人设 / skill、模型、workspace、工具限额、`maxTurns`、compaction、policy、pricing。环境变量（`DEEPSEEK_*` / `AGENT_*`）覆盖文件；调用方参数再覆盖。可用 `AGENT_CONFIG` 指向另一份 JSON。
 
 ## CLI
 

@@ -14,12 +14,11 @@ import { join } from 'node:path';
 
 import { parseArgs } from './cli-args.js';
 import { loadEnvFile } from './load-env.js';
-import { createCodingRuntime, loadCodingConfigFile, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
+import { loadCodingConfig } from './config.js';
+import { createCodingRuntime, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
 
 loadEnvFile(join(PACKAGE_ROOT, '.env'));
 loadEnvFile(join(PACKAGE_ROOT, '.env.local'));
-
-const BASE_DIR = process.env.AGENT_RUNS_DIR ?? '.coding-agent-runs';
 
 async function main(): Promise<void> {
   const { workspace: workspaceFlag, args } = parseArgs(process.argv.slice(2));
@@ -29,12 +28,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  const workspaceRoot = resolveWorkspaceRoot(workspaceFlag);
+  const cfg = loadCodingConfig();
+  const workspaceRoot = resolveWorkspaceRoot(workspaceFlag, process.env, cfg);
 
   if (cmd === 'resume' || cmd === 'status' || cmd === 'trace') {
     const runId = rest[0];
     if (!runId) throw new Error(`${cmd} requires <runId>`);
-    const rt = buildRuntime(workspaceRoot);
+    const rt = buildRuntime(workspaceRoot, cfg);
     if (cmd === 'status') {
       console.log(JSON.stringify(rt.status(runId), null, 2));
       return;
@@ -56,17 +56,17 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(`▶ coding-agent workspace=${workspaceRoot}\n`);
-  printResult(await buildRuntime(workspaceRoot).run(goal));
+  printResult(await buildRuntime(workspaceRoot, cfg).run(goal));
 }
 
-function buildRuntime(workspaceRoot: string) {
-  const cfg = loadCodingConfigFile();
+function buildRuntime(workspaceRoot: string, cfg = loadCodingConfig()) {
   return createCodingRuntime({
-    baseDir: BASE_DIR,
+    baseDir: cfg.run.runsDir,
     workspaceRoot,
+    config: cfg,
     pricing: cfg.pricing,
     policy: cfg.policy,
-    maxTurns: numFromEnv('AGENT_MAX_TURNS'),
+    maxTurns: cfg.run.maxTurns,
     crashAfterTurn: numFromEnv('HARNESS_CRASH_TURN'),
     onEvent: (e) => {
       if (e.type === 'RunStarted') process.stderr.write(`▶ run ${e.runId}\n`);
@@ -102,16 +102,20 @@ function printHelp(): void {
   coding-agent trace <runId>
 
 Flags:
-  --workspace <path> / -W <path>   override workspace (else AGENT_WORKSPACE / fixture)
+  --workspace <path> / -W <path>   override workspace (else AGENT_WORKSPACE / config)
 
-Env:
+Config:
+  agent.config.json   unified defaults (agent / model / workspace / tools / run / policy / pricing)
+  AGENT_CONFIG        path override for that file
+
+Env (override config):
   DEEPSEEK_API_KEY      required for live model
-  DEEPSEEK_MODEL        default deepseek-chat
-  DEEPSEEK_BASE_URL     default https://api.deepseek.com
-  AGENT_WORKSPACE       default: package fixtures/coding-sandbox
+  DEEPSEEK_MODEL        default from config (deepseek-chat)
+  DEEPSEEK_BASE_URL     default from config
+  AGENT_WORKSPACE       default workspace root
   AGENT_AUTO_APPROVE=1  skip write_file approval prompts
-  AGENT_RUNS_DIR        default .coding-agent-runs
-  AGENT_MAX_TURNS / HARNESS_CRASH_TURN
+  AGENT_RUNS_DIR        runs directory
+  AGENT_MAX_TURNS / AGENT_MAX_PROMPT_TOKENS / HARNESS_CRASH_TURN
 `);
 }
 

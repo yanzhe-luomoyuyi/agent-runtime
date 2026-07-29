@@ -2,10 +2,6 @@
  * Assemble a durable coding Runtime: workspace tools + harness + optional DeepSeek chat.
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import type { Approver } from '@agent/contracts';
 import { loadSkillFile, requireApprovalFor, autoApprove, type TraceCollector } from '@agent/harness';
 import {
@@ -17,17 +13,41 @@ import {
   type ModelPricing,
 } from 'durable-agent-runtime';
 
+import {
+  configToPolicy,
+  loadCodingConfig,
+  resolvePackagePath,
+  type CodingConfig,
+} from './config.js';
 import { chatProviderFromEnv } from './model/openai-compatible.js';
+import { PACKAGE_ROOT } from './paths.js';
 import { resolveCodingMaxPromptTokens, resolveModelIdFromEnv } from './prompt-budget.js';
 import { createStdinApprover } from './stdin-approver.js';
 import { createFsTools } from './tools/fs-tools.js';
 import { createRunTestsTool } from './tools/run-tests.js';
 import { Workspace } from './workspace.js';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-/** Package root (…/coding-agent), whether running from src/ or dist/. */
-export const PACKAGE_ROOT = join(HERE, '..');
-export const DEFAULT_WORKSPACE = join(PACKAGE_ROOT, 'fixtures', 'coding-sandbox');
+export { PACKAGE_ROOT } from './paths.js';
+export {
+  loadCodingConfig,
+  readCodingConfigFile,
+  CODING_CONFIG_DEFAULTS,
+  type CodingConfig,
+  type CodingConfigFile,
+} from './config.js';
+
+/** @deprecated Prefer loadCodingConfig(); kept for older call sites. */
+export function loadCodingConfigFile(path?: string): { pricing?: ModelPricing; policy?: Policy } {
+  const cfg = loadCodingConfig({ path, skipEnv: true });
+  return { pricing: cfg.pricing, policy: configToPolicy(cfg) };
+}
+
+export function defaultWorkspaceFromConfig(cfg: CodingConfig = loadCodingConfig({ skipEnv: true })): string {
+  return resolvePackagePath(cfg.workspace.defaultRoot);
+}
+
+/** Default fixture workspace (resolved from config / built-in default). */
+export const DEFAULT_WORKSPACE = defaultWorkspaceFromConfig();
 
 export interface CodingRuntimeOptions {
   baseDir: string;
@@ -41,70 +61,99 @@ export interface CodingRuntimeOptions {
   maxPromptTokens?: number;
   /** Model id for budget lookup when maxPromptTokens omitted. */
   modelId?: string;
-  /** Default: approve write_file via stdin unless AGENT_AUTO_APPROVE=1. */
+  /** Default: approve write_file via stdin unless config/env auto-approve. */
   approver?: Approver;
   autoApproveWrites?: boolean;
   onEvent?: ConstructorParameters<typeof Runtime>[0]['onEvent'];
   /** Optional harness TraceCollector (retries / per-turn usage). */
   harnessTrace?: TraceCollector;
+  /** Pre-loaded config; default loads agent.config.json + env. */
+  config?: CodingConfig;
 }
 
-export function defaultCodingPolicy(): Policy {
-  return {
-    allowedTools: ['list_dir', 'grep', 'read_file', 'write_file', 'run_tests'],
-    maxCostUsd: 1.0,
-  };
+export function defaultCodingPolicy(cfg?: CodingConfig): Policy {
+  return configToPolicy(cfg ?? loadCodingConfig({ skipEnv: true }));
 }
 
-export function resolveWorkspaceRoot(override?: string, env: NodeJS.ProcessEnv = process.env): string {
-  return override ?? env.AGENT_WORKSPACE ?? DEFAULT_WORKSPACE;
+export function resolveWorkspaceRoot(
+  override?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  cfg?: CodingConfig,
+): string {
+  if (override) return override;
+  const resolved = cfg ?? loadCodingConfig({ env });
+  if (env.AGENT_WORKSPACE) return env.AGENT_WORKSPACE;
+  return resolvePackagePath(resolved.workspace.defaultRoot);
 }
 
 export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
-  const root = resolveWorkspaceRoot(opts.workspaceRoot);
+  const cfg = opts.config ?? loadCodingConfig();
+  const root = resolveWorkspaceRoot(opts.workspaceRoot, process.env, cfg);
   const workspace = new Workspace(root);
   const tools = new ToolRegistry();
-  for (const t of createFsTools(workspace)) tools.register(t);
-  tools.register(createRunTestsTool(workspace));
+  for (const t of createFsTools(workspace, {
+    readFileDefaultLimit: cfg.tools.readFileDefaultLimit,
+    readFileMaxChars: cfg.tools.readFileMaxChars,
+    grepDefaultMatches: cfg.tools.grepDefaultMatches,
+  })) {
+    tools.register(t);
+  }
+  tools.register(
+    createRunTestsTool(workspace, {
+      command: cfg.tools.runTests.command,
+      timeoutMs: cfg.tools.runTests.timeoutMs,
+      maxOutputChars: cfg.tools.runTests.maxOutputChars,
+    }),
+  );
 
-  const chatModel = opts.chatModel ?? chatProviderFromEnv();
+  const chatModel =
+    opts.chatModel ??
+    chatProviderFromEnv(process.env, {
+      baseUrl: cfg.model.baseUrl,
+      model: cfg.model.model,
+      apiKeyEnv: cfg.model.apiKeyEnv,
+      apiKeyEnvFallbacks: cfg.model.apiKeyEnvFallbacks,
+      baseUrlEnv: cfg.model.baseUrlEnv,
+      modelEnv: cfg.model.modelEnv,
+      providerName: cfg.model.provider,
+    });
   if (!chatModel) {
     throw new Error(
-      'No chat model: set DEEPSEEK_API_KEY (or pass chatModel). For tests, inject a scripted ChatModelProvider.',
+      `No chat model: set ${cfg.model.apiKeyEnv} (or pass chatModel). For tests, inject a scripted ChatModelProvider.`,
     );
   }
 
-  const skillPath = join(PACKAGE_ROOT, 'skills', 'coding-agent', 'SKILL.md');
+  const skillPath = resolvePackagePath(cfg.agent.skillPath);
   const skill = loadSkillFile(skillPath);
 
-  const auto = opts.autoApproveWrites ?? process.env.AGENT_AUTO_APPROVE === '1';
+  const auto = opts.autoApproveWrites ?? cfg.run.autoApproveWrites;
   const approver =
     opts.approver ??
     (auto ? autoApprove : requireApprovalFor(['write_file'], createStdinApprover()));
 
-  const modelId = opts.modelId ?? resolveModelIdFromEnv();
-  const maxPromptTokens = opts.maxPromptTokens ?? resolveCodingMaxPromptTokens({ model: modelId });
+  const modelId = opts.modelId ?? resolveModelIdFromEnv(process.env, cfg.model.model);
+  const maxPromptTokens =
+    opts.maxPromptTokens ??
+    resolveCodingMaxPromptTokens({
+      model: modelId,
+      softCap: cfg.run.compaction.softCapTokens,
+    });
 
   const workflow = createHarnessWorkflow({
-    name: 'coding-agent',
-    maxTurns: opts.maxTurns ?? 24,
+    name: cfg.agent.name,
+    maxTurns: opts.maxTurns ?? cfg.run.maxTurns,
     crashAfterTurn: opts.crashAfterTurn,
     approver,
     trace: opts.harnessTrace,
     agent: {
-      name: 'coding-agent',
-      instructions:
-        'You are a coding agent operating inside a sandboxed workspace. ' +
-        'Follow the coding-agent skill. ' +
-        'For Q&A / explain goals with no code change: use read tools only and put the full answer in the final reply — do not write ANALYSIS.md or other files unless the user explicitly names an output file. ' +
-        'For fix/implement goals: analyze, edit with write_file, run_tests, then document as the skill says. ' +
-        'Never invent file paths — only use paths you observed from tools.',
+      name: cfg.agent.name,
+      instructions: cfg.agent.instructions,
       skills: [skill],
-      skillLoadMode: 'eager',
+      skillLoadMode: cfg.agent.skillLoadMode,
     },
     modelCompaction: {
       maxPromptTokens,
-      threshold: 0.85,
+      threshold: cfg.run.compaction.threshold,
     },
   });
 
@@ -113,24 +162,8 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     chatModel,
     tools,
     workflow,
-    pricing: opts.pricing,
-    policy: opts.policy ?? defaultCodingPolicy(),
+    pricing: opts.pricing ?? cfg.pricing,
+    policy: opts.policy ?? defaultCodingPolicy(cfg),
     onEvent: opts.onEvent,
   });
-}
-
-/** Load optional coding-agent/agent.config.json pricing overrides. */
-export function loadCodingConfigFile(path = join(PACKAGE_ROOT, 'agent.config.json')): {
-  pricing?: ModelPricing;
-  policy?: Policy;
-} {
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as {
-      pricing?: ModelPricing;
-      policy?: Policy;
-    };
-    return raw;
-  } catch {
-    return {};
-  }
 }

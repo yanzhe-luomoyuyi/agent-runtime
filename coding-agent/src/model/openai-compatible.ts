@@ -19,6 +19,16 @@ export interface OpenAICompatibleOptions {
 const DEFAULT_BASE = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-chat';
 
+export interface ChatProviderEnvOptions {
+  baseUrl?: string;
+  model?: string;
+  apiKeyEnv?: string;
+  apiKeyEnvFallbacks?: string[];
+  baseUrlEnv?: string;
+  modelEnv?: string;
+  providerName?: string;
+}
+
 export function createOpenAICompatibleChatProvider(opts: OpenAICompatibleOptions): ChatModelProvider {
   const baseUrl = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/$/, '');
   const model = opts.model ?? DEFAULT_MODEL;
@@ -55,15 +65,28 @@ export function createOpenAICompatibleChatProvider(opts: OpenAICompatibleOptions
   };
 }
 
-/** Resolve DeepSeek-oriented defaults from environment. */
-export function chatProviderFromEnv(env: NodeJS.ProcessEnv = process.env): ChatModelProvider | undefined {
-  const apiKey = env.DEEPSEEK_API_KEY ?? env.LLM_API_KEY;
+/** Resolve provider from env, with optional defaults from agent.config.json. */
+export function chatProviderFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  defaults: ChatProviderEnvOptions = {},
+): ChatModelProvider | undefined {
+  const keyEnvs = [defaults.apiKeyEnv ?? 'DEEPSEEK_API_KEY', ...(defaults.apiKeyEnvFallbacks ?? ['LLM_API_KEY'])];
+  let apiKey: string | undefined;
+  for (const name of keyEnvs) {
+    if (env[name]) {
+      apiKey = env[name];
+      break;
+    }
+  }
   if (!apiKey) return undefined;
+
+  const baseUrlEnv = defaults.baseUrlEnv ?? 'DEEPSEEK_BASE_URL';
+  const modelEnv = defaults.modelEnv ?? 'DEEPSEEK_MODEL';
   return createOpenAICompatibleChatProvider({
     apiKey,
-    baseUrl: env.DEEPSEEK_BASE_URL ?? env.LLM_BASE_URL ?? DEFAULT_BASE,
-    model: env.DEEPSEEK_MODEL ?? env.LLM_MODEL ?? DEFAULT_MODEL,
-    name: 'deepseek',
+    baseUrl: env[baseUrlEnv] ?? env.LLM_BASE_URL ?? defaults.baseUrl ?? DEFAULT_BASE,
+    model: env[modelEnv] ?? env.LLM_MODEL ?? defaults.model ?? DEFAULT_MODEL,
+    name: defaults.providerName ?? 'deepseek',
   });
 }
 
