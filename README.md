@@ -86,8 +86,7 @@ flowchart TB
 - **依赖方向是关键**：`harness` 和 `runtime` 谁都不依赖对方，只各自依赖 `contracts`。这样
   大脑保持「宿主无关」、底座保持「Agent 无关」，只有 adapter 这一个地方同时认识两边。
 
-runtime 也能完全独立运行——支持三种执行模式：固定工作流（默认）、内置 agent 循环（`AGENT_LOOP=1`）、
-以及托管 harness 循环（`HARNESS=1`）。harness 是完全可选的。
+runtime 也能完全独立运行——支持两种执行模式：固定工作流（默认）、以及托管 harness 循环（`HARNESS=1`）。harness 是完全可选的。
 
 ## 缝的本质：一个 `key` 就是整个持久化契约
 
@@ -184,8 +183,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 | [retrieval/](durable-agent-runtime/src/retrieval/) | 文档 RAG：`DocumentStore`（`InMemory` / `FileDocumentStore`）/ `Retriever` / `RetrievalPolicy`（`once` · `once_rewrite` · `capped_agentic`）；skill `corpusId` 解析。 |
 | [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；可组合的打分器（含 LLM 裁判）。 |
 | [otel.ts](durable-agent-runtime/src/otel.ts) | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往标准后端。 |
-| [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace`（含 `--otel`）/ `eval` / `chat`；通过环境变量切换多种执行模式。 |
-| [agent-loop.ts](durable-agent-runtime/src/agent-loop.ts) | runtime 内置的模型驱动 Agent 循环（比 harness 更简单，但核心概念相同），封装为单个 durable step。 |
+| [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace`（含 `--otel`）/ `eval` / `chat`；通过环境变量切换执行模式（默认固定工作流 / `HARNESS=1`）。 |
 
 **工作负载 `src/app/`**
 
@@ -193,7 +191,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 | --- | --- |
 | [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker`；`createHarnessWorkflow` 支持 `approver` / `interrupter`（steer·abort → `HumanIntervention`）+ 可选 `retrieval`（`once` / `once_rewrite` / `capped_agentic`；corpus 可来自 skill）。 |
 | [issue-workflow.ts](durable-agent-runtime/src/app/issue-workflow.ts) | demo 的 `issue → fix` Agent，声明为 `analyze → locate → propose` 三阶段。 |
-| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [document-tools.ts](durable-agent-runtime/src/app/document-tools.ts) · [memory-tools.ts](durable-agent-runtime/src/app/memory-tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性 mock 工具 / 文档检索工具 / 记忆工具、MCP 封装、eval 场景、内置 agent 循环的 mock 模型大脑。 |
+| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [document-tools.ts](durable-agent-runtime/src/app/document-tools.ts) · [memory-tools.ts](durable-agent-runtime/src/app/memory-tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性 mock 工具 / 文档检索工具 / 记忆工具、MCP 封装、eval 场景、harness 循环的 mock 模型大脑。 |
 
 状态永远是「算出来的」，不是「存下来的」：
 
@@ -231,7 +229,6 @@ flowchart LR
 | 模式 | 命令 | 跑的是什么 |
 | --- | --- | --- |
 | 固定工作流（默认） | `npm run dev -- run "<issue>"` | 代码驱动的 `analyze → locate → propose` 流水线 |
-| runtime 内置循环 | `AGENT_LOOP=1 npm run dev -- run "<issue>"` | runtime 内置的模型驱动循环（`agent-loop.ts`） |
 | **harness 跑在 runtime 上** | `HARNESS=1 npm run dev -- run "<issue>"` | 独立的 `@agent/harness` 四层循环，作为 durable step 运行 |
 
 ### 持久化与可观测性命令
@@ -261,7 +258,6 @@ flowchart LR
 | 变量 | 作用 |
 | --- | --- |
 | `HARNESS=1` | 使用 harness 四层循环替代固定工作流 |
-| `AGENT_LOOP=1` | 使用 runtime 内置 agent 循环 |
 | `AGENT_MCP=1` | 通过 MCP base SDK（JSON-RPC + 共享 token cache）提供 demo 工具 |
 | `AGENT_REGRESS=1` | 故意降级模型输出质量，用于验证 eval 框架能否捕获回归 |
 | `CRASH_AFTER=<phase.step>` | 在指定 step 后注入崩溃，测试恢复能力 |

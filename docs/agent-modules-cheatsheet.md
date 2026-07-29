@@ -103,7 +103,6 @@
 | 模块 | 一句话 |
 |------|--------|
 | `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；`createHarnessWorkflow({ agent, approver, interrupter, … })` |
-| `agent-loop.ts` | 内置简化版 agent 循环（已被 harness 取代，保留用于对比） |
 
 ---
 

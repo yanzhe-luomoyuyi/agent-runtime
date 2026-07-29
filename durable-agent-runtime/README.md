@@ -65,9 +65,8 @@ flowchart LR
 - **Trace 可观测性** ([src/trace.ts](src/trace.ts)) — 从事件日志派生 span 时间线 + token / 成本 / 延迟汇总。统计持久化重放的关键指标：`replayHitRate`、`cachedModelCalls`、`costSavedUsd`。
 - **OpenTelemetry 导出** ([src/otel.ts](src/otel.ts)) — 把 `trace.ts` 派生出的 span 桥接成真正的 OTel span（父子关系按 `Span.depth` 用栈重建，时间戳锚定在 `Trace.startedAtMs` 上，是历史真实时间而非导出时刻）。没配置 collector 时退回 `ConsoleSpanExporter`，离线也能跑；配置了 `OTEL_EXPORTER_OTLP_ENDPOINT` 就通过 OTLP/HTTP 发到 Jaeger / Tempo / Honeycomb 等任意标准后端。刻意放在运行时而不是 harness——导出是真实网络 IO，harness 只产出结构化数据、不碰 IO。
 - **Eval 框架** ([src/eval.ts](src/eval.ts)) — 可组合打分器（结果性：`runCompleted`/`touchedFile`/`proposalContains`、`toolSuccessRate` 连续成功率、`costUnderUsd`；过程性：`turnsUnder`（回合预算）、`trajectoryJudge`（LLM 裁判工具调用序列而非只看最终答案）；人机协同：`humanInterventionRequested`/`humanInterventionsUnder`（读 `countingApprover` 产出的 `ApprovalStats`）；护栏回归：`noPolicyViolations`/`policyDenied`）+ runner，对派生出的 RunState / trace 打分；`agent eval` 发现回归时以非零退出码退出。
-- **内置 Agent 循环** ([src/agent-loop.ts](src/agent-loop.ts)) — 运行时内置的模型驱动 Agent 循环（比 harness 更简单，但核心概念相同）。模型每 turn 决定 `call_tool` 或 `finish`。封装为单个 durable workflow step。通过 `AGENT_LOOP=1` 启用。
 - **Session（多轮对话）** ([src/session.ts](src/session.ts)) — `SessionManager` 把多个 `run` 串联为持久对话线程。支持两种 history 模式：`qa-pairs`（默认，每轮传递 user↔assistant Q&A 对，零 LLM 开销）和 `full-summary`（LLM 摘要 prior runs 的全量 message transcript，摘要结果缓存在 manifest 中增量复用、不重复计算）。`createConversationSummarizer` 工厂 + `harness-adapter` 的 `extractHarnessMessages` 无缝对接。详见 `SESSION_HISTORY_MODE` / `SESSION_VERBATIM_MODE` 环境变量。
-- **CLI** ([src/cli.ts](src/cli.ts)) — 命令行入口。命令：`run`、`resume`、`status`、`recover`、`trace`（加 `--otel` 导出 OpenTelemetry span）、`eval`、`chat`（多轮对话 REPL）。多种执行模式通过环境变量切换：`HARNESS=1`（harness 循环）、`AGENT_LOOP=1`（内置循环）、默认（固定工作流）。Session 支持两种 history 模式：`SESSION_HISTORY_MODE=qa-pairs`（默认，逐字传递 Q&A）和 `SESSION_HISTORY_MODE=full-summary`（LLM 摘要历史，增量缓存不复算）。`SESSION_VERBATIM_MODE=full-messages` 控制最近 run 是否保留全量 message transcript。
+- **CLI** ([src/cli.ts](src/cli.ts)) — 命令行入口。命令：`run`、`resume`、`status`、`recover`、`trace`（加 `--otel` 导出 OpenTelemetry span）、`eval`、`chat`（多轮对话 REPL）。两种执行模式通过环境变量切换：`HARNESS=1`（harness 循环）、默认（固定工作流）。Session 支持两种 history 模式：`SESSION_HISTORY_MODE=qa-pairs`（默认，逐字传递 Q&A）和 `SESSION_HISTORY_MODE=full-summary`（LLM 摘要历史，增量缓存不复算）。`SESSION_VERBATIM_MODE=full-messages` 控制最近 run 是否保留全量 message transcript。
 
 ---
 
@@ -101,7 +100,7 @@ flowchart LR
 - **工具** ([src/app/tools.ts](src/app/tools.ts)) — 确定性的 mock 工具 `getIssue` / `searchCode`。设置 `AGENT_MCP=1` 可通过 MCP base SDK 提供同一批工具——运行时完全无法区分。
 - **模型响应** ([src/app/responses.ts](src/app/responses.ts)) — 为 mock 模型预设的确定性输出。`AGENT_REGRESS=1` 会故意降级输出质量，用于验证 eval 框架能否捕获回归。
 - **Eval 场景** ([src/app/scenarios.ts](src/app/scenarios.ts)) — demo 的测试场景 + 预期结果，供 eval 框架打分。
-- **Agent 场景模型** ([src/app/agent-scenario.ts](src/app/agent-scenario.ts)) — 内置 agent 循环的确定性 mock 模型大脑：`getIssue` → `searchCode` → `finish`。
+- **Agent 场景模型** ([src/app/agent-scenario.ts](src/app/agent-scenario.ts)) — harness 循环的确定性 mock 模型大脑：`getIssue` → `searchCode` → `finish`。
 - **记忆工具** ([src/app/memory-tools.ts](src/app/memory-tools.ts)) — 把 `MemoryStore` 包成 `memory_write/search/read` 并绑定 scope；`registerMemoryTools()` 把它们注册进 `ToolRegistry`，从而读写走得 durable seam、完全可重放。
 - **文档检索工具** ([src/app/document-tools.ts](src/app/document-tools.ts)) — `document_search` / `document_read`；绑定 `defaultCorpusId` + 可选 `allowedCorpora`（模型只能在白名单里选 corpus）。与 `createHarnessWorkflow({ retrieval })` 配合：`once` / `once_rewrite` 隐藏工具；`capped_agentic` 可见并由 `RuntimeToolInvoker` 强制 `maxRetrieves`。
 
@@ -161,9 +160,6 @@ AGENT_MCP=1 npm run dev -- run "Login page crashes with a null session"
 ```bash
 # 默认：固定工作流 (analyze → locate → propose)
 npm run dev -- run "Login page crashes with a null session"
-
-# 内置 agent 循环：模型驱动，每 turn 自主决定
-AGENT_LOOP=1 npm run dev -- run "Login page crashes with a null session"
 
 # Harness 循环：完整的 A/B/C/D 四层 agent 大脑
 HARNESS=1 npm run dev -- run "Login page crashes with a null session"

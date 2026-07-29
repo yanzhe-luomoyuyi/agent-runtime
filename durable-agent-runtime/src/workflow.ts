@@ -62,7 +62,7 @@ export interface WorkflowDef {
   /**
    * Optional: derive the run's `summary` from the final derived state. If omitted,
    * the runtime falls back to the demo workload's convention (reading `propose.1`).
-   * A model-driven agent (see ../agent-loop.ts) uses this to surface its final answer.
+   * A model-driven agent (see ./app/harness-adapter.ts) uses this to surface its final answer.
    */
   summarize?: (state: RunState) => unknown;
 }

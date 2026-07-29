@@ -1,9 +1,9 @@
 /**
  * Deterministic mock "agent brain" — plays the role a real tool-calling LLM would
- * in the agentic loop (../agent-loop.ts). It reads the prompt the harness builds
- * (goal + tools + transcript) and returns the next decision as JSON, so runs are
- * offline, reproducible, and give stable tests. A real deployment swaps this for a
- * live LLM implementing the same `ModelProvider.complete()` contract — the harness
+ * in the harness loop. It reads the prompt the harness builds (goal + tools +
+ * transcript) and returns the next decision as JSON, so runs are offline,
+ * reproducible, and give stable tests. A real deployment swaps this for a live
+ * LLM implementing the same `ModelProvider.complete()` contract — the harness
  * and runtime are unchanged.
  *
  * Part of the demo *workload*, not the runtime. Its policy for the issue-fix demo:
