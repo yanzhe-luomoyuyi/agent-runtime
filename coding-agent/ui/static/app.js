@@ -13,9 +13,37 @@ const viewAnalysis = document.getElementById('view-analysis');
 const viewDiffs = document.getElementById('view-diffs');
 const viewTrace = document.getElementById('view-trace');
 const viewAnswer = document.getElementById('view-answer');
+const sessionSelect = document.getElementById('sessionSelect');
+const sessionHint = document.getElementById('sessionHint');
+const hitlWritesEl = document.getElementById('hitlWrites');
+const crashTurnEl = document.getElementById('crashTurn');
+const controlBar = document.getElementById('controlBar');
+const controlLabel = document.getElementById('controlLabel');
+const pauseBtn = document.getElementById('pauseBtn');
+const continueBtn = document.getElementById('continueBtn');
+const steerBtn = document.getElementById('steerBtn');
+const abortBtn = document.getElementById('abortBtn');
+const resumeDurableBtn = document.getElementById('resumeDurableBtn');
+const pauseBanner = document.getElementById('pauseBanner');
+const crashBanner = document.getElementById('crashBanner');
+const crashResumeBtn = document.getElementById('crashResumeBtn');
+const approvalPanel = document.getElementById('approvalPanel');
+const approvalBody = document.getElementById('approvalBody');
+const approveYesBtn = document.getElementById('approveYesBtn');
+const approveNoBtn = document.getElementById('approveNoBtn');
+const runsList = document.getElementById('runsList');
+const sessionsList = document.getElementById('sessionsList');
+const steerDialog = document.getElementById('steerDialog');
+const steerInject = document.getElementById('steerInject');
+const steerGoal = document.getElementById('steerGoal');
 
 let defaultWorkspace = '';
 let defaultGoal = '';
+let currentRunId = null;
+let currentSessionId = null;
+let pendingApproval = null;
+let driving = false;
+let hasApiKey = false;
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => {
@@ -38,11 +66,28 @@ function syncResetVisibility() {
     : 'Using a custom repo — agent can read/write under this path only.';
 }
 
+function setDriving(on) {
+  driving = on;
+  runBtn.disabled = !hasApiKey || on;
+  controlBar.hidden = !on && !currentRunId;
+  if (!on) {
+    pauseBanner.hidden = true;
+    approvalPanel.hidden = true;
+    pendingApproval = null;
+  }
+}
+
+function syncControlLabel() {
+  controlLabel.textContent = currentRunId ? `Run ${currentRunId}` : 'Run controls';
+  resumeDurableBtn.hidden = true;
+}
+
 async function refreshStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
   defaultWorkspace = data.defaultWorkspace;
   defaultGoal = data.defaultGoal || '';
+  hasApiKey = Boolean(data.hasApiKey);
   if (!workspaceEl.value.trim()) workspaceEl.value = data.workspace || defaultWorkspace;
   keyPill.textContent = data.hasApiKey ? 'API key ready' : 'API key missing';
   keyPill.className = `pill ${data.hasApiKey ? 'ok' : 'bad'}`;
@@ -54,13 +99,88 @@ async function refreshStatus() {
   if (!goalEl.value.trim() && defaultGoal && isSandboxPath(workspaceEl.value.trim())) {
     goalEl.value = defaultGoal;
   }
-  runBtn.disabled = !data.hasApiKey || data.busy;
-  runHint.textContent = data.busy
+  hitlWritesEl.checked = data.autoApproveWrites === false;
+  runBtn.disabled = !data.hasApiKey || data.busy || driving;
+  runHint.textContent = data.busy || driving
     ? 'Run in progress…'
     : data.hasApiKey
       ? ''
       : 'Add DEEPSEEK_API_KEY to coding-agent/.env then restart UI';
   syncResetVisibility();
+}
+
+async function refreshSessions() {
+  const res = await fetch('/api/sessions');
+  if (!res.ok) return;
+  const data = await res.json();
+  const sessions = data.sessions || [];
+  const selected = sessionSelect.value;
+  sessionSelect.innerHTML = '<option value="">New session</option>';
+  for (const s of sessions) {
+    const opt = document.createElement('option');
+    opt.value = s.sessionId;
+    opt.textContent = `${s.title || s.sessionId} (${s.runIds?.length || 0})`;
+    sessionSelect.appendChild(opt);
+  }
+  if (selected && [...sessionSelect.options].some((o) => o.value === selected)) {
+    sessionSelect.value = selected;
+  } else if (currentSessionId) {
+    sessionSelect.value = currentSessionId;
+  }
+  sessionsList.innerHTML = sessions.length
+    ? sessions
+        .slice(0, 12)
+        .map(
+          (s) =>
+            `<li><button type="button" class="linkish" data-session="${escapeHtml(s.sessionId)}">${escapeHtml(s.title || s.sessionId)}</button><span class="meta">${s.runIds?.length || 0} runs</span></li>`,
+        )
+        .join('')
+    : '<li class="empty-li">No sessions yet</li>';
+  sessionsList.querySelectorAll('[data-session]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      sessionSelect.value = btn.dataset.session;
+      currentSessionId = btn.dataset.session;
+      sessionHint.textContent = `Continuing session ${currentSessionId}`;
+    });
+  });
+}
+
+async function refreshRuns() {
+  const res = await fetch('/api/runs');
+  if (!res.ok) return;
+  const data = await res.json();
+  const runs = (data.runs || []).slice().reverse().slice(0, 12);
+  runsList.innerHTML = runs.length
+    ? runs
+        .map((r) => {
+          const short = escapeHtml((r.issue || r.runId || '').slice(0, 48));
+          const resumable = r.status === 'running';
+          return `<li>
+            <button type="button" class="linkish" data-run="${escapeHtml(r.runId)}" data-action="trace">${short || r.runId}</button>
+            <span class="meta">${escapeHtml(r.status)}</span>
+            ${resumable ? `<button type="button" class="ghost compact" data-run="${escapeHtml(r.runId)}" data-action="resume">Resume</button>` : ''}
+          </li>`;
+        })
+        .join('')
+    : '<li class="empty-li">No runs yet</li>';
+  runsList.querySelectorAll('[data-run]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const runId = btn.dataset.run;
+      if (btn.dataset.action === 'resume') {
+        await resumeRun(runId);
+        return;
+      }
+      const tr = await fetch(`/api/runs/${encodeURIComponent(runId)}/trace`);
+      if (!tr.ok) {
+        logLine(`trace failed for ${runId}`, 'err');
+        return;
+      }
+      const payload = await tr.json();
+      renderTrace(payload.runtimeTrace, null);
+      document.querySelector('.tab[data-tab="trace"]').click();
+      logLine(`loaded trace ${runId}`);
+    });
+  });
 }
 
 function logLine(text, cls = '') {
@@ -302,39 +422,10 @@ function renderTrace(runtimeTrace, harnessTrace) {
   viewTrace.innerHTML = parts.join('');
 }
 
-async function runAgent() {
-  const goal = goalEl.value.trim();
-  const workspace = workspaceEl.value.trim();
-  if (!goal) return;
-  if (!workspace) {
-    runHint.textContent = 'Repository path is required';
-    return;
-  }
-  runBtn.disabled = true;
-  runHint.textContent = 'Running…';
-  eventLog.innerHTML = '';
-  logLine(`workspace ${workspace}`);
-  logLine('starting…');
-
-  const res = await fetch('/api/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ goal, workspace }),
-  });
-
-  if (!res.ok || !res.body) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    logLine(err.error || 'request failed', 'err');
-    runBtn.disabled = false;
-    runHint.textContent = '';
-    return;
-  }
-
-  // If server returned JSON error with SSE content-type mishap, handle below via events.
+async function readSse(res) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -353,14 +444,126 @@ async function runAgent() {
       handleEvent(event, JSON.parse(data));
     }
   }
+}
 
-  runBtn.disabled = false;
+async function runAgent() {
+  const goal = goalEl.value.trim();
+  const workspace = workspaceEl.value.trim();
+  if (!goal) return;
+  if (!workspace) {
+    runHint.textContent = 'Repository path is required';
+    return;
+  }
+
+  const sessionId = sessionSelect.value.trim() || undefined;
+  const crashAfterTurn = Number(crashTurnEl.value);
+  const body = {
+    goal,
+    workspace,
+    hitlWrites: hitlWritesEl.checked,
+    newSession: !sessionId,
+  };
+  if (sessionId) body.sessionId = sessionId;
+  if (crashAfterTurn > 0) body.crashAfterTurn = crashAfterTurn;
+
+  const url = sessionId ? `/api/sessions/${encodeURIComponent(sessionId)}/continue` : '/api/run';
+
+  setDriving(true);
+  crashBanner.hidden = true;
+  pauseBanner.hidden = true;
+  runHint.textContent = 'Running…';
+  eventLog.innerHTML = '';
+  logLine(`workspace ${workspace}`);
+  logLine(sessionId ? `continue session ${sessionId}` : 'new session…');
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok || !res.body) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    logLine(err.error || 'request failed', 'err');
+    setDriving(false);
+    runHint.textContent = '';
+    return;
+  }
+
+  await readSse(res);
+  setDriving(false);
   runHint.textContent = '';
-  await refreshStatus();
+  await Promise.all([refreshStatus(), refreshSessions(), refreshRuns()]);
+}
+
+async function resumeRun(runId) {
+  const workspace = workspaceEl.value.trim();
+  if (!workspace) {
+    runHint.textContent = 'Repository path is required';
+    return;
+  }
+  setDriving(true);
+  crashBanner.hidden = true;
+  pauseBanner.hidden = true;
+  currentRunId = runId;
+  syncControlLabel();
+  runHint.textContent = 'Resuming…';
+  eventLog.innerHTML = '';
+  logLine(`resume ${runId}`);
+
+  const crashAfterTurn = Number(crashTurnEl.value);
+  const body = {
+    workspace,
+    hitlWrites: hitlWritesEl.checked,
+  };
+  if (crashAfterTurn > 0) body.crashAfterTurn = crashAfterTurn;
+
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok || !res.body) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    logLine(err.error || 'resume failed', 'err');
+    setDriving(false);
+    runHint.textContent = '';
+    return;
+  }
+
+  await readSse(res);
+  setDriving(false);
+  runHint.textContent = '';
+  await Promise.all([refreshStatus(), refreshSessions(), refreshRuns()]);
+}
+
+async function postControl(path, body = {}) {
+  if (!currentRunId) return;
+  const res = await fetch(`/api/runs/${encodeURIComponent(currentRunId)}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) logLine(data.error || `control ${path} failed`, 'err');
+  return data;
 }
 
 function handleEvent(event, data) {
-  if (event === 'run') logLine(`run ${data.runId}`);
+  if (event === 'status') logLine(`status ${data.phase}${data.mode ? ` (${data.mode})` : ''}`);
+  if (event === 'session') {
+    currentSessionId = data.sessionId;
+    sessionSelect.value = data.sessionId;
+    sessionHint.textContent = `Session ${data.sessionId}`;
+    logLine(`session ${data.sessionId}`);
+  }
+  if (event === 'run') {
+    currentRunId = data.runId;
+    syncControlLabel();
+    controlBar.hidden = false;
+    logLine(`run ${data.runId}`);
+  }
   if (event === 'tool') {
     if (data.status === 'start') logLine(`→ ${data.tool}`);
     if (data.status === 'ok') logLine(`✓ ${data.tool}`, 'ok');
@@ -376,8 +579,37 @@ function handleEvent(event, data) {
     );
   }
   if (event === 'policy') logLine(`policy deny ${data.scope}:${data.target} — ${data.reason}`, 'err');
+  if (event === 'paused') {
+    pauseBanner.hidden = false;
+    logLine(`paused at turn ${data.turn}`, 'warn');
+  }
+  if (event === 'intervention') {
+    pauseBanner.hidden = true;
+    logLine(`intervention ${data.action}${data.reason ? `: ${data.reason}` : ''}`);
+  }
+  if (event === 'needs_input' && data.kind === 'approval') {
+    pendingApproval = data;
+    approvalPanel.hidden = false;
+    approvalBody.textContent = `${data.tool} (callId=${data.callId})\n${JSON.stringify(data.args, null, 2).slice(0, 2000)}`;
+    logLine(`needs approval: ${data.tool}`, 'warn');
+  }
+  if (event === 'crashed') {
+    currentRunId = data.runId || currentRunId;
+    crashBanner.hidden = false;
+    resumeDurableBtn.hidden = false;
+    controlBar.hidden = false;
+    syncControlLabel();
+    logLine(`crashed ${data.runId}: ${data.message}`, 'err');
+  }
   if (event === 'error') logLine(data.message, 'err');
   if (event === 'done') {
+    pauseBanner.hidden = true;
+    approvalPanel.hidden = true;
+    crashBanner.hidden = true;
+    if (data.sessionId) {
+      currentSessionId = data.sessionId;
+      sessionSelect.value = data.sessionId;
+    }
     logLine(`done (${data.status})`, data.status === 'completed' ? 'ok' : 'err');
     if (data.analysis) {
       viewAnalysis.innerHTML = renderMarkdownLite(data.analysis);
@@ -411,6 +643,17 @@ useSandboxBtn.addEventListener('click', () => {
 workspaceEl.addEventListener('change', syncResetVisibility);
 workspaceEl.addEventListener('input', syncResetVisibility);
 
+document.getElementById('refreshSessionsBtn').addEventListener('click', () => {
+  refreshSessions().catch(console.error);
+});
+
+sessionSelect.addEventListener('change', () => {
+  currentSessionId = sessionSelect.value || null;
+  sessionHint.textContent = currentSessionId
+    ? `Continuing session ${currentSessionId}`
+    : 'Each run is bound to a session for multi-turn continue.';
+});
+
 resetBtn.addEventListener('click', async () => {
   const res = await fetch('/api/reset', {
     method: 'POST',
@@ -434,8 +677,48 @@ resetBtn.addEventListener('click', async () => {
 runBtn.addEventListener('click', () => {
   runAgent().catch((e) => {
     logLine(String(e), 'err');
-    runBtn.disabled = false;
+    setDriving(false);
   });
 });
 
-refreshStatus().catch(console.error);
+pauseBtn.addEventListener('click', () => postControl('/pause'));
+continueBtn.addEventListener('click', () => {
+  pauseBanner.hidden = true;
+  postControl('/continue');
+});
+abortBtn.addEventListener('click', () => postControl('/abort', { reason: 'ui abort' }));
+steerBtn.addEventListener('click', () => {
+  steerInject.value = '';
+  steerGoal.value = '';
+  steerDialog.showModal();
+});
+steerDialog.addEventListener('close', () => {
+  if (steerDialog.returnValue !== 'ok') return;
+  pauseBanner.hidden = true;
+  postControl('/steer', {
+    inject: steerInject.value.trim() || undefined,
+    goal: steerGoal.value.trim() || undefined,
+    reason: 'ui steer',
+  });
+});
+
+async function decideApproval(approved) {
+  if (!pendingApproval || !currentRunId) return;
+  const callId = pendingApproval.callId;
+  approvalPanel.hidden = true;
+  pendingApproval = null;
+  await postControl('/approve', { callId, approved });
+  logLine(approved ? `approved ${callId}` : `denied ${callId}`, approved ? 'ok' : 'err');
+}
+
+approveYesBtn.addEventListener('click', () => decideApproval(true));
+approveNoBtn.addEventListener('click', () => decideApproval(false));
+
+crashResumeBtn.addEventListener('click', () => {
+  if (currentRunId) resumeRun(currentRunId).catch((e) => logLine(String(e), 'err'));
+});
+resumeDurableBtn.addEventListener('click', () => {
+  if (currentRunId) resumeRun(currentRunId).catch((e) => logLine(String(e), 'err'));
+});
+
+Promise.all([refreshStatus(), refreshSessions(), refreshRuns()]).catch(console.error);

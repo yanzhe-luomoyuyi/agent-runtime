@@ -42,19 +42,17 @@
 
 ---
 
-## 3. coding-agent Workbench：Session / crash / resume / pause / HITL
+## 3. coding-agent Workbench：Session / crash / resume / pause / HITL — **已完成**
 
-**现状：** UI 能开单次 `run`、看 SSE 进度与 Trace；CLI 已有 `resume` / `status` / `trace`。harness / runtime 侧已有 `RunInterrupter`、`HumanIntervention`、`crashAfterTurn`、durable resume，但 **Workbench 未暴露**。
+**现状（落地后）：** Workbench 暴露会话与运维控制面；SSE 扩展 `paused` / `needs_input` / `crashed` / `intervention` / `session`；busy 改为 per-run registry（`workbench-runs.ts`）。
 
-**目标：** 在 UI 上接上会话与运维控制面：
-
-| 能力 | 说明 |
+| 能力 | 落地 |
 | --- | --- |
-| **Session** | 多轮对话 / 会话列表与当前 session 绑定（延续 `conversationHistory` 或 runtime session API） |
-| **主动 crash** | 注入 / 触发 crash（对齐 `crashAfterTurn` 或「立即失败」），用于验证 durable resume |
-| **Resume** | 对已有 `runId` 一键 resume，展示与新建 run 相同的进度 / Trace |
-| **Pause** | turn 边界暂停（`RunInterrupter` pause），UI 显示 paused 并可继续 |
-| **人工介入** | steer / abort /（写工具）approval：UI 表单注入，写入 `HumanIntervention` / approver 路径 |
+| **Session** | `SessionManager` 导出；`GET/DELETE /api/sessions`、`POST /api/sessions/:id/continue`；新 run 自动建 session |
+| **主动 crash** | Run 表单 `crashAfterTurn`；SSE `crashed` + Resume 按钮 |
+| **Resume** | `POST /api/runs/:runId/resume`（与新建 run 同 SSE）；列表中 running 可一键 resume |
+| **Pause** | `POST .../pause|continue|steer|abort` + `RunInterrupter`；SSE `paused` |
+| **人工介入** | HITL writes 开关 → `needs_input` + `POST .../approve`；steer/abort 表单 |
 
-**落地注意：** SSE 协议扩展 `paused` / `needs_input` 等事件；busy 锁改为 per-run；与 §2 统一配置里的 HITL 开关对齐。
+**未做：** SSE 重连挂接进行中 run（`GET .../stream`）；多 run 并行 drive。
 

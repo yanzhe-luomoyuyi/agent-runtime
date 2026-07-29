@@ -22,3 +22,13 @@ export type { HarnessWorkflowOptions, HarnessAgentOptions } from './app/harness-
 export { ConflictError, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
 export { extractAnswer, extractHarnessMessages } from './run-state.js';
 export { buildTrace, renderTimeline, type Trace } from './trace.js';
+export {
+  SessionManager,
+  createConversationSummarizer,
+  type SessionManifest,
+  type SessionState,
+  type ContinueResult,
+  type SessionManagerOptions,
+  type HistoryMode,
+  type ConversationSummarizer,
+} from './session.js';

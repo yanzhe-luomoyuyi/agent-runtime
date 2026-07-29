@@ -38,8 +38,28 @@
           </div>
           <p class="fine" id="workspaceHint"></p>
 
+          <label class="field-label" for="sessionSelect">Session</label>
+          <div class="path-row">
+            <select id="sessionSelect">
+              <option value="">New session</option>
+            </select>
+            <button type="button" class="ghost" id="refreshSessionsBtn" title="Refresh sessions">↻</button>
+          </div>
+          <p class="fine" id="sessionHint">Each run is bound to a session for multi-turn continue.</p>
+
           <label class="field-label" for="goal">Goal</label>
           <textarea id="goal" rows="7" spellcheck="false" placeholder="What should the agent do?"></textarea>
+
+          <div class="ops-row">
+            <label class="check">
+              <input type="checkbox" id="hitlWrites" />
+              HITL writes
+            </label>
+            <label class="check">
+              Crash after turn
+              <input type="number" id="crashTurn" min="1" max="99" placeholder="—" class="num" />
+            </label>
+          </div>
 
           <div class="actions">
             <button type="button" class="primary" id="runBtn">Run</button>
@@ -47,9 +67,43 @@
             <span class="hint" id="runHint"></span>
           </div>
 
+          <div class="control-bar" id="controlBar" hidden>
+            <span class="control-label" id="controlLabel">Run controls</span>
+            <button type="button" class="ghost" id="pauseBtn">Pause</button>
+            <button type="button" class="ghost" id="continueBtn">Continue</button>
+            <button type="button" class="ghost" id="steerBtn">Steer</button>
+            <button type="button" class="ghost danger" id="abortBtn">Abort</button>
+            <button type="button" class="ghost" id="resumeDurableBtn" hidden>Resume run</button>
+          </div>
+
+          <div class="banner" id="pauseBanner" hidden>Paused at turn boundary — Continue, Steer, or Abort.</div>
+          <div class="banner warn" id="crashBanner" hidden>
+            Crashed (durable). <button type="button" class="ghost compact" id="crashResumeBtn">Resume</button>
+          </div>
+
+          <div class="approval" id="approvalPanel" hidden>
+            <h2>Approve tool</h2>
+            <pre class="approval-body" id="approvalBody"></pre>
+            <div class="actions">
+              <button type="button" class="primary" id="approveYesBtn">Approve</button>
+              <button type="button" class="ghost danger" id="approveNoBtn">Deny</button>
+            </div>
+          </div>
+
           <div class="activity">
             <h2>Activity</h2>
             <div class="log" id="eventLog" aria-live="polite"></div>
+          </div>
+
+          <div class="side-lists">
+            <div>
+              <h2>Recent runs</h2>
+              <ul class="list" id="runsList"></ul>
+            </div>
+            <div>
+              <h2>Sessions</h2>
+              <ul class="list" id="sessionsList"></ul>
+            </div>
           </div>
         </section>
 
@@ -77,6 +131,20 @@
         </section>
       </main>
     </div>
+
+    <dialog id="steerDialog">
+      <form method="dialog" class="steer-form">
+        <h2>Steer</h2>
+        <label class="field-label" for="steerInject">Inject message</label>
+        <textarea id="steerInject" rows="4" placeholder="Additional instruction for the agent…"></textarea>
+        <label class="field-label" for="steerGoal">Rewrite goal (optional)</label>
+        <input id="steerGoal" type="text" />
+        <div class="actions">
+          <button type="submit" class="primary" value="ok">Send</button>
+          <button type="submit" class="ghost" value="cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
 
     <script src="/static/app.js" type="module"></script>
   </body>

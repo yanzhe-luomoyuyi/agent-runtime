@@ -164,6 +164,37 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Create an empty session manifest (no runs yet). Useful for hosts that drive
+   * `Runtime.run` themselves and attach the runId via `attachRun` (e.g. after
+   * `RunStarted`, including crash/resume paths).
+   */
+  create(title: string): SessionManifest {
+    const sessionId = `sess-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+    const manifest: SessionManifest = {
+      sessionId,
+      runIds: [],
+      title: truncate(title, 80),
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.writeManifest(manifest);
+    return manifest;
+  }
+
+  /** Append a runId to an existing session (no-op if already present). */
+  attachRun(sessionId: string, runId: string): SessionManifest {
+    const manifest = this.readManifest(sessionId);
+    if (!manifest) throw new Error(`Session not found: ${sessionId}`);
+    if (!manifest.runIds.includes(runId)) {
+      manifest.runIds.push(runId);
+      manifest.updatedAt = new Date().toISOString();
+      this.writeManifest(manifest);
+    }
+    return manifest;
+  }
+
   /** Start a new session with an initial prompt. Returns the session id and first run result. */
   async start(prompt: string): Promise<ContinueResult> {
     const sessionId = `sess-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -183,27 +214,39 @@ export class SessionManager {
 
   /** Add a follow-up prompt to an existing session. */
   async continue(sessionId: string, prompt: string): Promise<ContinueResult> {
+    if (!this.readManifest(sessionId)) throw new Error(`Session not found: ${sessionId}`);
+
+    const history = await this.buildHistory(sessionId);
+    const state = await this.runtime.run(prompt, { conversationHistory: history });
+    this.attachRun(sessionId, state.runId);
+
+    return { sessionId, runId: state.runId, state };
+  }
+
+  /**
+   * Build conversationHistory for a follow-up run without starting it.
+   * Hosts that drive Runtime themselves (Workbench SSE) call this then `run`.
+   */
+  async buildHistory(
+    sessionId: string,
+  ): Promise<Array<{ role: 'user' | 'assistant' | 'system'; content: string }>> {
     const manifest = this.readManifest(sessionId);
     if (!manifest) throw new Error(`Session not found: ${sessionId}`);
 
     const history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
 
     if (this.historyMode === 'full-summary' && this.summarizeHistory) {
-      // ── Full-summary mode with incremental, cached summarisation ──
       manifest.runSummaries ??= {};
       const totalRuns = manifest.runIds.length;
       const keepVerbatim = Math.min(this.keepRecent, totalRuns);
 
-      // Split: older runs get summarised, the last keepVerbatim stay verbatim.
       const olderRunIds = manifest.runIds.slice(0, totalRuns - keepVerbatim);
       const recentRunIds = manifest.runIds.slice(totalRuns - keepVerbatim);
 
-      // ── Incremental summarisation: only summarise runs that aren't cached ──
-      const newSummaries: Array<{ runId: string; summary: string }> = [];
       const uncachedEntries: Array<{ runId: string; issue: string; answer: string; fullTranscript?: string }> = [];
 
       for (const runId of olderRunIds) {
-        if (manifest.runSummaries[runId]) continue; // already cached — skip
+        if (manifest.runSummaries[runId]) continue;
         const s = this.runtime.status(runId);
         const issue = s.input?.issue ?? '(unknown)';
         const answer = extractAnswer(s);
@@ -213,20 +256,13 @@ export class SessionManager {
 
       if (uncachedEntries.length > 0) {
         const summaryText = await this.summarizeHistory(uncachedEntries);
-        // Store each summarised run's contribution. Since the summarizer
-        // may return a single combined summary, we split it evenly: each
-        // summarised run gets the same summary text. The accumulated
-        // summaries are concatenated below — the summarizer should
-        // produce a coherent multi-run narrative.
         for (const entry of uncachedEntries) {
           manifest.runSummaries[entry.runId] = summaryText;
-          newSummaries.push({ runId: entry.runId, summary: summaryText });
         }
+        manifest.updatedAt = new Date().toISOString();
+        this.writeManifest(manifest);
       }
 
-      // ── Accumulate all cached summaries into one system message ──
-      // Collect deduplicated summaries (multiple runs may share the same
-      // summary text since the summarizer processes batches).
       const seen = new Set<string>();
       const uniqueSummaries: string[] = [];
       for (const runId of olderRunIds) {
@@ -245,7 +281,6 @@ export class SessionManager {
         });
       }
 
-      // ── Recent runs: verbatim (QA or full messages) ──
       for (const runId of recentRunIds) {
         const s = this.runtime.status(runId);
         if (this.verbatimMode === 'full-messages') {
@@ -254,13 +289,11 @@ export class SessionManager {
             history.push({ role: 'system', content: `[Full transcript of prior run ${runId}]\n${messagesText}` });
             continue;
           }
-          // Fall through to QA fallback if extractMessages returns undefined.
         }
         history.push({ role: 'user', content: s.input?.issue ?? '(unknown)' });
         history.push({ role: 'assistant', content: extractAnswer(s) });
       }
     } else {
-      // ── QA-pairs mode (default): full verbatim Q&A for all prior runs ──
       for (const runId of manifest.runIds) {
         const s = this.runtime.status(runId);
         history.push({ role: 'user', content: s.input?.issue ?? '(unknown)' });
@@ -268,13 +301,7 @@ export class SessionManager {
       }
     }
 
-    const state = await this.runtime.run(prompt, { conversationHistory: history });
-
-    manifest.runIds.push(state.runId);
-    manifest.updatedAt = new Date().toISOString();
-    this.writeManifest(manifest);
-
-    return { sessionId, runId: state.runId, state };
+    return history;
   }
 
   /** List all session manifests (newest first). */

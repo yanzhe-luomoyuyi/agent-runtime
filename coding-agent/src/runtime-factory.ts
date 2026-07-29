@@ -3,7 +3,13 @@
  */
 
 import type { Approver } from '@agent/contracts';
-import { loadSkillFile, requireApprovalFor, autoApprove, type TraceCollector } from '@agent/harness';
+import {
+  loadSkillFile,
+  requireApprovalFor,
+  autoApprove,
+  type RunInterrupter,
+  type TraceCollector,
+} from '@agent/harness';
 import {
   createHarnessWorkflow,
   Runtime,
@@ -64,6 +70,8 @@ export interface CodingRuntimeOptions {
   /** Default: approve write_file via stdin unless config/env auto-approve. */
   approver?: Approver;
   autoApproveWrites?: boolean;
+  /** Mid-run pause / steer / abort gate (Workbench / hosts). */
+  interrupter?: RunInterrupter;
   onEvent?: ConstructorParameters<typeof Runtime>[0]['onEvent'];
   /** Optional harness TraceCollector (retries / per-turn usage). */
   harnessTrace?: TraceCollector;
@@ -144,6 +152,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     maxTurns: opts.maxTurns ?? cfg.run.maxTurns,
     crashAfterTurn: opts.crashAfterTurn,
     approver,
+    interrupter: opts.interrupter,
     trace: opts.harnessTrace,
     agent: {
       name: cfg.agent.name,
