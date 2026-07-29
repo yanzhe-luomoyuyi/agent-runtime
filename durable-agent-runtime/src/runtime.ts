@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 
 import { deadLetterId, type DeadLetterQueue } from '@agent/contracts';
 
-import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
+import { ConflictError, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
 import type { ChatModelProvider } from './model/chat-provider.js';
 import type { ModelProvider } from './model/provider.js';
 import type { ModelPricing } from './pricing.js';
@@ -64,6 +64,12 @@ export interface RuntimeOptions {
    * Optional; with none configured, failures behave exactly as before.
    */
   deadLetterQueue?: DeadLetterQueue;
+  /**
+   * Event-log write layout / buffering. Default keeps optimistic concurrency
+   * (many seq files + ConflictError). Set `optimisticConcurrency: false` for
+   * a single `events.json` per run — local single-writer debug only.
+   */
+  eventLog?: EventLogOptions;
 }
 
 export class Runtime {
@@ -78,18 +84,18 @@ export class Runtime {
 
   async run(issue: string, opts?: { conversationHistory?: RunInput['conversationHistory'] }): Promise<RunState> {
     const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    const log = new EventLog(runDir(this.opts.baseDir, runId));
+    const log = this.openLog(runId);
     return this.drive(runId, log, { type: 'RunStarted', runId, input: { issue, conversationHistory: opts?.conversationHistory }, workflow: this.opts.workflow.name, ts: now() });
   }
 
   async resume(runId: string): Promise<RunState> {
-    const log = new EventLog(runDir(this.opts.baseDir, runId));
+    const log = this.openLog(runId);
     if (log.length === 0) throw new Error(`No run log found for ${runId}`);
     return this.drive(runId, log);
   }
 
   status(runId: string): RunState {
-    const log = new EventLog(runDir(this.opts.baseDir, runId));
+    const log = this.openLog(runId);
     if (log.length === 0) throw new Error(`Run not found: ${runId}`);
 
     // Fast path: replay only the tail beyond the latest snapshot.
@@ -103,7 +109,7 @@ export class Runtime {
 
   /** Build an observability trace (spans + token/cost/latency totals) from a run's log. */
   trace(runId: string): Trace {
-    const log = new EventLog(runDir(this.opts.baseDir, runId));
+    const log = this.openLog(runId);
     if (log.length === 0) throw new Error(`Run not found: ${runId}`);
     return buildTrace(log.all());
   }
@@ -123,14 +129,16 @@ export class Runtime {
 
   /**
    * Find every interrupted run (status still "running") under baseDir and resume
-   * it. If another worker is concurrently driving a run, our append loses the
-   * optimistic-concurrency race (ConflictError) and we skip it rather than
-   * corrupt its log. This is the crash-recovery supervisor.
+   * it. If another worker is concurrently driving a run under optimistic
+   * concurrency, our append loses the race (ConflictError) and we skip it
+   * rather than corrupt its log. With `eventLog.optimisticConcurrency: false`
+   * there is no CAS — recover assumes a single writer. This is the
+   * crash-recovery supervisor.
    */
   async recover(): Promise<Array<{ runId: string; state?: RunState; conflict?: boolean }>> {
     const results: Array<{ runId: string; state?: RunState; conflict?: boolean }> = [];
     for (const runId of listRunIds(this.opts.baseDir)) {
-      const log = new EventLog(runDir(this.opts.baseDir, runId));
+      const log = this.openLog(runId);
       if (log.length === 0) continue; // stray/empty directory — not a real run
       if (reduce(log.all(), runId).status !== 'running') continue; // only interrupted runs
       try {
@@ -141,6 +149,10 @@ export class Runtime {
       }
     }
     return results;
+  }
+
+  private openLog(runId: string): EventLog {
+    return new EventLog(runDir(this.opts.baseDir, runId), this.opts.eventLog);
   }
 
   private async drive(runId: string, log: EventLog, initialEvent?: AgentEvent): Promise<RunState> {

@@ -19,6 +19,6 @@ export {
 export type { AgentEvent, RunState, RunInput, RunStatus } from './types.js';
 export { createHarnessWorkflow, RuntimeChatModel, RuntimeToolInvoker } from './app/harness-adapter.js';
 export type { HarnessWorkflowOptions, HarnessAgentOptions } from './app/harness-adapter.js';
-export { EventLog, listRunIds, runDir } from './eventlog.js';
+export { ConflictError, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
 export { extractAnswer, extractHarnessMessages } from './run-state.js';
 export { buildTrace, renderTimeline, type Trace } from './trace.js';

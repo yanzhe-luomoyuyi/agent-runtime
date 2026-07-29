@@ -68,7 +68,7 @@
 |------|--------|
 | `runtime.ts` | 驱动 phase→step 执行；组装 StepContext；幂等 / resume / recover |
 | `step-context.ts` | 统一漏斗 `callModel` / `callChat` / `callTool`（幂等 key + policy + 落盘） |
-| `eventlog.ts` | Append-only 事件日志；乐观并发（wx + ConflictError）；**分级持久化**——critical 事件（状态转换）同步落盘，relaxed 事件（无状态转换 + PhaseStarted/StepStarted 这种可无损重算的）先缓存、与下一个 critical 事件合并成一次写。真实工作流 benchmark 实测减少 49% 写入 |
+| `eventlog.ts` | Append-only 事件日志；默认乐观并发（wx + ConflictError）；可关 → 单 run 单 `events.json`（`optimisticConcurrency: false`，单写者）。**分级持久化**——critical 同步落盘，relaxed 先缓存、与下一个 critical 合并写。真实工作流 benchmark 实测减少 49% 写入 |
 | `reducer.ts` | 纯函数 fold：`(state, event) => state`；State 永远派生，不落盘 |
 | `snapshot.ts` | 周期性状态快照，tmp+rename 原子写，加速 resume |
 | `session.ts` | 多轮对话 `SessionManager`：串联 run→对话线程，两种 history 模式（`qa-pairs` / `full-summary` 增量 LLM 摘要缓存）；JSON manifest + `runSummaries`；`createConversationSummarizer` 工厂 |

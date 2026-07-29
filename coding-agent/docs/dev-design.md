@@ -167,10 +167,10 @@ Fixture 需求见 `fixtures/coding-sandbox/REQUIREMENT.md`。
 - [x] CLI `--workspace <path>`（与 UI 对齐；短旗 `-W`，避免与 npm `-w` 冲突）
 - [x] `.gitignore` 感知快照 / walk（`list_dir`、`grep`、UI diff）
 - [x] UI **Trace** 页：runtime `buildTrace` + harness `TraceCollector`（cost / duration / cache / retry）
-- [ ] **统一配置文件**（见仓库 `docs/TODO.md` §4）
-- [ ] EventLog 乐观并发可关 → 单 run 单文件（`docs/TODO.md` §5）
-- [ ] UI：Session / crash / resume / pause / HITL（`docs/TODO.md` §6）
-- [ ] UI：手动调 max prompt tokens（`docs/TODO.md` §7）
+- [ ] **统一配置文件**（见仓库 `docs/TODO.md` §2）
+- [x] EventLog 乐观并发可关 → 单 run 单文件（`RuntimeOptions.eventLog.optimisticConcurrency: false`）
+- [ ] UI：Session / crash / resume / pause / HITL（`docs/TODO.md` §3）
+- [ ] UI：手动调 max prompt tokens（`docs/TODO.md` §4）
 - [ ] 真机调优；UI 可继续增强（流式 token、多文件侧栏、嵌套 `.gitignore`）
 - [ ] `apply_patch`、受限 git、更丰富 HITL UX
 - [ ] 代码 review 通过后，再按仓库 skill 更新根 README / cheatsheet 等正式文档

@@ -20,7 +20,7 @@ Agent harness，以及让两者在**平台层互不依赖**的前提下协作的
 `agent-harness` 与 `durable-agent-runtime` 各自有详细的 README
 （[harness](agent-harness/README.md) / README + [TESTING](durable-agent-runtime/TESTING.md)）；coding-agent 见 [coding-agent/README.md](coding-agent/README.md)。
 
-待做方向见 [`docs/TODO.md`](docs/TODO.md)（ablation eval、统一配置、UI session/HITL、EventLog 单文件模式等）。
+待做方向见 [`docs/TODO.md`](docs/TODO.md)（ablation eval、统一配置、UI session/HITL 等）。
 
 ## 总体架构
 
@@ -170,7 +170,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 
 | 模块 | 职责 |
 | --- | --- |
-| [eventlog.ts](durable-agent-runtime/src/eventlog.ts) | append-only；乐观并发（`wx` 独占创建）。**分级持久化**：`critical` 事件（会导致 resume 算错的状态转换）同步落盘，`relaxed` 事件（无状态转换，或可从静态 `WorkflowDef` 无损重算，如 `PhaseStarted`/`StepStarted`）先缓存、与下一个 critical 事件合并成一次写——真实工作流 benchmark 实测减少 ~49% 写入。 |
+| [eventlog.ts](durable-agent-runtime/src/eventlog.ts) | append-only。默认乐观并发（每写一个 `wx` 序号文件 + `ConflictError`）；可关：`eventLog: { optimisticConcurrency: false }` → 每 run 一个 `events.json`（单写者，本地调试更干净）。**分级持久化**：`critical` 同步落盘，`relaxed` 先缓存并与下一个 critical 合并写——真实工作流 benchmark 实测减少 ~49% 写入。 |
 | [reducer.ts](durable-agent-runtime/src/reducer.ts) | 纯函数 `(state, event) => state`，唯一构建状态的途径。 |
 | [runtime.ts](durable-agent-runtime/src/runtime.ts) | 驱动工作流、追加事件、从日志恢复，用确定性 `callId` 让工具调用幂等。 |
 | [workflow.ts](durable-agent-runtime/src/workflow.ts) | `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 契约——描述工作流长什么样；`emit` 可追加 observability 事件（如 `HumanIntervention`）。 |

@@ -36,7 +36,7 @@ npm run ui -w @agent/coding-agent
 | 任意 `workspace`（CLI `--workspace` / UI / env）+ 路径沙箱 | `apply_patch`、终端命令白名单扩展、git status/diff/commit |
 | `.gitignore` 感知 walk / UI diff | 嵌套 `.gitignore`、更完整的大仓索引 |
 | 读/写/grep/测 + Analysis/Diff UI | 权限分级、流式 token 输出 |
-| DeepSeek + durable resume | 统一配置文件（`docs/TODO.md` §4） |
+| DeepSeek + durable resume | 统一配置文件（`docs/TODO.md` §2） |
 
 ## CLI
 

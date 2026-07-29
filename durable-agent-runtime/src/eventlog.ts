@@ -1,13 +1,21 @@
 /**
- * Append-only, sequence-numbered event log with optimistic concurrency control.
+ * Append-only, sequence-numbered event log with optional optimistic concurrency.
  *
- * Each event is stored as its own file `<runDir>/<seq>.json`, written with the
- * `wx` flag (exclusive create). Claiming sequence N is therefore atomic at the
- * OS level: if another writer already wrote N, our write fails with EEXIST and
- * we raise a ConflictError. This gives lock-free, cross-process optimistic
- * concurrency — two workers can never both extend the same run at the same
- * version. A crash mid-write leaves a valid, replayable prefix (a torn trailing
- * file is skipped on load). Zero dependencies — the OS filesystem is the CAS.
+ * ## Write layouts
+ *
+ * **Optimistic (default, `optimisticConcurrency: true`)** — each durable write
+ * exclusively creates `<runDir>/<seq>.json` with the `wx` flag. Claiming
+ * sequence N is atomic at the OS level: if another writer already wrote N, our
+ * write fails with EEXIST and we raise a ConflictError. Lock-free, cross-process
+ * CAS — two workers can never both extend the same run at the same version. A
+ * crash mid-write leaves a valid, replayable prefix (a torn trailing file is
+ * skipped on load).
+ *
+ * **Single-file (`optimisticConcurrency: false`)** — one `events.json` per run,
+ * rewritten atomically (tmp+rename) on each durable flush. Assumes a **single
+ * writer** (local debug): no ConflictError, far fewer files under the run dir.
+ * Resume still replays the full event order from that one file. Do not flip
+ * modes mid-run across writers; load prefers `events.json` when present.
  *
  * ## Tiered durability (selective persistence)
  *
@@ -84,10 +92,14 @@
  * critical event just means the step re-runs on resume, same as always.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { AgentEvent } from './types.js';
+
+/** Single-file layout used when optimistic concurrency is off. */
+const EVENTS_FILE = 'events.json';
+const EVENTS_TMP = 'events.tmp.json';
 
 export type EventDurability = 'critical' | 'relaxed';
 
@@ -124,6 +136,12 @@ export interface EventLogOptions {
    * (see the module doc comment).
    */
   maxBufferedRelaxed?: number;
+  /**
+   * When true (default): per-version `wx` sequence files + ConflictError on
+   * collision — safe for multi-worker append. When false: one `events.json`
+   * per run (atomic rewrite); single-writer only, quieter for local debug.
+   */
+  optimisticConcurrency?: boolean;
 }
 
 /** Raised when an append loses the optimistic-concurrency race for a version. */
@@ -149,14 +167,44 @@ export class EventLog {
   private readonly pending: AgentEvent[] = [];
   /** Number of events actually persisted to disk = next sequence file to write. */
   private writtenCount = 0;
+  /** After first single-file write, seq-file cleanup has already run. */
+  private seqFilesCleared = false;
+  /**
+   * On-disk layout for writes. Locked to whatever already exists under the run
+   * dir so resume with mismatched options cannot split history across formats.
+   */
+  private writeLayout: 'seq' | 'single';
 
   constructor(
     private readonly _dir: string,
     private readonly opts: EventLogOptions = {},
   ) {
+    const preferSingle = opts.optimisticConcurrency === false;
     // Reading is side-effect-free: a non-existent run yields zero events and
     // creates nothing on disk. The directory is created lazily on first append.
-    if (!existsSync(_dir)) return;
+    if (!existsSync(_dir)) {
+      this.writeLayout = preferSingle ? 'single' : 'seq';
+      return;
+    }
+
+    // Prefer the single-file layout when present so resume works after a run
+    // that disabled optimistic concurrency (seq files may be leftover orphans).
+    const singlePath = join(_dir, EVENTS_FILE);
+    if (existsSync(singlePath)) {
+      try {
+        const raw = JSON.parse(readFileSync(singlePath, 'utf8')) as unknown;
+        if (Array.isArray(raw)) {
+          for (const e of raw as AgentEvent[]) this.events.push(e);
+        }
+      } catch {
+        // torn/corrupt rewrite — treat as empty; caller can fall back to full replay failure
+      }
+      this.writtenCount = this.events.length;
+      this.writeLayout = 'single';
+      this.seqFilesCleared = true; // events.json is authoritative; don't scan for seq cleanup
+      return;
+    }
+
     const seqRe = /^\d{12}\.json$/;
     const files = readdirSync(_dir)
       .filter((f) => seqRe.test(f))
@@ -177,6 +225,14 @@ export class EventLog {
       }
     }
     this.writtenCount = this.events.length; // everything loaded from disk is already durable
+    // Empty dir or seq-only history: honour the constructor option (single-file
+    // will migrate off seq files on first write).
+    this.writeLayout = preferSingle ? 'single' : 'seq';
+  }
+
+  /** Whether this log uses exclusive-create sequence files (default) or single-file. */
+  get optimisticConcurrency(): boolean {
+    return this.writeLayout === 'seq';
   }
 
   all(): AgentEvent[] {
@@ -207,10 +263,11 @@ export class EventLog {
    * alone); `critical` events are combined with whatever is currently
    * buffered into ONE atomic write before `append()` returns — see the
    * module doc comment for why that (not a separately-flushed buffer) is what
-   * actually reduces write count. Throws ConflictError if another writer
-   * already claimed the on-disk sequence slot this write needs (optimistic
-   * concurrency) — collision detection is unaffected by batching, since a
-   * batch and a lone event share the identical filename scheme (see below).
+   * actually reduces write count. Throws ConflictError (optimistic layout only)
+   * if another writer already claimed the on-disk sequence slot this write
+   * needs — collision detection is unaffected by batching, since a batch and
+   * a lone event share the identical filename scheme (see below). Single-file
+   * layout never throws ConflictError (single-writer assumed).
    */
   append(event: AgentEvent): void {
     if (eventDurability(event.type) === 'relaxed') {
@@ -244,17 +301,20 @@ export class EventLog {
   }
 
   /**
-   * Exclusively create the next sequence file, holding either one event or a
-   * JSON array of several. All events in `batch` claim ONE sequence slot
-   * (`writtenCount` advances by `batch.length`, not by 1) and one filename —
-   * a lone event and a batch are indistinguishable at the filename level, so
-   * optimistic-concurrency collision detection is exactly as precise as the
-   * original one-event-per-file design: any other writer racing for this
-   * same starting slot collides via `EEXIST` on the identical filename
-   * regardless of how many events either side packs into it.
+   * Persist `batch` to disk. Optimistic mode exclusively creates the next
+   * sequence file (CAS via `wx` / ConflictError). Single-file mode rewrites
+   * `events.json` atomically — no conflict detection (single-writer assumed).
+   *
+   * In optimistic mode all events in `batch` claim ONE sequence slot
+   * (`writtenCount` advances by `batch.length`) and one filename — a lone
+   * event and a batch collide on the same starting slot via `EEXIST`.
    */
   private writeBatch(batch: AgentEvent[]): void {
     if (batch.length === 0) return;
+    if (!this.optimisticConcurrency) {
+      this.writeSingleFile(batch);
+      return;
+    }
     const start = this.writtenCount;
     if (start === 0) mkdirSync(this._dir, { recursive: true }); // create the run dir lazily, on first write
     const payload = batch.length === 1 ? JSON.stringify(batch[0]) : JSON.stringify(batch);
@@ -267,6 +327,33 @@ export class EventLog {
       throw e;
     }
     this.writtenCount += batch.length;
+  }
+
+  /**
+   * Rewrite `events.json` with the durable prefix plus `batch` (tmp+rename).
+   * If this run previously used seq files, drop them after the first successful
+   * single-file write so the run dir stays a single log + snapshot.
+   */
+  private writeSingleFile(batch: AgentEvent[]): void {
+    mkdirSync(this._dir, { recursive: true });
+    const durable = [...this.events.slice(0, this.writtenCount), ...batch];
+    const tmp = join(this._dir, EVENTS_TMP);
+    const dst = join(this._dir, EVENTS_FILE);
+    writeFileSync(tmp, JSON.stringify(durable));
+    renameSync(tmp, dst);
+    this.writtenCount += batch.length;
+
+    if (this.seqFilesCleared) return;
+    this.seqFilesCleared = true;
+    const seqRe = /^\d{12}\.json$/;
+    for (const f of readdirSync(this._dir)) {
+      if (!seqRe.test(f)) continue;
+      try {
+        unlinkSync(join(this._dir, f));
+      } catch {
+        /* best-effort cleanup of legacy seq files */
+      }
+    }
   }
 }
 

@@ -27,7 +27,7 @@
 flowchart LR
     CLI[cli.ts] --> SESS[SessionManager] --> RT[Runtime]
     CLI --> RT
-    RT -->|append| LOG[(事件日志<br/>每事件一个文件)]
+    RT -->|append| LOG[(事件日志<br/>默认序号文件 / 可选单文件)]
     LOG -->|reduce| ST[RunState]
     ST --> RT
     SESS -->|manifest| SMF[(sessions/*.json<br/>runIds + runSummaries)]
@@ -47,7 +47,7 @@ flowchart LR
 
 ### 运行时 — 平台层 (`src/`)
 
-- **事件日志** ([src/eventlog.ts](src/eventlog.ts)) — append-only；每个事件一个独占创建的文件（乐观并发）。以目录方式组织，支持 `listRunIds()` 列出所有 run。
+- **事件日志** ([src/eventlog.ts](src/eventlog.ts)) — append-only；以 run 目录组织，支持 `listRunIds()`。**默认**乐观并发：每个 durable 写独占创建一个序号文件（`wx`），冲突抛 `ConflictError`（适合多 worker）。**可选** `RuntimeOptions.eventLog.optimisticConcurrency: false`：每 run 一个 `events.json`（tmp+rename），单写者假设，本地调试目录更干净；resume 仍可读完整事件序。已有 `events.json` 的 run 会锁定单文件布局，避免格式分裂。
 - **Reducer** ([src/reducer.ts](src/reducer.ts)) — 纯函数 `(state, event) => state`；构建状态的唯一途径。`AgentEvent` 是 14 种事件类型的 discriminated union（含 observability-only 的 `HumanIntervention`）。
 - **Runtime** ([src/runtime.ts](src/runtime.ts)) — 驱动工作流、追加事件、从日志恢复。支持 `run()` / `resume()` / `status()` / `trace()` / `recover()`。可选 `model`（文本）和/或 `chatModel`（native tool-calling）。
 - **Step 漏斗** ([src/step-context.ts](src/step-context.ts)) — 从 Runtime 拆出的 `callModel` / `callChat` / `callTool`：幂等 key、policy、落 `ModelCalled`/`ToolCall*` 事件。`callChat` 把结构化 `ChatResponse` 以 envelope 写入日志，resume 时重放而非再打 API。

@@ -11,9 +11,10 @@
  *
  * ## Concurrency / consistency
  *
- * The runtime that owns a run (having won the optimistic-concurrency race for
- * every log append) is the sole writer. No other process can append to the
- * same run, so there is no writer–writer race on the snapshot.
+ * Under default optimistic concurrency, the runtime that owns a run (having
+ * won the CAS race for every log append) is the sole writer. With
+ * `optimisticConcurrency: false` the host must guarantee a single writer.
+ * Either way there is no writer–writer race on the snapshot itself.
  *
  * To guard against torn writes (crash mid-snapshot), the file is written
  * atomically via tmp + rename. On load we validate the shape; a corrupt or

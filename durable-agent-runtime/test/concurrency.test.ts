@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,6 +35,74 @@ describe('concurrency & recovery', () => {
     a.append(criticalEvent); // claims version 1
     // b still thinks the next version is 1 — but `a` already took it.
     expect(() => b.append(criticalEvent)).toThrow(ConflictError);
+  });
+
+  it('single-file mode writes one events.json and reloads the full sequence', () => {
+    const runId = 'run-single';
+    const now = new Date().toISOString();
+    const opts = { optimisticConcurrency: false as const };
+    const log = new EventLog(runDir(dir, runId), opts);
+    expect(log.optimisticConcurrency).toBe(false);
+
+    log.append({ type: 'RunStarted', runId, input: { issue: 'x' }, workflow: 'issue-fix', ts: now });
+    log.append({ type: 'ToolCallRequested', callId: 'c1', tool: 'getIssue', args: {}, ts: now });
+    log.append({ type: 'ToolCallSucceeded', callId: 'c1', tool: 'getIssue', result: { ok: true }, ts: now });
+    log.append({ type: 'RunCompleted', summary: 'done', ts: now });
+
+    const files = readdirSync(runDir(dir, runId)).filter((f) => f.endsWith('.json'));
+    expect(files).toEqual(['events.json']);
+
+    const reloaded = new EventLog(runDir(dir, runId)); // default options — still reads events.json
+    expect(reloaded.optimisticConcurrency).toBe(false); // layout locked to existing file
+    expect(reloaded.all().map((e) => e.type)).toEqual([
+      'RunStarted',
+      'ToolCallRequested',
+      'ToolCallSucceeded',
+      'RunCompleted',
+    ]);
+  });
+
+  it('single-file mode does not raise ConflictError for concurrent appends', () => {
+    const runId = 'run-no-cas';
+    const now = new Date().toISOString();
+    const opts = { optimisticConcurrency: false as const };
+
+    const seed = new EventLog(runDir(dir, runId), opts);
+    seed.append({ type: 'RunStarted', runId, input: { issue: 'x' }, workflow: 'issue-fix', ts: now });
+
+    const a = new EventLog(runDir(dir, runId), opts);
+    const b = new EventLog(runDir(dir, runId), opts);
+    const critical: AgentEvent = { type: 'ToolCallSucceeded', callId: 'c1', tool: 'getIssue', result: {}, ts: now };
+
+    expect(() => a.append(critical)).not.toThrow();
+    expect(() => b.append(critical)).not.toThrow(); // last writer wins — no CAS
+  });
+
+  it('Runtime with eventLog.optimisticConcurrency:false completes and resumes from events.json', async () => {
+    const eventLog = { optimisticConcurrency: false };
+    const crashing = new Runtime({
+      baseDir: dir,
+      model: makeModel(),
+      tools: makeTools(),
+      workflow: issueWorkflow,
+      crashAfter: 'locate.1',
+      eventLog,
+    });
+    await expect(crashing.run('Login page crashes with a null session')).rejects.toThrow('__CRASH__');
+
+    const runId = readdirSync(dir)[0]!;
+    expect(readdirSync(runDir(dir, runId)).filter((f) => /^\d{12}\.json$/.test(f))).toEqual([]);
+    expect(existsSync(join(runDir(dir, runId), 'events.json'))).toBe(true);
+
+    const resumed = new Runtime({
+      baseDir: dir,
+      model: makeModel(),
+      tools: makeTools(),
+      workflow: issueWorkflow,
+      eventLog,
+    });
+    const state = await resumed.resume(runId);
+    expect(state.status).toBe('completed');
   });
 
   it('recover() finds an interrupted run and drives it to completion', async () => {
