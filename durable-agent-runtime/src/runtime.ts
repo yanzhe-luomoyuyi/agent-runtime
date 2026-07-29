@@ -17,7 +17,14 @@ import { deadLetterId, type DeadLetterQueue } from '@agent/contracts';
 import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
 import type { ModelProvider } from './model/provider.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
-import { PolicyEnforcer, PolicyViolationError, type Policy } from './policy.js';
+import { PolicyEnforcer, type Policy } from './policy.js';
+import {
+  enforceBudget,
+  enforceContentSafety,
+  enforceOutputSafety,
+  enforceRateLimit,
+  enforceToolAllowed,
+} from './policy/enforcement.js';
 import { applyEvent, reduce } from './reducer.js';
 import { readSnapshot, writeSnapshot } from './snapshot.js';
 import type { ToolRegistry } from './tools/registry.js';
@@ -206,7 +213,7 @@ export class Runtime {
         record({ type: 'PhaseCompleted', phase: phase.name, ts: now() });
       }
 
-      const summary = this.opts.workflow.summarize ? this.opts.workflow.summarize(state) : buildSummary(state);
+      const summary = this.opts.workflow.summarize?.(state);
       record({ type: 'RunCompleted', summary, ts: now() });
       this.checkpoint(log.dir, log.version, state, spentUsd, lastSnapVersion, true);
       return state;
@@ -278,13 +285,13 @@ export class Runtime {
         // Policy funnel: enforce the cost budget, then redact PII before the prompt
         // ever leaves the runtime — the model sees, and the log stores, only the
         // redacted text.
-        this.enforceBudget(getSpentUsd(), callId, record);
+        enforceBudget(this.policy, getSpentUsd(), callId, record);
 
         // Pre-model content safety: detect prompt injection & harmful content
         // BEFORE the prompt is sent. The raw (pre-redaction) prompt is checked
         // so that injection attacks can't hide behind PII redaction markers.
         if (this.policy) {
-          await this.enforceContentSafety(this.policy, prompt, callId, record);
+          await enforceContentSafety(this.policy, prompt, callId, record);
         }
 
         const outbound = this.policy ? this.policy.redact(prompt).text : prompt;
@@ -297,7 +304,7 @@ export class Runtime {
         // Post-model content safety: check the model's response for harmful or
         // ungrounded output before it flows back into the workflow.
         if (this.policy) {
-          await this.enforceOutputSafety(this.policy, text, callId, record);
+          await enforceOutputSafety(this.policy, text, callId, record);
         }
 
         record({
@@ -326,8 +333,8 @@ export class Runtime {
         // check its rate limit (allow-list is a static/cheap check, so it goes
         // first; rate limiting is stateful and only worth paying for once the
         // tool is actually permitted).
-        this.enforceToolAllowed(tool, record);
-        this.enforceRateLimit(tool, record);
+        enforceToolAllowed(this.policy, tool, record);
+        enforceRateLimit(this.policy, tool, record);
 
         record({ type: 'ToolCallRequested', callId, tool, args, ts: now() });
         try {
@@ -367,109 +374,6 @@ export class Runtime {
       key: callId,
     });
   }
-
-  /** Deny a tool that is not on the policy allow-list (records the denial first). */
-  private enforceToolAllowed(tool: string, record: (event: AgentEvent) => void): void {
-    if (!this.policy) return;
-    try {
-      this.policy.checkTool(tool);
-    } catch (e) {
-      if (e instanceof PolicyViolationError) {
-        record({ type: 'PolicyDenied', scope: 'tool', target: tool, code: e.code, reason: e.message, ts: now() });
-      }
-      throw e;
-    }
-  }
-
-  /** Deny a tool call once its token bucket is exhausted (records the denial first). */
-  private enforceRateLimit(tool: string, record: (event: AgentEvent) => void): void {
-    if (!this.policy) return;
-    try {
-      this.policy.checkRateLimit(tool);
-    } catch (e) {
-      if (e instanceof PolicyViolationError) {
-        record({ type: 'PolicyDenied', scope: 'tool', target: tool, code: e.code, reason: e.message, ts: now() });
-      }
-      throw e;
-    }
-  }
-
-  /** Deny a model call once the cumulative cost budget is exhausted. */
-  private enforceBudget(spentUsd: number, callId: string, record: (event: AgentEvent) => void): void {
-    if (!this.policy) return;
-    try {
-      this.policy.checkBudget(spentUsd, callId);
-    } catch (e) {
-      if (e instanceof PolicyViolationError) {
-        record({ type: 'PolicyDenied', scope: 'model', target: callId, code: e.code, reason: e.message, ts: now() });
-      }
-      throw e;
-    }
-  }
-
-  /**
-   * Pre-model guard: run jailbreak + content checks on the raw prompt.
-   * Records a PolicyDenied event on violation so every blocked call is audit-
-   * able and surfaced in traces / evals.
-   */
-  private async enforceContentSafety(
-    policy: PolicyEnforcer,
-    prompt: string,
-    callId: string,
-    record: (event: AgentEvent) => void,
-  ): Promise<void> {
-    // Jailbreak check (prompt injection / DAN / system-override attempts).
-    const jb = await policy.checkJailbreak(prompt);
-    if (!jb.safe) {
-      record({
-        type: 'PolicyDenied',
-        scope: 'model',
-        target: callId,
-        code: 'jailbreak',
-        reason: `${jb.attackType ?? 'prompt_injection'}: ${jb.reason ?? 'jailbreak detected'}`,
-        ts: now(),
-      });
-      throw new PolicyViolationError('jailbreak', 'model', callId, jb.reason ?? 'Prompt injection detected');
-    }
-
-    // Harmful content check (violence, hate, self-harm, sexual, etc.).
-    const cc = await policy.checkContent(prompt);
-    if (!cc.safe) {
-      record({
-        type: 'PolicyDenied',
-        scope: 'model',
-        target: callId,
-        code: 'content_safety',
-        reason: `${cc.category ?? 'unsafe'}(severity=${cc.severity ?? '?'}): ${cc.reason ?? 'harmful content'}`,
-        ts: now(),
-      });
-      throw new PolicyViolationError('content_safety', 'model', callId, cc.reason ?? 'Harmful content detected');
-    }
-  }
-
-  /**
-   * Post-model guard: check the model's response for harmful/ungrounded output
-   * before it is returned to the workflow.
-   */
-  private async enforceOutputSafety(
-    policy: PolicyEnforcer,
-    response: string,
-    callId: string,
-    record: (event: AgentEvent) => void,
-  ): Promise<void> {
-    const oc = await policy.checkOutput(response);
-    if (!oc.safe) {
-      record({
-        type: 'PolicyDenied',
-        scope: 'model',
-        target: callId,
-        code: 'output_safety',
-        reason: `${oc.category ?? 'unsafe'}: ${oc.reason ?? 'harmful output'}`,
-        ts: now(),
-      });
-      throw new PolicyViolationError('output_safety', 'model', callId, oc.reason ?? 'Harmful model output detected');
-    }
-  }
 }
 
 function now(): string {
@@ -478,9 +382,4 @@ function now(): string {
 
 function stepNumber(stepId: string): number {
   return Number(stepId.split('.').pop());
-}
-
-function buildSummary(state: RunState): { proposal?: string; files?: string[] } {
-  const out = state.stepOutputs['propose.1'] as { proposal?: string; files?: string[] } | undefined;
-  return { proposal: out?.proposal, files: out?.files };
 }

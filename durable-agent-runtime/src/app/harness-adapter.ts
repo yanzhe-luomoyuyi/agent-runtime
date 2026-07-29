@@ -26,7 +26,7 @@ import type {
   ToolInvoker,
   ToolSpec,
 } from '@agent/contracts';
-import { isGoalMessage, keyScope, runtimeToolCallId } from '@agent/contracts';
+import { isGoalMessage, runtimeToolCallId } from '@agent/contracts';
 import {
   createAgent,
   ContextManager,
@@ -35,7 +35,6 @@ import {
   runAgent,
   type AgentConfig,
   type AgentRunResult,
-  type RetrievalHit,
   type RunInterrupter,
   type SkillLoadMode,
   type SkillSpec,
@@ -43,22 +42,20 @@ import {
 import type { Approver } from '@agent/contracts';
 
 import {
-  collectSkillCorpora,
-  countDocumentSearchesInState,
-  documentSearchBudgetExhaustedMessage,
+  checkDocumentSearchBudget,
+  DOCUMENT_READ_TOOL,
+  DOCUMENT_SEARCH_TOOL,
   exposeRetrievalToolsToModel,
   resolveRetrievalPolicy,
-  resolveRunCorpusId,
-  RetrievalBudget,
-  systemRetrieveOnce,
-  wantsSystemRetrieve,
+  systemRetrieveForStep,
   type RetrievalPolicy,
-  type ResolvedRetrievalPolicy,
   type Retriever,
 } from '../retrieval/index.js';
+import { extractHarnessMessages } from '../run-state.js';
 import type { RunState } from '../types.js';
 import type { StepContext, WorkflowDef } from '../workflow.js';
-import { DOCUMENT_READ_TOOL, DOCUMENT_SEARCH_TOOL } from './document-tools.js';
+
+export { extractHarnessMessages };
 
 /** Options for retrieve-budget enforcement on the durable tool seam. */
 export interface RuntimeToolInvokerOptions {
@@ -99,10 +96,12 @@ export class RuntimeToolInvoker implements ToolInvoker {
       const callId = runtimeToolCallId(phase, step, name, opts?.key);
       const isReplay = callId in this.ctx.state.toolResults;
       if (!isReplay) {
-        const used = countDocumentSearchesInState(this.ctx.state, DOCUMENT_SEARCH_TOOL);
-        if (used >= this.maxDocumentSearches) {
-          return documentSearchBudgetExhaustedMessage(used, this.maxDocumentSearches);
-        }
+        const exhausted = checkDocumentSearchBudget(
+          this.ctx.state,
+          this.maxDocumentSearches,
+          DOCUMENT_SEARCH_TOOL,
+        );
+        if (exhausted) return exhausted;
       }
     }
     // Forward the harness key so the call is idempotent across resumes.
@@ -283,7 +282,18 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
               }
 
               const retrievalHits = opts.retrieval
-                ? await systemRetrieveForStep(ctx, opts.retrieval, retrievalPolicy, opts.agent?.skills)
+                ? await systemRetrieveForStep({
+                    seam: {
+                      state: ctx.state,
+                      listToolNames: () => ctx.tools.list().map((t) => t.name),
+                      callTool: ctx.callTool,
+                      callModel: ctx.callModel,
+                    },
+                    goal: ctx.input.issue,
+                    retrieval: opts.retrieval,
+                    policy: retrievalPolicy,
+                    skills: opts.agent?.skills,
+                  })
                 : undefined;
 
               return runAgent({
@@ -335,105 +345,6 @@ function recordingInterrupter(delegate: RunInterrupter, ctx: StepContext): RunIn
   };
 }
 
-/**
- * Prefer durable `document_search` (event-logged); fall back to a direct
- * Retriever when the tool is not registered (unit / non-durable hosts).
- * Counts against the same maxRetrieves budget as agentic searches (via event
- * log when using the tool, or RetrievalBudget when using a direct retriever).
- *
- * `once_rewrite`: keyed model rewrite of the goal, then a single search.
- */
-async function systemRetrieveForStep(
-  ctx: StepContext,
-  retrieval: NonNullable<HarnessWorkflowOptions['retrieval']>,
-  policy: ResolvedRetrievalPolicy,
-  skills: SkillSpec[] | undefined,
-): Promise<RetrievalHit[] | undefined> {
-  if (!wantsSystemRetrieve(policy)) return undefined;
-
-  const skillCorpora = collectSkillCorpora(skills);
-  const allowed = policy.corpora ?? (skillCorpora.length > 0 ? skillCorpora : undefined);
-  let corpusId: string;
-  try {
-    corpusId = resolveRunCorpusId({
-      corpusId: retrieval.corpusId,
-      skills,
-      allowedCorpora: allowed,
-    });
-  } catch {
-    return undefined;
-  }
-
-  let query = ctx.input.issue;
-  if (policy.mode === 'once_rewrite') {
-    query = await rewriteQueryForRetrieve(ctx, ctx.input.issue);
-  }
-
-  const hasTool = ctx.tools.list().some((t) => t.name === DOCUMENT_SEARCH_TOOL);
-  if (hasTool) {
-    if (countDocumentSearchesInState(ctx.state, DOCUMENT_SEARCH_TOOL) >= policy.maxRetrieves) {
-      return undefined;
-    }
-    const raw = await ctx.callTool<unknown>(
-      DOCUMENT_SEARCH_TOOL,
-      {
-        query,
-        limit: policy.maxChunks,
-        mode: policy.rankMode,
-        // Multi-corpus tools accept corpusId; single-corpus tools ignore unknown props.
-        corpusId,
-      },
-      { key: keyScope().retrieveOnce() },
-    );
-    if (typeof raw === 'string' && raw.startsWith('ERROR:')) return undefined;
-    return normalizeSearchHits(raw);
-  }
-
-  if (!retrieval.retriever) return undefined;
-  const budget = new RetrievalBudget(policy.maxRetrieves);
-  budget.seedUsed(countDocumentSearchesInState(ctx.state, DOCUMENT_SEARCH_TOOL));
-  const result = await systemRetrieveOnce({
-    retriever: retrieval.retriever,
-    policy,
-    query,
-    corpusId,
-    budget,
-  });
-  return result.retrieved ? result.hits : undefined;
-}
-
-/** Cheap rewrite for once_rewrite — durable via keyed callModel. */
-async function rewriteQueryForRetrieve(ctx: StepContext, goal: string): Promise<string> {
-  const prompt = [
-    'Rewrite the user goal into a short keyword search query for a document corpus.',
-    'Reply with ONLY the search query text — no quotes, no explanation, no punctuation wrappers.',
-    '',
-    `Goal: ${goal}`,
-  ].join('\n');
-  const text = await ctx.callModel(prompt, { key: keyScope().retrieveRewrite() });
-  const line = text.trim().split(/\r?\n/).find((l) => l.trim())?.trim() ?? '';
-  // Strip wrapping quotes if the model adds them.
-  const cleaned = line.replace(/^["'`]+|["'`]+$/g, '').trim();
-  return cleaned || goal;
-}
-
-function normalizeSearchHits(raw: unknown): RetrievalHit[] {
-  if (!Array.isArray(raw)) return [];
-  const hits: RetrievalHit[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const o = item as { id?: unknown; text?: unknown; score?: unknown; metadata?: unknown };
-    if (typeof o.id !== 'string' || typeof o.text !== 'string') continue;
-    hits.push({
-      id: o.id,
-      text: o.text,
-      score: typeof o.score === 'number' ? o.score : 0,
-      metadata: o.metadata && typeof o.metadata === 'object' ? (o.metadata as Record<string, unknown>) : undefined,
-    });
-  }
-  return hits;
-}
-
 /** Surface the loop's final answer + files in the run summary (same shape the CLI prints). */
 function summarizeHarnessRun(state: RunState): unknown {
   const result = state.stepOutputs['agent.1'] as AgentRunResult | undefined;
@@ -445,28 +356,6 @@ function summarizeHarnessRun(state: RunState): unknown {
     finished: result.finished,
     toolsUsed: result.toolsUsed,
   };
-}
-
-/**
- * Extract the full message transcript from a harness RunState as plain text.
- * Suitable for passing to `SessionManager`'s `extractMessages` option when
- * `historyMode` is `'full-summary'`. Returns `undefined` if the run didn't
- * produce a harness result (e.g. failed before the agent step completed).
- */
-export function extractHarnessMessages(state: RunState): string | undefined {
-  const result = state.stepOutputs['agent.1'] as AgentRunResult | undefined;
-  if (!result?.messages?.length) return undefined;
-  return result.messages
-    .map((m) => {
-      const role = m.role.toUpperCase();
-      const content = m.content ?? '';
-      const toolCalls = m.toolCalls?.length
-        ? `\n[tool_calls: ${m.toolCalls.map((tc) => `${tc.name}(${JSON.stringify(tc.arguments)})`).join(', ')}]`
-        : '';
-      const toolName = m.name ? ` (${m.name})` : '';
-      return `[${role}${toolName}] ${content}${toolCalls}`;
-    })
-    .join('\n\n');
 }
 
 /** Render the transcript to a text prompt a text model (or the mock brain) understands. */

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { MockAgentModel } from '../src/app/agent-scenario.js';
-import { documentToolDefs, registerDocumentTools } from '../src/app/document-tools.js';
+import { documentToolDefs, registerDocumentTools } from '../src/retrieval/tools.js';
 import { createHarnessWorkflow } from '../src/app/harness-adapter.js';
 import { EventLog, runDir } from '../src/eventlog.js';
 import { HashingEmbeddingProvider } from '../src/memory/embedding.js';

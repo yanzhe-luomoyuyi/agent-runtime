@@ -5,7 +5,7 @@
  * cross-run state, whereas the harness is stateless and per-run. Memories are
  * curated facts / preferences / notes the agent deliberately writes — NOT a
  * dump of past transcripts. They are surfaced to the model as ordinary tools
- * (see app/memory-tools.ts); routing those tools through `ctx.callTool` is what
+ * (see memory/tools.ts); routing those tools through `ctx.callTool` is what
  * records each read in the run's event log and keeps replay deterministic.
  *
  * ## Independence from the run event log

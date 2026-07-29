@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createHarnessWorkflow } from '../src/app/harness-adapter.js';
-import { registerMemoryTools } from '../src/app/memory-tools.js';
+import { registerMemoryTools } from '../src/memory/tools.js';
 import { EventLog, runDir } from '../src/eventlog.js';
 import type { ModelProvider, ModelResult } from '../src/model/provider.js';
 import { estimateTokens } from '../src/model/provider.js';

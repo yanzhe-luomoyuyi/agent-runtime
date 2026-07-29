@@ -29,12 +29,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import * as readline from 'node:readline';
 
 import { createDemoRuntime, toolSourceFromEnv } from './app/demo-runtime.js';
-import { extractHarnessMessages } from './app/harness-adapter.js';
 import { demoScenarios } from './app/scenarios.js';
 import { renderReport, runEval, type Scenario } from './eval.js';
 import { type Policy, type RateLimitRule, resolveRedactions } from './policy.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { Runtime } from './runtime.js';
+import { extractAnswer, extractHarnessMessages } from './run-state.js';
 import { SessionManager, createConversationSummarizer, type HistoryMode, type SessionManagerOptions } from './session.js';
 import { renderTimeline } from './trace.js';
 import { exportTrace, initOtel, shutdownOtel } from './otel.js';
@@ -236,7 +236,7 @@ async function chatRepl(sessions: SessionManager, sessionId?: string): Promise<v
         turn++;
       }
 
-      const answer = extractChatAnswer(result.state);
+      const answer = extractAnswer(result.state);
       process.stdout.write(`\nAgent: ${answer}\n\n`);
     } catch (e) {
       process.stdout.write(`\n\u2716 Error: ${e instanceof Error ? e.message : String(e)}\n\n`);
@@ -244,13 +244,6 @@ async function chatRepl(sessions: SessionManager, sessionId?: string): Promise<v
 
     prompt();
   }
-}
-
-function extractChatAnswer(state: import('./types.js').RunState): string {
-  const summary = state.summary as { proposal?: string; answer?: string } | undefined;
-  if (summary?.answer) return summary.answer;
-  if (summary?.proposal) return summary.proposal;
-  return state.error ?? '(no answer)';
 }
 
 async function main(): Promise<void> {

@@ -11,11 +11,16 @@
  */
 
 import type { WorkflowDef } from '../workflow.js';
+import type { RunState } from '../types.js';
 
 import type { IssueRecord } from './tools.js';
 
 export const issueWorkflow: WorkflowDef = {
   name: 'issue-fix',
+  summarize: (state: RunState) => {
+    const out = state.stepOutputs['propose.1'] as { proposal?: string; files?: string[] } | undefined;
+    return { proposal: out?.proposal, files: out?.files };
+  },
   phases: [
     {
       name: 'analyze',

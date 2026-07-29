@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import type { Runtime } from './runtime.js';
+import { extractAnswer } from './run-state.js';
 import type { RunState } from './types.js';
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -341,20 +342,6 @@ export class SessionManager {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-/** Extract the best-effort final answer from a RunState. */
-function extractAnswer(state: RunState): string {
-  const summary = state.summary as { proposal?: string; answer?: string } | undefined;
-  if (summary?.answer) return summary.answer;
-  if (summary?.proposal) return summary.proposal;
-  // Fallback: read the last step output that looks like a result.
-  const keys = Object.keys(state.stepOutputs);
-  for (let i = keys.length - 1; i >= 0; i--) {
-    const v = state.stepOutputs[keys[i]!];
-    if (v && typeof v === 'object' && 'answer' in v) return (v as any).answer as string;
-  }
-  return state.error ?? '(no answer)';
-}
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '…';

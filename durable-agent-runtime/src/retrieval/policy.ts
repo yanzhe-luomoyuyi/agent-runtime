@@ -85,3 +85,17 @@ export function documentSearchBudgetExhaustedMessage(used: number, max: number):
     `Do not search again; answer with the evidence you already have.`
   );
 }
+
+/**
+ * If `document_search` budget is exhausted, return the model-facing error string;
+ * otherwise `undefined`. Callers skip this check on replayed tool results.
+ */
+export function checkDocumentSearchBudget(
+  state: RunState,
+  max: number,
+  toolName = 'document_search',
+): string | undefined {
+  const used = countDocumentSearchesInState(state, toolName);
+  if (used >= max) return documentSearchBudgetExhaustedMessage(used, max);
+  return undefined;
+}
