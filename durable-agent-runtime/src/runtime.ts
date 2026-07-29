@@ -12,7 +12,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { runtimeModelCallId, runtimeToolCallId } from '@agent/contracts';
-import { deadLetterId, type DeadLetterQueue } from '@agent/harness';
+import { deadLetterId, type DeadLetterQueue } from '@agent/contracts';
 
 import { ConflictError, EventLog, listRunIds, runDir } from './eventlog.js';
 import type { ModelProvider } from './model/provider.js';

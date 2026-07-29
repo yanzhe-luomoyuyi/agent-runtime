@@ -3,7 +3,7 @@
  * Chooses fixed workflow vs harness, local vs MCP tools, optional response cache.
  */
 
-import type { Approver } from '@agent/harness';
+import type { Approver } from '@agent/contracts';
 
 import { CachingModelProvider, FileResponseCache } from '../model/caching.js';
 import { MockModelProvider, type ModelProvider } from '../model/provider.js';

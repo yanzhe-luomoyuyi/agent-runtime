@@ -3,12 +3,13 @@
  *
  * Skills may declare `corpusId` so a playbook is scoped to one knowledge base.
  * The model never invents corpus ids; the host allow-lists them when registering tools.
+ * Uses contracts {@link CorpusScoped} so platform code does not import harness `SkillSpec`.
  */
 
-import type { SkillSpec } from '@agent/harness';
+import type { CorpusScoped } from '@agent/contracts';
 
 /** Unique corpus ids declared on skills (order preserved, first occurrence wins). */
-export function collectSkillCorpora(skills: readonly SkillSpec[] | undefined): string[] {
+export function collectSkillCorpora(skills: readonly CorpusScoped[] | undefined): string[] {
   if (!skills?.length) return [];
   const out: string[] = [];
   const seen = new Set<string>();
@@ -24,8 +25,8 @@ export function collectSkillCorpora(skills: readonly SkillSpec[] | undefined): s
 export interface ResolveRunCorpusOptions {
   /** Explicit host default (createHarnessWorkflow retrieval.corpusId). */
   corpusId?: string;
-  /** Skills that may declare corpusId. */
-  skills?: readonly SkillSpec[];
+  /** Skills (or any {@link CorpusScoped}) that may declare corpusId. */
+  skills?: readonly CorpusScoped[];
   /** Optional policy allow-list; resolved id must be in this set when provided. */
   allowedCorpora?: readonly string[];
 }

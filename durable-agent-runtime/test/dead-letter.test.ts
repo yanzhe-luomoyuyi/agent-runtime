@@ -6,7 +6,7 @@ import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { DeadLetter } from '@agent/harness';
+import type { DeadLetter } from '@agent/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { issueWorkflow } from '../src/app/issue-workflow.js';

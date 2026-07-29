@@ -12,7 +12,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { ApprovalStats, Approver } from '@agent/harness';
+import type { ApprovalStats, Approver } from '@agent/contracts';
 
 import type { ModelProvider } from './model/provider.js';
 import type { Policy } from './policy.js';

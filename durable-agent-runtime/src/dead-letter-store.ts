@@ -1,11 +1,8 @@
 /**
  * Disk-backed dead-letter queue — a durable last-resort record for tool calls
  * that failed even after reaching the runtime's tool funnel (see `runtime.ts`'s
- * `callTool`). Implements `@agent/harness`'s `DeadLetterQueue` interface, so
- * the SAME `retryDeadLetter()` helper (and anything else built against that
- * interface) works unmodified against this durable store — the harness only
- * defines the host-agnostic primitive + an in-memory default; a real durable
- * backing belongs in the host, which is exactly what this is.
+ * `callTool`). Implements `@agent/contracts`'s `DeadLetterQueue` interface so
+ * harness `retryDeadLetter()` and the runtime funnel share one letter shape.
  *
  * One JSON file for the whole queue, written atomically (tmp + rename) — same
  * convention as `memory/store.ts`'s `FileMemoryStore`. A corrupt file is
@@ -15,7 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { DeadLetter, DeadLetterQueue } from '@agent/harness';
+import type { DeadLetter, DeadLetterQueue } from '@agent/contracts';
 
 export class FileDeadLetterQueue implements DeadLetterQueue {
   constructor(private readonly filePath: string) {}

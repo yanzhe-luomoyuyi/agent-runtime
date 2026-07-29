@@ -2,6 +2,18 @@
 
 ---
 
+## agent-contracts（缝）
+
+| 模块 | 一句话 |
+|------|--------|
+| `messages` / `tools` / `model` | Chat 对话、ToolInvoker、ChatModel |
+| `keys.ts` | 幂等 key 词汇表 `keyScope` |
+| `dead-letter.ts` | `DeadLetter` / `DeadLetterQueue` / `deadLetterId` |
+| `approval.ts` | `Approver` / `ApprovalStats` 类型（实现在 harness） |
+| `corpus.ts` | `CorpusScoped` — skill/host 绑定文档库 |
+
+---
+
 ## agent-harness（Agent 大脑 · 运行时无关）
 
 ### A — 协议层
@@ -18,7 +30,7 @@
 | `recovery/circuit-breaker.ts` | closed→open→half_open 三态熔断器 |
 | `recovery/fallback.ts` | 多 tier 分级模型链 + escalation ladder，零侵入 ChatModel |
 | `recovery/compensation.ts` | Saga 补偿：LIFO 回滚已提交副作用（opt-in 装饰器） |
-| `recovery/dead-letter.ts` | 死信队列：`DeadLetterToolInvoker`（opt-in 装饰器，与 retry 组合使用）+ `retryDeadLetter()` 人工重放 |
+| `recovery/dead-letter.ts` | 死信装饰器 + `retryDeadLetter`；`DeadLetter*` / `deadLetterId` 类型在 `@agent/contracts` |
 
 ### C — 上下文层
 | 模块 | 一句话 |
@@ -67,7 +79,7 @@
 |------|--------|
 | `policy.ts` | 声明式护栏：tool allow-list + 成本预算 + PII 脱敏 + **token-bucket 限流**（按工具，进程内存、故意不事件源化） |
 | `policy/content-safety.ts` | 可插拔 safety provider：jailbreak 检测 + 有害内容检测 + 输出安全检查 |
-| `dead-letter-store.ts` | `FileDeadLetterQueue`：`@agent/harness` `DeadLetterQueue` 接口的磁盘持久化实现，接入 `runtime.ts` 的 `callTool` 漏斗 |
+| `dead-letter-store.ts` | `FileDeadLetterQueue`：`@agent/contracts` `DeadLetterQueue` 的磁盘实现，接入 `runtime.ts` 的 `callTool` 漏斗 |
 
 ### 模型 & 工具
 | 模块 | 一句话 |
@@ -110,7 +122,7 @@
 
 | 理念 | 说明 |
 |------|------|
-| **缝** | `@agent/contracts` 纯类型，harness 和 runtime 各不依赖对方；`MessageKind`（`goal` / `retrieval`）标识结构意图 |
+| **缝** | `@agent/contracts`：平台与 harness 的共享边界；runtime **平台**不依赖 harness；`src/app/` 适配器可依赖 harness。`MessageKind`（`goal` / `retrieval`）标识结构意图 |
 | **key 即契约** | `t{turn}` / `t{turn}:{callId}` → adapter 透传 → runtime idempotency cache → crash 后 replay 不重放 |
 | **状态全派生** | RunState 永远从事件日志 reduce 得出，不落盘；snapshot 是可选加速 |
 | **错误→observation** | 工具抛错/参数非法/loop 检测 → 结构化错误喂回模型 → 模型自愈 |

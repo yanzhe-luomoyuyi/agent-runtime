@@ -35,12 +35,12 @@ import {
   runAgent,
   type AgentConfig,
   type AgentRunResult,
-  type Approver,
   type RetrievalHit,
   type RunInterrupter,
   type SkillLoadMode,
   type SkillSpec,
 } from '@agent/harness';
+import type { Approver } from '@agent/contracts';
 
 import {
   collectSkillCorpora,

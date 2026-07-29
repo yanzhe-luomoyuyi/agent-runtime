@@ -1,52 +1,28 @@
 /**
  * D: human-in-the-loop approval.
  *
- * A seam the loop consults before running a tool.  Production deployments wire an
+ * A seam the loop consults before running a tool. Production deployments wire an
  * approver to a UI / chat prompt for destructive or side-effecting tools; tests
  * and headless runs use `autoApprove`.
  *
- * Improvements over the earlier version:
- *  - Approval with modifications: the human can edit tool arguments before
- *    approving (e.g. change "deploy prod" → "deploy staging").
- *  - Approval caching: `withApprovalCache` remembers recent approvals so the
- *    human isn't pestered for the same tool+args within a time window.
- *  - Audit trail: each decision records a timestamp so callers can log who
- *    approved what and when.
- *  - Pattern-based gating: `requireApprovalFor` supports glob-like patterns
- *    (e.g. `deploy*`, `write*`), not just exact tool-name matches.
+ * Shared types (`Approver`, `ApprovalStats`, …) live in `@agent/contracts` so
+ * durable-runtime eval scorers can type scenarios without importing harness.
+ * Implementations stay here.
  */
 
-// ── Types ───────────────────────────────────────────────────────────
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  ApprovalStats,
+  Approver,
+} from '@agent/contracts';
 
-export interface ApprovalRequest {
-  tool: string;
-  args: unknown;
-  callId: string;
-  /** The current turn number (1-based), for context-aware approvals. */
-  turn?: number;
-}
-
-export interface ApprovalDecision {
-  approved: boolean;
-  reason?: string;
-  /**
-   * When the human wants to approve but with modified arguments (e.g.
-   * "deploy, but to staging not prod").  The loop uses these instead of the
-   * original args when present.
-   */
-  modifiedArgs?: unknown;
-  /**
-   * How long (ms) this decision should be cached.  0 = this call only.
-   * Set by `withApprovalCache` automatically; raw approvers can set it too.
-   */
-  cacheMs?: number;
-  /** Unix-ms timestamp of this decision (audit trail). */
-  decidedAt?: number;
-}
-
-export interface Approver {
-  approve(req: ApprovalRequest): Promise<ApprovalDecision>;
-}
+export type {
+  ApprovalDecision,
+  ApprovalRequest,
+  ApprovalStats,
+  Approver,
+} from '@agent/contracts';
 
 // ── Built-in approvers ──────────────────────────────────────────────
 
@@ -96,16 +72,9 @@ interface CachedDecision {
 }
 
 /**
- * Wrap an approver with a time-based cache.  After the human approves a tool
+ * Wrap an approver with a time-based cache. After the human approves a tool
  * with specific args, subsequent identical calls within `defaultCacheMs` are
  * auto-approved without asking.
- *
- * The cache key is `tool + stableJSON(args)`, so "deploy({env:'prod'})" and
- * "deploy({env:'staging'})" are treated as different requests.
- *
- * @param delegate   The real (human) approver.
- * @param defaultCacheMs  Default cache duration (ms).  Can be overridden per-call
- *                        by the delegate returning `cacheMs` on the decision.
  */
 export function withApprovalCache(delegate: Approver, defaultCacheMs = 300_000): Approver {
   const cache = new Map<string, CachedDecision>();
@@ -147,40 +116,19 @@ function stableKey(value: unknown): string {
 
 // ── Metrics ─────────────────────────────────────────────────────────
 
-/** Running counts of decisions made through a `countingApprover`. */
-export interface ApprovalStats {
-  /** Total `approve()` calls made through the wrapped approver. */
-  requested: number;
-  /** Decisions where `approved` was true. */
-  approved: number;
-  /** Decisions where `approved` was false. */
-  denied: number;
-}
-
 /**
  * Wrap an approver to track how often it was actually consulted — the
- * "human intervention rate" metric: how many tool calls needed a real
- * approval decision, versus running unattended. Returns the wrapped approver
- * plus a live `stats` object the caller reads after the run (e.g. to fold into
- * an eval scorer).
+ * "human intervention rate" metric for eval scorers.
  *
  * Wrap the INNERMOST delegate — i.e. compose it UNDER `requireApprovalFor` /
- * `withApprovalCache` — so only calls that actually reach a human are counted,
- * not the auto-approved pass-through calls for non-sensitive tools:
- *
- * ```ts
- * const { approver: counted, stats } = countingApprover(humanApprover);
- * const gated = requireApprovalFor(['deploy*'], counted);
- * await runAgent({ ..., approver: gated });
- * // stats.requested / stats.approved / stats.denied after the run
- * ```
+ * `withApprovalCache` — so only calls that actually reach a human are counted.
  */
 export function countingApprover(delegate: Approver): { approver: Approver; stats: ApprovalStats } {
   const stats: ApprovalStats = { requested: 0, approved: 0, denied: 0 };
   return {
     stats,
     approver: {
-      approve: async (req) => {
+      approve: async (req: ApprovalRequest) => {
         stats.requested++;
         const decision = await delegate.approve(req);
         if (decision.approved) stats.approved++;

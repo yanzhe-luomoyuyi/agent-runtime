@@ -1,7 +1,7 @@
 # Agent monorepo
 
 一个探索 AI Agent **平台层**的小型 monorepo：一个可持久化的执行运行时、一个模型驱动的
-Agent harness，以及让两者在互不依赖的前提下协作的共享契约。
+Agent harness，以及让两者在**平台层互不依赖**的前提下协作的共享契约（app 适配器可同时认识两侧）。
 
 > 立意：一个生产级 Agent 的难点不在业务逻辑，而在它**运行的底座**。本仓库把
 > **Agent 的大脑**（模型驱动循环）和**执行底座**（持久化、恢复、幂等、可观测、策略）
@@ -11,9 +11,9 @@ Agent harness，以及让两者在互不依赖的前提下协作的共享契约�
 
 | Project | 是什么 | 依赖 |
 | --- | --- | --- |
-| [`agent-contracts`](agent-contracts) | **缝 (seam)。** 纯类型、零逻辑：messages、tool spec，以及两侧都遵循的 `ChatModel` / `ToolInvoker` 接口。 | — |
-| [`agent-harness`](agent-harness) | **Agent 的大脑。** 一个模型驱动循环：工具调用协议 + 参数校验 (A)、错误恢复 / 自愈 (B)、上下文与记忆管理 (C)，以及控制流——规划、反思、子 Agent、human-in-the-loop (D)。与运行时无关。 | `@agent/contracts` |
-| [`durable-agent-runtime`](durable-agent-runtime) | **执行底座。** 事件溯源、可恢复、幂等的多阶段执行，带可观测性、成本核算、声明式策略层，以及一个共享的 MCP base SDK。 | `@agent/contracts`、`@agent/harness` |
+| [`agent-contracts`](agent-contracts) | **缝 (seam)。** messages / tools / model，加上两侧共享的 DLQ、approval、corpus 绑定与 idempotency keys。 | — |
+| [`agent-harness`](agent-harness) | **Agent 的大脑。** 模型驱动循环 + recovery / context / control。与运行时平台无关。 | `@agent/contracts` |
+| [`durable-agent-runtime`](durable-agent-runtime) | **执行底座。** 事件溯源、可恢复、幂等；`src/` 平台层只依赖 contracts；`src/app/` 适配器可选依赖 harness。 | `@agent/contracts`（平台）；`@agent/harness`（仅 adapter） |
 | [`fabric-shell`](fabric-shell) | 启发整个研究的真实 Copilot-CLI Agent（MCP servers + skills + agent 配置）。 | —（独立工具） |
 
 `agent-harness` 与 `durable-agent-runtime` 各自有详细的 README
@@ -83,8 +83,7 @@ flowchart TB
   （[harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts)）在 runtime 的
   `StepContext` 上实现这两个契约，把 harness 每一步的 **`key`** 原样转发给
   `ctx.callModel` / `ctx.callTool`。
-- **依赖方向是关键**：`harness` 和 `runtime` 谁都不依赖对方，只各自依赖 `contracts`。这样
-  大脑保持「宿主无关」、底座保持「Agent 无关」，只有 adapter 这一个地方同时认识两边。
+- **依赖方向是关键**：`harness` 与 runtime **平台**（`src/` 除 `app/`）谁都不依赖对方，只各自依赖 `contracts`。runtime 的 **app 适配器**（`harness-adapter.ts`）是唯一同时认识两侧的地方——在那里把 `runAgent` 挂成 durable step。
 
 runtime 也能完全独立运行——支持两种执行模式：固定工作流（默认）、以及托管 harness 循环（`HARNESS=1`）。harness 是完全可选的。
 
@@ -120,13 +119,17 @@ sequenceDiagram
 
 ## 每个 project 的功能模块
 
-### 🔌 agent-contracts — 缝（纯类型）
+### 🔌 agent-contracts — 缝（共享类型 + 纯 helper）
 
 | 模块 | 职责 |
 | --- | --- |
 | [messages.ts](agent-contracts/src/messages.ts) | 工具调用对话记录：`Message` / `ToolCall` / `Role` / `MessageKind`（`goal` · `retrieval`），构造函数 `systemMessage` / `userMessage` / `goalMessage` / `assistantMessage` / `toolResultMessage`，以及 `untrusted` 标记（防注入的关键设计）。 |
 | [tools.ts](agent-contracts/src/tools.ts) | `JSONSchema` 子集 · `ToolSpec` · `ToolInvoker`（`list` / `call`）· 带 `key` 的 `CallOptions`。 |
 | [model.ts](agent-contracts/src/model.ts) | `ChatModel`（`chat`）· `ChatRequest` / `ChatResponse` · `Usage` · `StopReason`。 |
+| [keys.ts](agent-contracts/src/keys.ts) | 幂等 key 词汇表：`keyScope` / `joinKey` / runtime callId helpers。 |
+| [dead-letter.ts](agent-contracts/src/dead-letter.ts) | `DeadLetter` / `DeadLetterQueue` / `InMemoryDeadLetterQueue` / `deadLetterId`。 |
+| [approval.ts](agent-contracts/src/approval.ts) | 工具级 HITL 类型：`Approver` / `ApprovalStats`（实现仍在 harness）。 |
+| [corpus.ts](agent-contracts/src/corpus.ts) | `CorpusScoped` — playbook/host 绑定文档库的最小形状。 |
 
 ### 🧠 agent-harness — Agent 的大脑（A / B / C / D 四层）
 
@@ -175,7 +178,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 | [pricing.ts](durable-agent-runtime/src/pricing.ts) | 配置驱动（`agent.config.json`）的 token 定价，供成本核算使用。 |
 | [tools/registry.ts](durable-agent-runtime/src/tools/registry.ts) | 遵循 MCP 规范的 `ToolDef` / `ToolRegistry`——本地工具和远程 MCP 工具在 runtime 眼里一模一样。 |
 | [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏 · 按工具 token-bucket 限流）；拒绝操作记录为 `PolicyDenied` 事件，可观测、可 eval。限流状态故意不事件源化（进程内存，重启重置）。 |
-| [dead-letter-store.ts](durable-agent-runtime/src/dead-letter-store.ts) | `FileDeadLetterQueue`：实现 `@agent/harness` 的 `DeadLetterQueue` 接口，工具调用最终失败时内容寻址记录，供人工复盘/`retryDeadLetter()` 重放。 |
+| [dead-letter-store.ts](durable-agent-runtime/src/dead-letter-store.ts) | `FileDeadLetterQueue`：实现 `@agent/contracts` 的 `DeadLetterQueue` 接口，工具调用最终失败时内容寻址记录，供人工复盘/`retryDeadLetter()` 重放。 |
 | [mcp/](durable-agent-runtime/src/mcp/) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
 | [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
 | [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |
@@ -307,8 +310,8 @@ agent/                        # workspace 根（本仓库）
 
 ## 设计说明
 
-- **为什么单独抽一个 contracts 包？** 让两个核心谁都不依赖对方。harness 保持宿主无关、
-  runtime 保持 Agent 无关，只有连接器（adapter）同时认识两边。
+- **为什么单独抽一个 contracts 包？** 让 harness 与 runtime **平台**互不依赖。harness 保持宿主无关、
+  runtime 平台保持 Agent 无关；只有 `src/app/harness-adapter` 同时认识两边。
 - **为什么整个循环是一个 durable step？** 粗但简单：每步的幂等 key（`t<turn>` /
   `t<turn>:<callId>`）让每次模型/工具调用可重放，所以这单个 step 能确定性地恢复。更细
   粒度的 checkpoint 是可能的演进方向。
