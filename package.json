@@ -2,17 +2,18 @@
   "name": "agent-workspace",
   "version": "0.1.0",
   "private": true,
-  "description": "Monorepo: @agent/contracts (seam), @agent/harness (agent loop), durable-agent-runtime (durable host).",
+  "description": "Monorepo: @agent/contracts (seam), @agent/harness (agent loop), durable-agent-runtime (durable host), @agent/coding-agent (sandbox coding workload).",
   "workspaces": [
     "agent-contracts",
     "agent-harness",
-    "durable-agent-runtime"
+    "durable-agent-runtime",
+    "coding-agent"
   ],
   "scripts": {
-    "build": "npm run build -w @agent/contracts && npm run build -w @agent/harness && npm run build -w durable-agent-runtime",
+    "build": "npm run build -w @agent/contracts && npm run build -w @agent/harness && npm run build -w durable-agent-runtime && npm run build -w @agent/coding-agent",
     "build:contracts": "npm run build -w @agent/contracts",
-    "typecheck": "npm run build -w @agent/contracts && npm run typecheck -w @agent/harness && npm run typecheck -w durable-agent-runtime",
-    "test": "npm run build -w @agent/contracts && npm run test -w @agent/harness && npm run test -w durable-agent-runtime"
+    "typecheck": "npm run build -w @agent/contracts && npm run typecheck -w @agent/harness && npm run typecheck -w durable-agent-runtime && npm run typecheck -w @agent/coding-agent",
+    "test": "npm run build -w @agent/contracts && npm run test -w @agent/harness && npm run test -w durable-agent-runtime && npm run test -w @agent/coding-agent"
   },
   "engines": {
     "node": ">=20"

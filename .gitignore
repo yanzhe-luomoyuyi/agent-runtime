@@ -4,8 +4,9 @@ node_modules/
 # Build output
 dist/
 
-# Runtime artifacts (durable-agent-runtime)
+# Runtime artifacts (durable-agent-runtime / coding-agent)
 .agent-runs/
+.coding-agent-runs/
 .agent-cache.json
 *.log
 

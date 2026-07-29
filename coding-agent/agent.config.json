@@ -1,0 +1,10 @@
+{
+  "pricing": {
+    "promptUsdPerToken": 0.00000014,
+    "completionUsdPerToken": 0.00000028
+  },
+  "policy": {
+    "allowedTools": ["list_dir", "grep", "read_file", "write_file", "run_tests"],
+    "maxCostUsd": 1.0
+  }
+}

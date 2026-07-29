@@ -33,3 +33,23 @@
 ## 3. Planner：plan 生成后的 Human Review — done
 
 **已实现：** `PlanReviewer`（`approve` / `edit` / `reject`+可选 remake）；`runPlannedAgent({ planReviewer, reviewReplans })` 在首次 plan 与 replan 后过闸门。
+
+---
+
+## 4. 统一配置面（default system prompt 等不要散落）
+
+**现状：** 默认 system / agent instructions、skill 路径、workspace 默认值、模型 baseURL/model、policy allow-list、compaction 预算等散落在代码常量、`agent.config.json`、环境变量与工厂函数参数里（例如 `coding-agent` 的 `runtime-factory.ts`、harness adapter 默认 instructions、各包自己的 config）。
+
+**目标：** 把「可调行为」收敛到**一份（或按包一份、同构 schema 的）统一配置文件**，代码只读配置；避免改默认人设/工具白名单时满仓库搜字符串。
+
+**建议覆盖（至少）：**
+
+| 类别 | 示例 |
+| --- | --- |
+| Agent 人设 | default system / instructions、skill 路径与 loadMode |
+| 模型 | provider、baseURL、model、key 环境变量名 |
+| 工作区 / 工具 | default workspace、allowedTools、read/write 上限、run_tests 白名单 |
+| 运行控制 | maxTurns、compaction 预算、HITL 开关、runs 目录 |
+| 策略 / 计价 | maxCostUsd、pricing、redactions |
+
+**落地注意：** 配置是数据、策略仍走现有 `Policy` / factory 注入；先从 `@agent/coding-agent` 收拢，再考虑 runtime demo 是否共用同一加载器。
