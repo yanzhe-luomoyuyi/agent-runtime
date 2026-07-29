@@ -4,11 +4,12 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { cannedResponses } from '../src/app/demo-fixtures.js';
 import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { CachingModelProvider, InMemoryResponseCache } from '../src/model/caching.js';
 import { MockModelProvider, type ModelProvider, type ModelResult } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
-import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
+import { makeTools } from './helpers/demo.js';
 
 /** Counts how many calls actually reach the underlying model (i.e. cache misses). */
 class CountingModel implements ModelProvider {
@@ -21,21 +22,6 @@ class CountingModel implements ModelProvider {
   }
 }
 
-function makeTools(): ToolRegistry {
-  const getIssue: ToolDef<{ issue: string }> = {
-    name: 'getIssue',
-    description: '',
-    inputSchema: {},
-    run: (a) => ({ title: a.issue.slice(0, 40), body: a.issue, labels: ['bug'] }),
-  };
-  const searchCode: ToolDef = {
-    name: 'searchCode',
-    description: '',
-    inputSchema: {},
-    run: () => ({ files: ['src/auth/login.ts'] }),
-  };
-  return new ToolRegistry().register(getIssue).register(searchCode);
-}
 
 describe('CachingModelProvider', () => {
   it('serves identical prompts from cache; distinct prompts miss', async () => {
@@ -58,7 +44,7 @@ describe('CachingModelProvider', () => {
   it('a second run with the same issue serves its model calls from the cache', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-cache-'));
     const inner = new CountingModel(
-      new MockModelProvider({ 'analyze.summary': 'summary', 'propose.fix': 'Guard the null session' }),
+      new MockModelProvider(cannedResponses()),
     );
     const model = new CachingModelProvider(inner); // shared across both runs
 

@@ -5,40 +5,8 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { issueWorkflow } from '../src/app/issue-workflow.js';
-import { MockModelProvider } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
-import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
-
-function makeModel(): MockModelProvider {
-  return new MockModelProvider({
-    'analyze.summary': 'Crash on login due to a null session. Keywords: login, auth, session, null.',
-    'propose.fix': 'Guard the null session in src/auth/login.ts before reading user.token.',
-  });
-}
-
-/** Tools that count how many times they actually execute — used to prove idempotency. */
-function makeCountingTools(): { tools: ToolRegistry; calls: Record<string, number> } {
-  const calls = { getIssue: 0, searchCode: 0 };
-  const getIssue: ToolDef<{ issue: string }> = {
-    name: 'getIssue',
-    description: '',
-    inputSchema: {},
-    run: (args) => {
-      calls.getIssue++;
-      return { title: args.issue.slice(0, 40), body: args.issue, labels: ['bug'] };
-    },
-  };
-  const searchCode: ToolDef = {
-    name: 'searchCode',
-    description: '',
-    inputSchema: {},
-    run: () => {
-      calls.searchCode++;
-      return { files: ['src/auth/login.ts', 'src/auth/session.ts'] };
-    },
-  };
-  return { tools: new ToolRegistry().register(getIssue).register(searchCode), calls };
-}
+import { LOGIN_ISSUE, makeCountingTools, makeModel } from './helpers/demo.js';
 
 describe('durable agent runtime', () => {
   let dir: string;
@@ -50,7 +18,7 @@ describe('durable agent runtime', () => {
     const { tools, calls } = makeCountingTools();
     const runtime = new Runtime({ baseDir: dir, model: makeModel(), tools, workflow: issueWorkflow });
 
-    const state = await runtime.run('Login page crashes with a null session');
+    const state = await runtime.run(LOGIN_ISSUE);
 
     expect(state.status).toBe('completed');
     expect((state.summary as { proposal: string }).proposal).toContain('Guard');
@@ -61,7 +29,7 @@ describe('durable agent runtime', () => {
     const { tools } = makeCountingTools();
     const runtime = new Runtime({ baseDir: dir, model: makeModel(), tools, workflow: issueWorkflow });
 
-    const state = await runtime.run('Login page crashes with a null session');
+    const state = await runtime.run(LOGIN_ISSUE);
 
     // The state the incremental driver returns must equal a full replay of the log.
     expect(state).toEqual(runtime.status(state.runId));
@@ -72,7 +40,7 @@ describe('durable agent runtime', () => {
 
     // First attempt crashes right after locate.1 — searchCode has already run.
     const crashing = new Runtime({ baseDir: dir, model: makeModel(), tools, workflow: issueWorkflow, crashAfter: 'locate.1' });
-    await expect(crashing.run('Login page crashes with a null session')).rejects.toThrow('__CRASH__');
+    await expect(crashing.run(LOGIN_ISSUE)).rejects.toThrow('__CRASH__');
     expect(calls).toEqual({ getIssue: 1, searchCode: 1 });
 
     const runId = readdirSync(dir)[0]!;
@@ -90,11 +58,11 @@ describe('durable agent runtime', () => {
 
   it('is deterministic: a resumed run yields the same final state as a clean run', async () => {
     const clean = new Runtime({ baseDir: mkdtempSync(join(tmpdir(), 'agent-clean-')), model: makeModel(), tools: makeCountingTools().tools, workflow: issueWorkflow });
-    const cleanState = await clean.run('Login page crashes with a null session');
+    const cleanState = await clean.run(LOGIN_ISSUE);
 
     const crashDir = mkdtempSync(join(tmpdir(), 'agent-crash-'));
     const crashing = new Runtime({ baseDir: crashDir, model: makeModel(), tools: makeCountingTools().tools, workflow: issueWorkflow, crashAfter: 'analyze.2' });
-    await expect(crashing.run('Login page crashes with a null session')).rejects.toThrow('__CRASH__');
+    await expect(crashing.run(LOGIN_ISSUE)).rejects.toThrow('__CRASH__');
     const runId = readdirSync(crashDir)[0]!;
     const resumed = new Runtime({ baseDir: crashDir, model: makeModel(), tools: makeCountingTools().tools, workflow: issueWorkflow });
     const resumedState = await resumed.resume(runId);

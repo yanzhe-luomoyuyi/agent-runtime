@@ -93,7 +93,6 @@
 | `memory/embedding.ts` | async-first `EmbeddingProvider`（可选 `embedMany`）+ 默认 `HashingEmbeddingProvider` + `CachingEmbeddingProvider` + `createHttpEmbeddingProvider` + RRF |
 | `retrieval/` | 文档 RAG：`InMemoryDocumentStore` / `FileDocumentStore`；`RetrievalPolicy`（`once` / `once_rewrite` / `capped_agentic`）；`resolveRunCorpusId` / `collectSkillCorpora`；`systemRetrieveOnce` |
 | `app/document-tools.ts` | `document_search` / `document_read`（default + allow-list corpus；走 durable seam） |
-| `app/harness-adapter.ts` | harness↔runtime；retrieve 预算；`once_rewrite` keyed 改写；skill corpus 解析；`approver` / `interrupter`（steer·abort → `HumanIntervention`） |
 | harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策 / token 估价（非 event-log） |
 | `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟/replay/policy/cache 汇总 |
 | `otel.ts` | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出 |
@@ -102,7 +101,8 @@
 ### 桥接
 | 模块 | 一句话 |
 |------|--------|
-| `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；`createHarnessWorkflow({ agent, approver, interrupter, … })` |
+| `app/harness-adapter.ts` | 在 StepContext 上实现 ChatModel+ToolInvoker，透传 key；retrieve 预算 / `once_rewrite` / skill corpus；`createHarnessWorkflow({ agent, approver, interrupter, … })` |
+| `app/demo-fixtures.ts` · `app/demo-runtime.ts` | 共享 demo 答案与 Runtime 工厂（CLI run/eval + 测试同一接线） |
 
 ---
 

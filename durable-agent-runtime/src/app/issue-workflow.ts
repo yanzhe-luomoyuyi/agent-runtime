@@ -19,7 +19,6 @@ export const issueWorkflow: WorkflowDef = {
   phases: [
     {
       name: 'analyze',
-      skippable: false,
       steps: [
         {
           id: 'analyze.1',
@@ -41,7 +40,6 @@ export const issueWorkflow: WorkflowDef = {
     },
     {
       name: 'locate',
-      skippable: false,
       steps: [
         {
           id: 'locate.1',
@@ -58,7 +56,6 @@ export const issueWorkflow: WorkflowDef = {
     },
     {
       name: 'propose',
-      skippable: false,
       steps: [
         {
           id: 'propose.1',

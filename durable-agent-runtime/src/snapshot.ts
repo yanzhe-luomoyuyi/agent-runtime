@@ -83,8 +83,3 @@ export function readSnapshot(runDir: string, logVersion: number): Snapshot | und
     return undefined;
   }
 }
-
-/** Remove the snapshot file (e.g. when it's invalidated by a new phase). */
-export function deleteSnapshot(runDir: string): void {
-  try { unlinkSync(join(runDir, FILE)); } catch { /* ok if missing */ }
-}

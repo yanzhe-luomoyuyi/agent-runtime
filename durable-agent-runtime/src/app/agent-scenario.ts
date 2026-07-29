@@ -1,18 +1,12 @@
 /**
- * Deterministic mock "agent brain" — plays the role a real tool-calling LLM would
- * in the harness loop. It reads the prompt the harness builds (goal + tools +
- * transcript) and returns the next decision as JSON, so runs are offline,
- * reproducible, and give stable tests. A real deployment swaps this for a live
- * LLM implementing the same `ModelProvider.complete()` contract — the harness
- * and runtime are unchanged.
- *
- * Part of the demo *workload*, not the runtime. Its policy for the issue-fix demo:
- *   getIssue  ->  searchCode  ->  finish
- * decided purely from which tools already appear in the transcript, so it is
- * independent of the turn budget and robust across resume.
+ * Deterministic mock "agent brain" for the harness loop. Reads the harness
+ * prompt (goal + tools + transcript) and returns JSON tool/finish decisions so
+ * runs stay offline and reproducible. Final answers come from shared fixtures.
  */
 
 import { estimateTokens, type ModelProvider, type ModelResult } from '../model/provider.js';
+
+import { proposeForGoal } from './demo-fixtures.js';
 
 export class MockAgentModel implements ModelProvider {
   readonly name = 'mock-agent';
@@ -36,16 +30,6 @@ export class MockAgentModel implements ModelProvider {
     if (!called.has('searchCode')) {
       return { action: 'call_tool', tool: 'searchCode', args: { query: goal } };
     }
-    return { action: 'finish', answer: finalAnswer(goal) };
+    return { action: 'finish', answer: proposeForGoal(goal) };
   }
-}
-
-function finalAnswer(goal: string): string {
-  if (/null|session|login|auth/i.test(goal)) {
-    return 'Guard against a null session in src/auth/login.ts before reading user.token.';
-  }
-  if (/render|button|ui|component/i.test(goal)) {
-    return 'Fix the conditional render in src/ui/Button.tsx so the component mounts.';
-  }
-  return `Investigated and addressed: ${goal}`;
 }

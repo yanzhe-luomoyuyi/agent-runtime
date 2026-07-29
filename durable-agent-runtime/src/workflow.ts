@@ -52,7 +52,6 @@ export interface StepDef {
 
 export interface PhaseDef {
   name: string;
-  skippable: boolean;
   steps: StepDef[];
 }
 

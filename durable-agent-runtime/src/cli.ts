@@ -28,157 +28,85 @@
 import { existsSync, readFileSync } from 'node:fs';
 import * as readline from 'node:readline';
 
-import { MockAgentModel } from './app/agent-scenario.js';
-import { createHarnessWorkflow, extractHarnessMessages } from './app/harness-adapter.js';
-import { issueWorkflow } from './app/issue-workflow.js';
-import { demoMcpServers } from './app/mcp-servers.js';
-import { cannedResponses } from './app/responses.js';
+import { createDemoRuntime, toolSourceFromEnv } from './app/demo-runtime.js';
+import { extractHarnessMessages } from './app/harness-adapter.js';
 import { demoScenarios } from './app/scenarios.js';
-import { getIssue, searchCode } from './app/tools.js';
 import { renderReport, runEval, type Scenario } from './eval.js';
-import { registerMcpServer } from './mcp/adapter.js';
-import { McpClient } from './mcp/client.js';
-import { InMemoryTransport } from './mcp/transport.js';
-import { TokenCache } from './mcp/token-cache.js';
-import { CachingModelProvider, FileResponseCache } from './model/caching.js';
-import { MockModelProvider } from './model/provider.js';
 import { type Policy, type RateLimitRule, resolveRedactions } from './policy.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import { Runtime } from './runtime.js';
 import { SessionManager, createConversationSummarizer, type HistoryMode, type SessionManagerOptions } from './session.js';
-import { ToolRegistry } from './tools/registry.js';
 import { renderTimeline } from './trace.js';
 import { exportTrace, initOtel, shutdownOtel } from './otel.js';
 import type { AgentEvent, RunState } from './types.js';
 
 const BASE_DIR = process.env.AGENT_RUNS_DIR ?? '.agent-runs';
 
-/** Load token pricing from agent.config.json (or $AGENT_CONFIG), falling back to defaults. */
-function loadPricing(): ModelPricing {
-  const path = process.env.AGENT_CONFIG ?? 'agent.config.json';
-  if (existsSync(path)) {
-    try {
-      const cfg = JSON.parse(readFileSync(path, 'utf8')) as { pricing?: Partial<ModelPricing> };
-      return { ...DEFAULT_PRICING, ...cfg.pricing };
-    } catch {
-      // malformed config — fall back to defaults
-    }
-  }
-  return DEFAULT_PRICING;
+interface AgentConfigFile {
+  pricing?: Partial<ModelPricing>;
+  policy?: {
+    allowedTools?: string[];
+    maxCostUsd?: number;
+    redactions?: string[];
+    rateLimits?: Record<string, RateLimitRule>;
+  };
 }
 
-/** Load declarative guardrails from agent.config.json (or $AGENT_CONFIG). */
-function loadPolicy(): Policy | undefined {
+function loadConfig(): AgentConfigFile {
   const path = process.env.AGENT_CONFIG ?? 'agent.config.json';
-  if (!existsSync(path)) return undefined;
+  if (!existsSync(path)) return {};
   try {
-    const cfg = JSON.parse(readFileSync(path, 'utf8')) as {
-      policy?: { allowedTools?: string[]; maxCostUsd?: number; redactions?: string[]; rateLimits?: Record<string, RateLimitRule> };
-    };
-    if (!cfg.policy) return undefined;
-    return {
-      allowedTools: cfg.policy.allowedTools,
-      maxCostUsd: cfg.policy.maxCostUsd,
-      redactions: cfg.policy.redactions ? resolveRedactions(cfg.policy.redactions) : undefined,
-      rateLimits: cfg.policy.rateLimits,
-    };
+    return JSON.parse(readFileSync(path, 'utf8')) as AgentConfigFile;
   } catch {
-    return undefined; // malformed config — run without a policy rather than crash
+    return {}; // malformed config — fall back rather than crash
   }
 }
 
-/**
- * Build the tool registry. Local by default; set AGENT_MCP=1 to source the SAME
- * demo tools through the shared MCP base SDK — one JSON-RPC client per server, all
- * sharing a single token cache — proving the runtime can't tell local from remote.
- */
-async function buildTools(): Promise<ToolRegistry> {
-  const registry = new ToolRegistry();
-  if (process.env.AGENT_MCP !== '1') {
-    return registry.register(getIssue).register(searchCode);
-  }
-  const servers = demoMcpServers();
-  const tokenCache = new TokenCache(() => ({ token: 'demo-token', expiresAtMs: Date.now() + 3_600_000 }));
-  for (const server of servers) {
-    const client = new McpClient({ serverName: server.name, transport: new InMemoryTransport(server.handle), tokenCache });
-    await registerMcpServer(registry, client);
-  }
-  process.stderr.write(`\u25b6 tools via MCP base SDK \u2014 ${servers.length} servers sharing ${tokenCache.fetches} auth fetch\n`);
-  return registry;
+function loadPricing(): ModelPricing {
+  return { ...DEFAULT_PRICING, ...loadConfig().pricing };
+}
+
+function loadPolicy(): Policy | undefined {
+  const raw = loadConfig().policy;
+  if (!raw) return undefined;
+  return {
+    allowedTools: raw.allowedTools,
+    maxCostUsd: raw.maxCostUsd,
+    redactions: raw.redactions ? resolveRedactions(raw.redactions) : undefined,
+    rateLimits: raw.rateLimits,
+  };
 }
 
 /**
- * Evals build a fresh, un-cached model so a stale response cache can't mask a
- * regression, and they exercise the SAME shared MCP base SDK + declarative policy
- * the CLI uses — so a broken tool path or mis-set guardrail is caught in CI. A
- * scenario may override the policy (e.g. to assert a budget guardrail fires).
- *
- * A scenario with `harness: true` is driven through the @agent/harness loop
- * (not the fixed workflow), optionally with an `approver` wired in, so
- * human-in-the-loop scorers (`humanInterventionsUnder` / `humanInterventionRequested`)
- * and the turn-count scorer (`turnsUnder`) have something to read.
+ * Evals use the same factory as `run` (same tool source / workflow modes) but
+ * skip the response cache so a stale hit can't mask a regression. Scenarios may
+ * override policy or select the harness loop (`harness: true`).
  */
-async function buildEvalRuntime(baseDir: string, scenario: Scenario): Promise<Runtime> {
-  const tools = new ToolRegistry();
-  const tokenCache = new TokenCache(() => ({ token: 'demo-token', expiresAtMs: Date.now() + 3_600_000 }));
-  for (const server of demoMcpServers()) {
-    await registerMcpServer(tools, new McpClient({ serverName: server.name, transport: new InMemoryTransport(server.handle), tokenCache }));
-  }
-  if (scenario.harness) {
-    return new Runtime({
-      baseDir,
-      model: new MockAgentModel(),
-      tools,
-      workflow: createHarnessWorkflow({ approver: scenario.approver }),
-      pricing: loadPricing(),
-      policy: scenario.policy ?? loadPolicy(),
-    });
-  }
-  return new Runtime({
+function buildEvalRuntime(baseDir: string, scenario: Scenario): Promise<Runtime> {
+  return createDemoRuntime({
     baseDir,
-    model: new MockModelProvider(cannedResponses()),
-    tools,
-    workflow: issueWorkflow,
+    harness: Boolean(scenario.harness || scenario.approver),
+    toolSource: toolSourceFromEnv(),
+    quiet: true,
     pricing: loadPricing(),
     policy: scenario.policy ?? loadPolicy(),
+    approver: scenario.approver,
   });
 }
 
 async function makeRuntime(baseDir: string = BASE_DIR): Promise<Runtime> {
-  const tools = await buildTools();
-
-  // HARNESS=1 runs the standalone @agent/harness loop over the runtime seam: the
-  // model drives, and the adapter forwards each turn's key to ctx.callModel/callTool
-  // so the whole loop is durable, resumable, and idempotent. HARNESS_CRASH_TURN=<n>
-  // injects a mid-loop crash to demo resume. (Set the same env on `resume`.)
-  if (process.env.HARNESS === '1') {
-    return new Runtime({
-      baseDir,
-      model: new MockAgentModel(),
-      tools,
-      workflow: createHarnessWorkflow({
-        maxTurns: numFromEnv('AGENT_MAX_TURNS'),
-        crashAfterTurn: numFromEnv('HARNESS_CRASH_TURN'),
-      }),
-      pricing: loadPricing(),
-      policy: loadPolicy(),
-      onEvent: agentOnEvent,
-    });
-  }
-
-  const model = new CachingModelProvider(
-    new MockModelProvider(cannedResponses()),
-    new FileResponseCache(process.env.AGENT_CACHE ?? '.agent-cache.json'),
-  );
-  return new Runtime({
+  const harness = process.env.HARNESS === '1';
+  return createDemoRuntime({
     baseDir,
-    model,
-    tools,
-    workflow: issueWorkflow,
+    harness,
+    toolSource: toolSourceFromEnv(),
+    cache: !harness,
     pricing: loadPricing(),
     policy: loadPolicy(),
+    maxTurns: numFromEnv('AGENT_MAX_TURNS'),
+    crashAfterTurn: numFromEnv('HARNESS_CRASH_TURN'),
     crashAfter: process.env.CRASH_AFTER,
-    onEvent: workflowOnEvent,
+    onEvent: (event) => progressOnEvent(event, harness),
   });
 }
 
@@ -187,22 +115,25 @@ function numFromEnv(name: string): number | undefined {
   return v ? Number(v) : undefined;
 }
 
-/** Progress logging for the fixed demo workflow. */
-function workflowOnEvent(event: AgentEvent): void {
-  if (event.type === 'RunStarted') process.stderr.write(`\u25b6 run ${event.runId}\n`);
-  else if (event.type === 'ToolCallSucceeded') process.stderr.write(`  \u00b7 tool ${event.tool} \u2192 ok\n`);
-  else if (event.type === 'PolicyDenied') process.stderr.write(`  \u2716 policy denied ${event.scope} "${event.target}" (${event.code})\n`);
-  else if (event.type === 'StepCompleted') process.stderr.write(`  \u2713 ${event.stepId}\n`);
-  else if (event.type === 'PhaseCompleted') process.stderr.write(`\u2713 phase ${event.phase}\n`);
-}
-
-/** Progress logging for the model-driven agent harness (one line per turn). */
-function agentOnEvent(event: AgentEvent): void {
-  if (event.type === 'RunStarted') process.stderr.write(`\u25b6 agent run ${event.runId}\n`);
-  else if (event.type === 'ModelCalled') process.stderr.write(`  \u00b7 ${event.callId.split(':')[1] ?? 'turn'} \u2192 model decides (${event.promptTokens}+${event.completionTokens} tok)\n`);
-  else if (event.type === 'ToolCallSucceeded') process.stderr.write(`  \u00b7 tool ${event.tool} \u2192 ok\n`);
-  else if (event.type === 'PolicyDenied') process.stderr.write(`  \u2716 policy denied ${event.scope} "${event.target}" (${event.code})\n`);
-  else if (event.type === 'RunCompleted') process.stderr.write(`\u2713 agent finished\n`);
+/** Progress logging for both fixed-workflow and harness runs. */
+function progressOnEvent(event: AgentEvent, harness: boolean): void {
+  if (event.type === 'RunStarted') {
+    process.stderr.write(`\u25b6 ${harness ? 'agent ' : ''}run ${event.runId}\n`);
+  } else if (harness && event.type === 'ModelCalled') {
+    process.stderr.write(
+      `  \u00b7 ${event.callId.split(':')[1] ?? 'turn'} \u2192 model decides (${event.promptTokens}+${event.completionTokens} tok)\n`,
+    );
+  } else if (event.type === 'ToolCallSucceeded') {
+    process.stderr.write(`  \u00b7 tool ${event.tool} \u2192 ok\n`);
+  } else if (event.type === 'PolicyDenied') {
+    process.stderr.write(`  \u2716 policy denied ${event.scope} "${event.target}" (${event.code})\n`);
+  } else if (!harness && event.type === 'StepCompleted') {
+    process.stderr.write(`  \u2713 ${event.stepId}\n`);
+  } else if (!harness && event.type === 'PhaseCompleted') {
+    process.stderr.write(`\u2713 phase ${event.phase}\n`);
+  } else if (harness && event.type === 'RunCompleted') {
+    process.stderr.write(`\u2713 agent finished\n`);
+  }
 }
 
 // ── Chat (multi-turn session) ───────────────────────────────────────

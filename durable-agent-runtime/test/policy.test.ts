@@ -8,30 +8,8 @@ import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { MockModelProvider, type ModelProvider, type ModelResult } from '../src/model/provider.js';
 import { BUILTIN_REDACTIONS, PolicyEnforcer, PolicyViolationError } from '../src/policy.js';
 import { Runtime } from '../src/runtime.js';
-import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
+import { makeModel, makeTools } from './helpers/demo.js';
 
-function makeModel(): MockModelProvider {
-  return new MockModelProvider({
-    'analyze.summary': 'Crash on login due to a null session.',
-    'propose.fix': 'Guard the null session in src/auth/login.ts before reading user.token.',
-  });
-}
-
-function makeTools(): ToolRegistry {
-  const getIssue: ToolDef<{ issue: string }> = {
-    name: 'getIssue',
-    description: '',
-    inputSchema: {},
-    run: (a) => ({ title: a.issue.slice(0, 40), body: a.issue, labels: ['bug'] }),
-  };
-  const searchCode: ToolDef = {
-    name: 'searchCode',
-    description: '',
-    inputSchema: {},
-    run: () => ({ files: ['src/auth/login.ts'] }),
-  };
-  return new ToolRegistry().register(getIssue).register(searchCode);
-}
 
 describe('PolicyEnforcer (unit)', () => {
   it('allows tools on the allow-list and rejects the rest', () => {

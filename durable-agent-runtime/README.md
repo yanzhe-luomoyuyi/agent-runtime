@@ -96,11 +96,12 @@ flowchart LR
 ### Demo 工作负载 — Agent (`src/app/`)
 
 - **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。`createHarnessWorkflow({ agent?, approver?, interrupter?, … })` 把 `runAgent` 封装为单个 durable step；传入 `interrupter` 时，steer/abort 会经 `recordingInterrupter` 写成 `HumanIntervention` 事件。启用方式：`HARNESS=1`。
+- **Demo 工厂** ([src/app/demo-fixtures.ts](src/app/demo-fixtures.ts) · [src/app/demo-runtime.ts](src/app/demo-runtime.ts)) — 共享 canned 答案 / 工具注册，以及 CLI `run`/`eval` 共用的 `createDemoRuntime`。
 - **工作流** ([src/app/issue-workflow.ts](src/app/issue-workflow.ts)) — `issue → fix` Agent，声明为 `analyze → locate → propose` 三个阶段。
 - **工具** ([src/app/tools.ts](src/app/tools.ts)) — 确定性的 mock 工具 `getIssue` / `searchCode`。设置 `AGENT_MCP=1` 可通过 MCP base SDK 提供同一批工具——运行时完全无法区分。
-- **模型响应** ([src/app/responses.ts](src/app/responses.ts)) — 为 mock 模型预设的确定性输出。`AGENT_REGRESS=1` 会故意降级输出质量，用于验证 eval 框架能否捕获回归。
+- **模型响应** ([src/app/responses.ts](src/app/responses.ts)) — 固定工作流 canned 输出的薄 re-export（实现见 `demo-fixtures`）。`AGENT_REGRESS=1` 会故意降级输出质量，用于验证 eval 框架能否捕获回归。
 - **Eval 场景** ([src/app/scenarios.ts](src/app/scenarios.ts)) — demo 的测试场景 + 预期结果，供 eval 框架打分。
-- **Agent 场景模型** ([src/app/agent-scenario.ts](src/app/agent-scenario.ts)) — harness 循环的确定性 mock 模型大脑：`getIssue` → `searchCode` → `finish`。
+- **Agent 场景模型** ([src/app/agent-scenario.ts](src/app/agent-scenario.ts)) — harness 循环的确定性 mock 模型大脑：`getIssue` → `searchCode` → `finish`（最终答案来自共享 fixtures）。
 - **记忆工具** ([src/app/memory-tools.ts](src/app/memory-tools.ts)) — 把 `MemoryStore` 包成 `memory_write/search/read` 并绑定 scope；`registerMemoryTools()` 把它们注册进 `ToolRegistry`，从而读写走得 durable seam、完全可重放。
 - **文档检索工具** ([src/app/document-tools.ts](src/app/document-tools.ts)) — `document_search` / `document_read`；绑定 `defaultCorpusId` + 可选 `allowedCorpora`（模型只能在白名单里选 corpus）。与 `createHarnessWorkflow({ retrieval })` 配合：`once` / `once_rewrite` 隐藏工具；`capped_agentic` 可见并由 `RuntimeToolInvoker` 强制 `maxRetrieves`。
 
@@ -191,8 +192,8 @@ model span 带 `gen_ai.usage.*` token 计数和 `agent.cost_usd`，根 span 带�
 ### Demo：恢复损坏的 run
 
 ```bash
-# 如果乐观并发冲突导致 run 卡住，recover 会修复
-npm run dev -- recover <run-id>
+# recover 扫描 AGENT_RUNS_DIR，把所有中断的 run 推到完成（无 run-id 参数）
+npm run dev -- recover
 ```
 
 ### Demo：多轮对话 + 历史摘要

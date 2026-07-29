@@ -6,33 +6,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { ConflictError, EventLog, runDir } from '../src/eventlog.js';
-import { MockModelProvider } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
-import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
 import type { AgentEvent } from '../src/types.js';
+import { makeModel, makeTools } from './helpers/demo.js';
 
-function makeModel(): MockModelProvider {
-  return new MockModelProvider({
-    'analyze.summary': 'Crash on login due to a null session.',
-    'propose.fix': 'Guard the null session in src/auth/login.ts.',
-  });
-}
-
-function makeTools(): ToolRegistry {
-  const getIssue: ToolDef<{ issue: string }> = {
-    name: 'getIssue',
-    description: '',
-    inputSchema: {},
-    run: (args) => ({ title: args.issue.slice(0, 40), body: args.issue, labels: ['bug'] }),
-  };
-  const searchCode: ToolDef = {
-    name: 'searchCode',
-    description: '',
-    inputSchema: {},
-    run: () => ({ files: ['src/auth/login.ts'] }),
-  };
-  return new ToolRegistry().register(getIssue).register(searchCode);
-}
 
 describe('concurrency & recovery', () => {
   let dir: string;

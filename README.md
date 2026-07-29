@@ -176,7 +176,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 | [tools/registry.ts](durable-agent-runtime/src/tools/registry.ts) | 遵循 MCP 规范的 `ToolDef` / `ToolRegistry`——本地工具和远程 MCP 工具在 runtime 眼里一模一样。 |
 | [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏 · 按工具 token-bucket 限流）；拒绝操作记录为 `PolicyDenied` 事件，可观测、可 eval。限流状态故意不事件源化（进程内存，重启重置）。 |
 | [dead-letter-store.ts](durable-agent-runtime/src/dead-letter-store.ts) | `FileDeadLetterQueue`：实现 `@agent/harness` 的 `DeadLetterQueue` 接口，工具调用最终失败时内容寻址记录，供人工复盘/`retryDeadLetter()` 重放。 |
-| [mcp/](durable-agent-runtime/src/mcp/index.ts) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
+| [mcp/](durable-agent-runtime/src/mcp/) | 共享 MCP base SDK：JSON-RPC 框架、可换 transport、**共享**的 token cache；adapter 把 server 的工具投影进 `ToolRegistry`。 |
 | [snapshot.ts](durable-agent-runtime/src/snapshot.ts) | 周期性派生状态快照 checkpoint，用于快速恢复（原子写入 + 完整性校验；损坏则回退到事件重放）。 |
 | [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |
 | [memory/](durable-agent-runtime/src/memory/) | 跨会话短记忆（scope + lexical/semantic/hybrid）；async `EmbeddingProvider` 缝（默认 hashing，可换真模型）。 |
@@ -191,7 +191,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 | --- | --- |
 | [harness-adapter.ts](durable-agent-runtime/src/app/harness-adapter.ts) | ★ **关键集成**：`RuntimeChatModel` + `RuntimeToolInvoker`；`createHarnessWorkflow` 支持 `approver` / `interrupter`（steer·abort → `HumanIntervention`）+ 可选 `retrieval`（`once` / `once_rewrite` / `capped_agentic`；corpus 可来自 skill）。 |
 | [issue-workflow.ts](durable-agent-runtime/src/app/issue-workflow.ts) | demo 的 `issue → fix` Agent，声明为 `analyze → locate → propose` 三阶段。 |
-| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [document-tools.ts](durable-agent-runtime/src/app/document-tools.ts) · [memory-tools.ts](durable-agent-runtime/src/app/memory-tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性 mock 工具 / 文档检索工具 / 记忆工具、MCP 封装、eval 场景、harness 循环的 mock 模型大脑。 |
+| [tools.ts](durable-agent-runtime/src/app/tools.ts) · [demo-fixtures.ts](durable-agent-runtime/src/app/demo-fixtures.ts) · [demo-runtime.ts](durable-agent-runtime/src/app/demo-runtime.ts) · [document-tools.ts](durable-agent-runtime/src/app/document-tools.ts) · [memory-tools.ts](durable-agent-runtime/src/app/memory-tools.ts) · [mcp-servers.ts](durable-agent-runtime/src/app/mcp-servers.ts) · [responses.ts](durable-agent-runtime/src/app/responses.ts) · [scenarios.ts](durable-agent-runtime/src/app/scenarios.ts) · [agent-scenario.ts](durable-agent-runtime/src/app/agent-scenario.ts) | 确定性 mock 工具 / 共享 fixtures+Runtime 工厂 / 文档检索 / 记忆工具、MCP 封装、eval 场景、harness mock 大脑。 |
 
 状态永远是「算出来的」，不是「存下来的」：
 
@@ -277,10 +277,10 @@ npm install          # 在整个 workspace 中链接 @agent/contracts + @agent/h
 ```powershell
 # contracts + harness
 npm run build        # tsc：先构建 @agent/contracts，再构建 @agent/harness
-npm test             # 先构建 contracts，再跑 harness 测试套件（43 个测试）
+npm test             # 先构建 contracts，再跑 harness + durable-runtime（351 个测试）
 
 # durable runtime（它自己的包测试）
-npm test -w durable-agent-runtime            # 41 个测试（含 harness-integration）
+npm test -w durable-agent-runtime            # 115 个测试（含 harness-integration）
 npm run build -w durable-agent-runtime       # tsc
 
 # harness 离线 demo（确定性，无网络）

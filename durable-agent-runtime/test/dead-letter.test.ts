@@ -11,24 +11,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { FileDeadLetterQueue } from '../src/dead-letter-store.js';
-import { MockModelProvider } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
 import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
-
-function makeModel(): MockModelProvider {
-  return new MockModelProvider({
-    'analyze.summary': 'Crash on login due to a null session.',
-    'propose.fix': 'Guard the null session in src/auth/login.ts.',
-  });
-}
+import { makeModel, makeTools } from './helpers/demo.js';
 
 function makeFailingTools(): ToolRegistry {
-  const getIssue: ToolDef<{ issue: string }> = {
-    name: 'getIssue',
-    description: '',
-    inputSchema: {},
-    run: (args) => ({ title: args.issue.slice(0, 40), body: args.issue, labels: ['bug'] }),
-  };
+  const tools = makeTools();
   const searchCode: ToolDef = {
     name: 'searchCode',
     description: '',
@@ -37,8 +25,9 @@ function makeFailingTools(): ToolRegistry {
       throw new Error('search index unavailable');
     },
   };
-  return new ToolRegistry().register(getIssue).register(searchCode);
+  return new ToolRegistry().register(tools.get('getIssue')!).register(searchCode);
 }
+
 
 const sampleLetter = (overrides: Partial<DeadLetter> = {}): DeadLetter => ({
   id: 'dlq-1',

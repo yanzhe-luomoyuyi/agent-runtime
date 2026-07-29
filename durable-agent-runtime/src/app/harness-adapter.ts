@@ -252,7 +252,6 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
     phases: [
       {
         name: 'agent',
-        skippable: false,
         steps: [
           {
             id: 'agent.1',

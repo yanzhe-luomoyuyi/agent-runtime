@@ -1,46 +1,26 @@
 import { describe, expect, it } from 'vitest';
 
-import { MockAgentModel } from '../src/app/agent-scenario.js';
-import { createHarnessWorkflow } from '../src/app/harness-adapter.js';
-import { issueWorkflow } from '../src/app/issue-workflow.js';
+import { DEMO_PROPOSALS, cannedResponses } from '../src/app/demo-fixtures.js';
+import { createDemoRuntime } from '../src/app/demo-runtime.js';
 import { demoScenarios } from '../src/app/scenarios.js';
-import { getIssue, searchCode } from '../src/app/tools.js';
 import { runEval, type Scenario } from '../src/eval.js';
 import { MockModelProvider } from '../src/model/provider.js';
-import { Runtime } from '../src/runtime.js';
-import { ToolRegistry } from '../src/tools/registry.js';
+import type { Runtime } from '../src/runtime.js';
 
 function buildRuntimeFactory(canned: Record<string, string>) {
-  return (baseDir: string, scenario: Scenario): Runtime => {
-    if (scenario.harness) {
-      return new Runtime({
-        baseDir,
-        model: new MockAgentModel(),
-        tools: new ToolRegistry().register(getIssue).register(searchCode),
-        workflow: createHarnessWorkflow({ approver: scenario.approver }),
-        policy: scenario.policy,
-      });
-    }
-    return new Runtime({
+  return (baseDir: string, scenario: Scenario): Promise<Runtime> =>
+    createDemoRuntime({
       baseDir,
-      model: new MockModelProvider(canned),
-      tools: new ToolRegistry().register(getIssue).register(searchCode),
-      workflow: issueWorkflow,
+      harness: Boolean(scenario.harness || scenario.approver),
+      quiet: true,
+      model: scenario.harness || scenario.approver ? undefined : new MockModelProvider(canned),
       policy: scenario.policy,
+      approver: scenario.approver,
     });
-  };
 }
 
-const goodModel = {
-  'analyze.summary': 'Null session on login.',
-  'propose.fix': 'Guard the null session in src/auth/login.ts before reading user.token.',
-};
-
-// Simulates a prompt/model change that degrades the output (drops the fix + file).
-const regressedModel = {
-  'analyze.summary': 'Null session on login.',
-  'propose.fix': 'Try turning it off and on again.',
-};
+const goodModel = cannedResponses();
+const regressedModel = cannedResponses({ regress: true });
 
 describe('eval harness', () => {
   it('passes every scenario on a good model config', async () => {
@@ -57,6 +37,7 @@ describe('eval harness', () => {
     expect(login.passed).toBe(false);
     // The failing check is a content/quality check on the proposal.
     expect(login.checks.some((c) => !c.passed && /proposal/i.test(c.name))).toBe(true);
+    expect(DEMO_PROPOSALS.regressed).toContain('turning it off');
   });
 
   it('supports an LLM-as-judge scorer: passes a good proposal, fails a degraded one', async () => {
