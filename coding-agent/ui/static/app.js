@@ -26,6 +26,7 @@ const abortBtn = document.getElementById('abortBtn');
 const resumeDurableBtn = document.getElementById('resumeDurableBtn');
 const pauseBanner = document.getElementById('pauseBanner');
 const crashBanner = document.getElementById('crashBanner');
+const abortBanner = document.getElementById('abortBanner');
 const crashResumeBtn = document.getElementById('crashResumeBtn');
 const approvalPanel = document.getElementById('approvalPanel');
 const approvalBody = document.getElementById('approvalBody');
@@ -41,6 +42,8 @@ let defaultWorkspace = '';
 let defaultGoal = '';
 let currentRunId = null;
 let currentSessionId = null;
+/** Crashed run left in status=running — durable resume target. */
+let resumableRunId = null;
 let pendingApproval = null;
 let driving = false;
 let hasApiKey = false;
@@ -69,17 +72,40 @@ function syncResetVisibility() {
 function setDriving(on) {
   driving = on;
   runBtn.disabled = !hasApiKey || on;
-  controlBar.hidden = !on && !currentRunId;
+  controlBar.hidden = !on && !currentRunId && !resumableRunId;
+  pauseBtn.disabled = !on;
+  continueBtn.disabled = !on;
+  steerBtn.disabled = !on;
+  abortBtn.disabled = !on;
   if (!on) {
     pauseBanner.hidden = true;
     approvalPanel.hidden = true;
     pendingApproval = null;
   }
+  syncResumeUi();
 }
 
 function syncControlLabel() {
-  controlLabel.textContent = currentRunId ? `Run ${currentRunId}` : 'Run controls';
-  resumeDurableBtn.hidden = true;
+  const id = resumableRunId || currentRunId;
+  controlLabel.textContent = id ? `Run ${id}` : 'Run controls';
+}
+
+/** Show durable-resume controls when a crashed (still-running) runId is known. */
+function syncResumeUi() {
+  const show = Boolean(resumableRunId) && !driving;
+  resumeDurableBtn.hidden = !show;
+  crashBanner.hidden = !show;
+  if (show) {
+    controlBar.hidden = false;
+    currentRunId = resumableRunId;
+  }
+  syncControlLabel();
+}
+
+function clearTerminalBanners() {
+  crashBanner.hidden = true;
+  abortBanner.hidden = true;
+  pauseBanner.hidden = true;
 }
 
 async function refreshStatus() {
@@ -132,7 +158,7 @@ async function refreshSessions() {
         .slice(0, 12)
         .map(
           (s) =>
-            `<li><button type="button" class="linkish" data-session="${escapeHtml(s.sessionId)}">${escapeHtml(s.title || s.sessionId)}</button><span class="meta">${s.runIds?.length || 0} runs</span></li>`,
+            `<li><button type="button" class="linkish" data-session="${escapeHtml(s.sessionId)}" title="Select this session for the next Run">${escapeHtml(s.title || s.sessionId)}</button><span class="meta">${s.runIds?.length || 0} runs</span></li>`,
         )
         .join('')
     : '<li class="empty-li">No sessions yet</li>';
@@ -156,13 +182,25 @@ async function refreshRuns() {
           const short = escapeHtml((r.issue || r.runId || '').slice(0, 48));
           const resumable = r.status === 'running';
           return `<li>
-            <button type="button" class="linkish" data-run="${escapeHtml(r.runId)}" data-action="trace">${short || r.runId}</button>
+            <button type="button" class="linkish" data-run="${escapeHtml(r.runId)}" data-action="trace" title="Load runtime trace for this run">${short || r.runId}</button>
             <span class="meta">${escapeHtml(r.status)}</span>
-            ${resumable ? `<button type="button" class="ghost compact" data-run="${escapeHtml(r.runId)}" data-action="resume">Resume</button>` : ''}
+            ${
+              resumable
+                ? `<button type="button" class="ghost compact" data-run="${escapeHtml(r.runId)}" data-action="resume" title="Durable resume this interrupted run">Resume</button>`
+                : ''
+            }
           </li>`;
         })
         .join('')
     : '<li class="empty-li">No runs yet</li>';
+  // Drop crash-resume target only when disk says the run is no longer running.
+  if (resumableRunId) {
+    const found = runs.find((r) => r.runId === resumableRunId);
+    if (found && found.status !== 'running') {
+      resumableRunId = null;
+    }
+    syncResumeUi();
+  }
   runsList.querySelectorAll('[data-run]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const runId = btn.dataset.run;
@@ -469,8 +507,9 @@ async function runAgent() {
   const url = sessionId ? `/api/sessions/${encodeURIComponent(sessionId)}/continue` : '/api/run';
 
   setDriving(true);
-  crashBanner.hidden = true;
-  pauseBanner.hidden = true;
+  clearTerminalBanners();
+  resumableRunId = null;
+  resumeDurableBtn.hidden = true;
   runHint.textContent = 'Running…';
   eventLog.innerHTML = '';
   logLine(`workspace ${workspace}`);
@@ -503,14 +542,16 @@ async function resumeRun(runId) {
     return;
   }
   setDriving(true);
-  crashBanner.hidden = true;
-  pauseBanner.hidden = true;
+  clearTerminalBanners();
+  resumableRunId = null;
+  resumeDurableBtn.hidden = true;
   currentRunId = runId;
   syncControlLabel();
   runHint.textContent = 'Resuming…';
   eventLog.innerHTML = '';
   logLine(`resume ${runId}`);
 
+  // Do not re-inject crashAfterTurn on resume unless the user sets it again after a crash.
   const crashAfterTurn = Number(crashTurnEl.value);
   const body = {
     workspace,
@@ -527,8 +568,11 @@ async function resumeRun(runId) {
   if (!res.ok || !res.body) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     logLine(err.error || 'resume failed', 'err');
+    // Keep the run resumable so the user can retry.
+    resumableRunId = runId;
     setDriving(false);
     runHint.textContent = '';
+    syncResumeUi();
     return;
   }
 
@@ -586,6 +630,13 @@ function handleEvent(event, data) {
   if (event === 'intervention') {
     pauseBanner.hidden = true;
     logLine(`intervention ${data.action}${data.reason ? `: ${data.reason}` : ''}`);
+    if (data.action === 'abort') {
+      // Abort completes the run — not durable-resumable.
+      resumableRunId = null;
+      abortBanner.hidden = false;
+      crashBanner.hidden = true;
+      resumeDurableBtn.hidden = true;
+    }
   }
   if (event === 'needs_input' && data.kind === 'approval') {
     pendingApproval = data;
@@ -595,20 +646,31 @@ function handleEvent(event, data) {
   }
   if (event === 'crashed') {
     currentRunId = data.runId || currentRunId;
-    crashBanner.hidden = false;
-    resumeDurableBtn.hidden = false;
-    controlBar.hidden = false;
-    syncControlLabel();
-    logLine(`crashed ${data.runId}: ${data.message}`, 'err');
+    resumableRunId = currentRunId;
+    // Clear crash-after so a follow-up Resume does not immediately re-crash.
+    crashTurnEl.value = '';
+    abortBanner.hidden = true;
+    logLine(`crashed ${data.runId}: ${data.message} — use Resume`, 'err');
+    syncResumeUi();
   }
   if (event === 'error') logLine(data.message, 'err');
   if (event === 'done') {
     pauseBanner.hidden = true;
     approvalPanel.hidden = true;
     crashBanner.hidden = true;
+    resumeDurableBtn.hidden = true;
+    resumableRunId = null;
     if (data.sessionId) {
       currentSessionId = data.sessionId;
       sessionSelect.value = data.sessionId;
+    }
+    const aborted = data.status !== 'completed' || (data.error && /abort/i.test(String(data.error)));
+    if (aborted && data.status !== 'completed') {
+      abortBanner.hidden = false;
+    }
+    // Harness abort still completes the durable run successfully with an abort answer.
+    if (data.status === 'completed' && data.answer && /abort|stopped/i.test(String(data.answer))) {
+      abortBanner.hidden = false;
     }
     logLine(`done (${data.status})`, data.status === 'completed' ? 'ok' : 'err');
     if (data.analysis) {
