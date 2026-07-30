@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 
 import { deadLetterId, type DeadLetterQueue } from '@agent/contracts';
 
-import { ConflictError, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
+import { ConflictError, eventDurability, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
 import type { ChatModelProvider } from './model/chat-provider.js';
 import type { ModelProvider } from './model/provider.js';
 import type { ModelPricing } from './pricing.js';
@@ -199,10 +199,15 @@ export class Runtime {
       state = applyEvent(state, event);
       if (event.type === 'ModelCalled') spentUsd += event.costUsd;
 
-      // Auto-checkpoint: throttle via snapshotInterval; phases/steps no longer
-      // gate snapshot timing — every N events trigger a write regardless of
-      // workflow structure.  Terminal snapshots still flush unconditionally.
-      lastSnapVersion = this.checkpoint(log.dir, log.version, state, spentUsd, lastSnapVersion);
+      // Auto-checkpoint: throttle via snapshotInterval.  Only checkpoint after
+      // critical (durable) events because relaxed events are buffered in memory
+      // and not yet on disk — a snapshot whose version references unflushed
+      // events would be discarded on crash recovery (snap.version > logVersion).
+      // Critical events always drain the relaxed buffer first, so log.version
+      // equals durable-count when they fire.
+      if (eventDurability(event.type) === 'critical') {
+        lastSnapVersion = this.checkpoint(log.dir, log.version, state, spentUsd, lastSnapVersion);
+      }
     };
 
     if (initialEvent) record(initialEvent);
