@@ -35,6 +35,12 @@ import {
   PACKAGE_ROOT,
   resolveWorkspaceRoot,
 } from './runtime-factory.js';
+import {
+  compareSessionTraces,
+  loadHarnessTrace,
+  loadSessionTraceBundle,
+  saveHarnessTrace,
+} from './session-trace.js';
 import { createUiApprover } from './ui-approver.js';
 import {
   beginActiveRun,
@@ -194,8 +200,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const runId = decodeURIComponent(runTraceMatch[1]!);
     const cfg = loadCodingConfig();
     try {
-      const rt = openReadonlyRuntime(resolveRunsDir(cfg), cfg);
-      return json(res, 200, { runId, runtimeTrace: rt.trace(runId) });
+      const runsDir = resolveRunsDir(cfg);
+      const rt = openReadonlyRuntime(runsDir, cfg);
+      return json(res, 200, {
+        runId,
+        runtimeTrace: rt.trace(runId),
+        harnessTrace: loadHarnessTrace(runsDir, runId),
+      });
     } catch (e) {
       return json(res, 404, { error: e instanceof Error ? e.message : String(e) });
     }
@@ -261,6 +272,49 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  if (req.method === 'POST' && path === '/api/sessions/compare') {
+    const body = await readJson(req);
+    const baselineId = typeof body.baselineSessionId === 'string' ? body.baselineSessionId.trim() : '';
+    const candidateId = typeof body.candidateSessionId === 'string' ? body.candidateSessionId.trim() : '';
+    if (!baselineId || !candidateId) {
+      return json(res, 400, { error: 'baselineSessionId and candidateSessionId are required' });
+    }
+    if (baselineId === candidateId) {
+      return json(res, 400, { error: 'Pick two different sessions to compare' });
+    }
+    const cfg = loadCodingConfig();
+    try {
+      const runsDir = resolveRunsDir(cfg);
+      const sessions = openSessions(runsDir, cfg);
+      const rt = openReadonlyRuntime(runsDir, cfg);
+      const baselineState = sessions.get(baselineId);
+      const candidateState = sessions.get(candidateId);
+      if (!baselineState) return json(res, 404, { error: `Session not found: ${baselineId}` });
+      if (!candidateState) return json(res, 404, { error: `Session not found: ${candidateId}` });
+      const baseline = loadSessionTraceBundle(runsDir, rt, baselineState);
+      const candidate = loadSessionTraceBundle(runsDir, rt, candidateState);
+      return json(res, 200, compareSessionTraces(baseline, candidate));
+    } catch (e) {
+      return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  const sessionTracesMatch = path.match(/^\/api\/sessions\/([^/]+)\/traces$/);
+  if (req.method === 'GET' && sessionTracesMatch) {
+    const sessionId = decodeURIComponent(sessionTracesMatch[1]!);
+    const cfg = loadCodingConfig();
+    try {
+      const runsDir = resolveRunsDir(cfg);
+      const sessions = openSessions(runsDir, cfg);
+      const state = sessions.get(sessionId);
+      if (!state) return json(res, 404, { error: `Session not found: ${sessionId}` });
+      const rt = openReadonlyRuntime(runsDir, cfg);
+      return json(res, 200, loadSessionTraceBundle(runsDir, rt, state));
+    } catch (e) {
+      return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   const sessionGetMatch = path.match(/^\/api\/sessions\/([^/]+)$/);
   if (req.method === 'GET' && sessionGetMatch) {
     const sessionId = decodeURIComponent(sessionGetMatch[1]!);
@@ -272,6 +326,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 200, state);
     } catch (e) {
       return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  if (req.method === 'PATCH' && sessionGetMatch) {
+    const sessionId = decodeURIComponent(sessionGetMatch[1]!);
+    const body = await readJson(req);
+    const title = typeof body.title === 'string' ? body.title : '';
+    const cfg = loadCodingConfig();
+    try {
+      const sessions = openSessions(resolveRunsDir(cfg), cfg);
+      const manifest = sessions.rename(sessionId, title);
+      return json(res, 200, { ok: true, manifest });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const status = /not found/i.test(msg) ? 404 : 400;
+      return json(res, status, { error: msg });
     }
   }
 
@@ -468,7 +538,7 @@ async function driveSse(
 
     if (mode.mode === 'resume') {
       const state = await rt.resume(mode.runId);
-      return finishDone(send, rt, state, workspace, before, harnessTrace, runStartedAt, active.sessionId);
+      return finishDone(send, rt, state, workspace, before, harnessTrace, runStartedAt, runsDir, active.sessionId);
     }
 
     // new run or session continue — optionally bind / create a session
@@ -492,7 +562,7 @@ async function driveSse(
 
     const state = await rt.run(goal, history ? { conversationHistory: history } : undefined);
     if (sessionId && active.runId) liveSessions.attachRun(sessionId, active.runId);
-    return finishDone(send, rt, state, workspace, before, harnessTrace, runStartedAt, sessionId);
+    return finishDone(send, rt, state, workspace, before, harnessTrace, runStartedAt, runsDir, sessionId);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes('__CRASH__') && active.runId) {
@@ -516,6 +586,7 @@ function finishDone(
   before: FileSnapshot,
   harnessTrace: TraceCollector,
   runStartedAt: number,
+  runsDir: string,
   sessionId?: string,
 ): void {
   const after = snapshotWorkspace(workspace);
@@ -524,6 +595,11 @@ function finishDone(
   const answer = extractAnswer(state);
   const runtimeTrace = rt.trace(state.runId);
   const agentTrace = harnessTrace.snapshot(Date.now() - runStartedAt);
+  try {
+    saveHarnessTrace(runsDir, state.runId, agentTrace);
+  } catch {
+    /* sidecar is best-effort — live SSE still carries the harness snapshot */
+  }
   setPhase(state.runId, state.status === 'completed' ? 'completed' : 'failed');
 
   send('done', {

@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { issueWorkflow } from '../src/app/issue-workflow.js';
 import { MockModelProvider, type ModelProvider, type ModelResult } from '../src/model/provider.js';
 import { Runtime } from '../src/runtime.js';
+import { buildTrace } from '../src/trace.js';
+import type { AgentEvent } from '../src/types.js';
 import { makeModel, makeTools } from './helpers/demo.js';
 
 
@@ -42,10 +44,29 @@ describe('observability trace', () => {
 
     expect(trace.totals.modelCalls).toBe(2);
     expect(trace.totals.toolCalls).toBe(2);
+    expect(trace.totals.writeFileMs).toBe(0);
     expect(trace.totals.promptTokens).toBeGreaterThan(0);
     expect(trace.totals.completionTokens).toBeGreaterThan(0);
     expect(trace.totals.costUsd).toBeGreaterThan(0);
     expect(trace.totals.wallMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('sums write_file tool durations into writeFileMs', () => {
+    const events: AgentEvent[] = [
+      { type: 'RunStarted', runId: 'r1', input: { issue: 'x' }, workflow: 'test', ts: '2026-01-01T00:00:00.000Z' },
+      { type: 'ToolCallRequested', callId: 's:write_file', tool: 'write_file', args: {}, ts: '2026-01-01T00:00:01.000Z' },
+      { type: 'ToolCallSucceeded', callId: 's:write_file', tool: 'write_file', result: {}, ts: '2026-01-01T00:00:01.040Z' },
+      { type: 'ToolCallRequested', callId: 's:read_file', tool: 'read_file', args: {}, ts: '2026-01-01T00:00:02.000Z' },
+      { type: 'ToolCallSucceeded', callId: 's:read_file', tool: 'read_file', result: {}, ts: '2026-01-01T00:00:02.010Z' },
+      { type: 'ToolCallRequested', callId: 's:write_file2', tool: 'write_file', args: {}, ts: '2026-01-01T00:00:03.000Z' },
+      { type: 'ToolCallFailed', callId: 's:write_file2', tool: 'write_file', error: 'denied', ts: '2026-01-01T00:00:03.025Z' },
+      { type: 'RunCompleted', summary: {}, ts: '2026-01-01T00:00:04.000Z' },
+    ];
+    const totals = buildTrace(events).totals;
+    expect(totals.writeFileMs).toBe(65); // 40 + 25
+    expect(totals.toolMs).toBe(75); // 40 + 10 + 25
+    expect(totals.toolCalls).toBe(2);
+    expect(totals.failedToolCalls).toBe(1);
   });
 
   it('model calls are idempotent across a crash + resume (recorded as events)', async () => {

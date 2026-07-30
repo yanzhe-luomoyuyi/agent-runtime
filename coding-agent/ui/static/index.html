@@ -43,6 +43,8 @@
             <select id="sessionSelect">
               <option value="">New session</option>
             </select>
+            <button type="button" class="ghost" id="renameSessionBtn" title="Rename the selected session" disabled>Rename</button>
+            <button type="button" class="ghost" id="loadSessionTraceBtn" title="Load aggregated traces for the selected session" disabled>Traces</button>
             <button type="button" class="ghost" id="refreshSessionsBtn" title="Reload session list from disk">↻</button>
           </div>
           <p class="fine" id="sessionHint">Each run is bound to a session for multi-turn continue.</p>
@@ -126,7 +128,21 @@
               <p class="empty">File diffs appear when the agent edits the workspace.</p>
             </article>
             <article id="view-trace" class="view">
-              <p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries).</p>
+              <div class="trace-toolbar">
+                <label class="field-label" for="compareBaseline">Compare sessions</label>
+                <div class="path-row compare-row">
+                  <select id="compareBaseline" title="Baseline session">
+                    <option value="">Baseline…</option>
+                  </select>
+                  <select id="compareCandidate" title="Candidate session">
+                    <option value="">Candidate…</option>
+                  </select>
+                  <button type="button" class="ghost" id="compareSessionsBtn" title="Compare aggregated traces of two sessions">Compare</button>
+                </div>
+              </div>
+              <div id="traceContent">
+                <p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries). Load a session via Traces, or compare two sessions above.</p>
+              </div>
             </article>
             <article id="view-answer" class="view">
               <p class="empty">The agent’s final answer lands here.</p>
@@ -146,6 +162,18 @@
         <div class="actions">
           <button type="submit" class="primary" value="ok" title="Apply steer and continue the run">Send</button>
           <button type="submit" class="ghost" value="cancel" title="Close without steering">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="renameDialog">
+      <form method="dialog" class="steer-form">
+        <h2>Rename session</h2>
+        <label class="field-label" for="renameTitle">Name</label>
+        <input id="renameTitle" type="text" maxlength="120" />
+        <div class="actions">
+          <button type="submit" class="primary" value="ok" title="Save the new session name">Save</button>
+          <button type="submit" class="ghost" value="cancel" title="Close without renaming">Cancel</button>
         </div>
       </form>
     </dialog>

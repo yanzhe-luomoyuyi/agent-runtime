@@ -31,6 +31,8 @@ export interface TraceTotals {
   wallMs: number;
   modelMs: number;
   toolMs: number;
+  /** Subset of toolMs spent in `write_file` tool calls (success + failure). */
+  writeFileMs: number;
   promptTokens: number;
   completionTokens: number;
   costUsd: number;
@@ -99,6 +101,7 @@ export function buildTrace(events: AgentEvent[]): Trace {
     wallMs: 0,
     modelMs: 0,
     toolMs: 0,
+    writeFileMs: 0,
     promptTokens: 0,
     completionTokens: 0,
     costUsd: 0,
@@ -202,16 +205,18 @@ export function buildTrace(events: AgentEvent[]): Trace {
   for (const [callId, start] of toolStart) {
     const end = toolEnd.get(callId) ?? start;
     const toolName = toolNameByCallId.get(callId) ?? callId.split(':').pop() ?? callId;
+    const durationMs = end - start;
     spans.push({
       name: `tool:${toolName}`,
       kind: 'tool',
       startMs: start - first,
-      durationMs: end - start,
+      durationMs,
       depth: 3,
       error: failedCallIds.has(callId),
       attributes: { 'agent.tool.name': toolName, 'agent.tool.call_id': callId },
     });
-    totals.toolMs += end - start;
+    totals.toolMs += durationMs;
+    if (toolName === 'write_file') totals.writeFileMs += durationMs;
   }
   spans.push(...modelSpans);
   spans.sort((a, b) => a.startMs - b.startMs || a.depth - b.depth);
@@ -243,6 +248,7 @@ export function renderTimeline(trace: Trace): string {
   lines.push(
     `Totals: wall ${t.wallMs}ms | model ${t.modelMs}ms (${t.modelCalls} calls) | ` +
       `tools ${t.toolMs}ms (${t.toolCalls} calls, ${t.failedToolCalls} failed) | ` +
+      `write_file ${t.writeFileMs}ms | ` +
       `tokens ${t.promptTokens}+${t.completionTokens} | $${t.costUsd.toFixed(6)}`,
   );
   lines.push(`Replay: ${t.replayedCalls} calls replayed from log (hit rate ${(t.replayHitRate * 100).toFixed(0)}%)`);

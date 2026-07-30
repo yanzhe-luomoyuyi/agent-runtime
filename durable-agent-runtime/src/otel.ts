@@ -124,6 +124,7 @@ function spanAttributes(s: AgentSpan, trace: Trace): Record<string, string | num
       'agent.model_calls': t.modelCalls,
       'agent.tool_calls': t.toolCalls,
       'agent.failed_tool_calls': t.failedToolCalls,
+      'agent.write_file_ms': t.writeFileMs,
       'agent.policy_denials': t.policyDenials,
       'agent.replay_hit_rate': t.replayHitRate,
       'agent.cached_model_calls': t.cachedModelCalls,

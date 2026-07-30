@@ -11,10 +11,17 @@ const modelPill = document.getElementById('modelPill');
 const budgetPill = document.getElementById('budgetPill');
 const viewAnalysis = document.getElementById('view-analysis');
 const viewDiffs = document.getElementById('view-diffs');
-const viewTrace = document.getElementById('view-trace');
+const traceContent = document.getElementById('traceContent');
 const viewAnswer = document.getElementById('view-answer');
 const sessionSelect = document.getElementById('sessionSelect');
 const sessionHint = document.getElementById('sessionHint');
+const renameSessionBtn = document.getElementById('renameSessionBtn');
+const loadSessionTraceBtn = document.getElementById('loadSessionTraceBtn');
+const compareBaseline = document.getElementById('compareBaseline');
+const compareCandidate = document.getElementById('compareCandidate');
+const compareSessionsBtn = document.getElementById('compareSessionsBtn');
+const renameDialog = document.getElementById('renameDialog');
+const renameTitle = document.getElementById('renameTitle');
 const hitlWritesEl = document.getElementById('hitlWrites');
 const crashTurnEl = document.getElementById('crashTurn');
 const controlBar = document.getElementById('controlBar');
@@ -47,6 +54,9 @@ let resumableRunId = null;
 let pendingApproval = null;
 let driving = false;
 let hasApiKey = false;
+/** Cached session manifests for rename / compare dropdowns. */
+let cachedSessions = [];
+let renameTargetId = null;
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => {
@@ -140,6 +150,7 @@ async function refreshSessions() {
   if (!res.ok) return;
   const data = await res.json();
   const sessions = data.sessions || [];
+  cachedSessions = sessions;
   const selected = sessionSelect.value;
   sessionSelect.innerHTML = '<option value="">New session</option>';
   for (const s of sessions) {
@@ -153,22 +164,138 @@ async function refreshSessions() {
   } else if (currentSessionId) {
     sessionSelect.value = currentSessionId;
   }
+  syncSessionActions();
+  fillCompareSelects(sessions);
+
   sessionsList.innerHTML = sessions.length
     ? sessions
         .slice(0, 12)
         .map(
           (s) =>
-            `<li><button type="button" class="linkish" data-session="${escapeHtml(s.sessionId)}" title="Select this session for the next Run">${escapeHtml(s.title || s.sessionId)}</button><span class="meta">${s.runIds?.length || 0} runs</span></li>`,
+            `<li>
+              <button type="button" class="linkish" data-session="${escapeHtml(s.sessionId)}" data-action="select" title="Select this session for the next Run">${escapeHtml(s.title || s.sessionId)}</button>
+              <span class="meta">${s.runIds?.length || 0} runs</span>
+              <span class="list-actions">
+                <button type="button" class="linkish compact" data-session="${escapeHtml(s.sessionId)}" data-action="traces" title="Load session traces">traces</button>
+                <button type="button" class="linkish compact" data-session="${escapeHtml(s.sessionId)}" data-action="rename" data-title="${escapeHtml(s.title || '')}" title="Rename session">rename</button>
+              </span>
+            </li>`,
         )
         .join('')
     : '<li class="empty-li">No sessions yet</li>';
   sessionsList.querySelectorAll('[data-session]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      sessionSelect.value = btn.dataset.session;
-      currentSessionId = btn.dataset.session;
+      const id = btn.dataset.session;
+      const action = btn.dataset.action || 'select';
+      if (action === 'rename') {
+        openRenameDialog(id, btn.dataset.title || '');
+        return;
+      }
+      if (action === 'traces') {
+        sessionSelect.value = id;
+        currentSessionId = id;
+        syncSessionActions();
+        loadSessionTraces(id).catch((e) => logLine(String(e), 'err'));
+        return;
+      }
+      sessionSelect.value = id;
+      currentSessionId = id;
+      syncSessionActions();
       sessionHint.textContent = `Continuing session ${currentSessionId}`;
     });
   });
+}
+
+function syncSessionActions() {
+  const has = Boolean(sessionSelect.value);
+  renameSessionBtn.disabled = !has;
+  loadSessionTraceBtn.disabled = !has;
+}
+
+function fillCompareSelects(sessions) {
+  const fill = (el, placeholder) => {
+    const prev = el.value;
+    el.innerHTML = `<option value="">${placeholder}</option>`;
+    for (const s of sessions) {
+      const opt = document.createElement('option');
+      opt.value = s.sessionId;
+      opt.textContent = `${s.title || s.sessionId} (${s.runIds?.length || 0})`;
+      el.appendChild(opt);
+    }
+    if (prev && [...el.options].some((o) => o.value === prev)) el.value = prev;
+  };
+  fill(compareBaseline, 'Baseline…');
+  fill(compareCandidate, 'Candidate…');
+}
+
+function openRenameDialog(sessionId, title) {
+  renameTargetId = sessionId;
+  renameTitle.value = title || '';
+  renameDialog.showModal();
+}
+
+async function renameSession(sessionId, title) {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    logLine(data.error || 'rename failed', 'err');
+    return;
+  }
+  logLine(`renamed session → ${data.manifest?.title || title}`, 'ok');
+  if (currentSessionId === sessionId) {
+    sessionHint.textContent = `Session ${data.manifest?.title || title}`;
+  }
+  await refreshSessions();
+}
+
+async function loadSessionTraces(sessionId) {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/traces`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    logLine(data.error || 'load session traces failed', 'err');
+    return;
+  }
+  renderSessionTraceBundle(data);
+  document.querySelector('.tab[data-tab="trace"]').click();
+  logLine(`loaded session traces ${sessionId} (${data.runCount || 0} runs)`);
+}
+
+async function loadRunTrace(runId) {
+  const tr = await fetch(`/api/runs/${encodeURIComponent(runId)}/trace`);
+  if (!tr.ok) {
+    logLine(`trace failed for ${runId}`, 'err');
+    return;
+  }
+  const payload = await tr.json();
+  renderTrace(payload.runtimeTrace, payload.harnessTrace, { heading: `Run ${runId}` });
+  document.querySelector('.tab[data-tab="trace"]').click();
+  logLine(`loaded trace ${runId}`);
+}
+
+async function compareSelectedSessions() {
+  const baselineSessionId = compareBaseline.value.trim();
+  const candidateSessionId = compareCandidate.value.trim();
+  if (!baselineSessionId || !candidateSessionId) {
+    logLine('pick two sessions to compare', 'warn');
+    return;
+  }
+  const res = await fetch('/api/sessions/compare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ baselineSessionId, candidateSessionId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    logLine(data.error || 'compare failed', 'err');
+    return;
+  }
+  renderSessionCompare(data);
+  document.querySelector('.tab[data-tab="trace"]').click();
+  logLine(`compared ${baselineSessionId} vs ${candidateSessionId}`);
 }
 
 async function refreshRuns() {
@@ -208,15 +335,7 @@ async function refreshRuns() {
         await resumeRun(runId);
         return;
       }
-      const tr = await fetch(`/api/runs/${encodeURIComponent(runId)}/trace`);
-      if (!tr.ok) {
-        logLine(`trace failed for ${runId}`, 'err');
-        return;
-      }
-      const payload = await tr.json();
-      renderTrace(payload.runtimeTrace, null);
-      document.querySelector('.tab[data-tab="trace"]').click();
-      logLine(`loaded trace ${runId}`);
+      await loadRunTrace(runId);
     });
   });
 }
@@ -283,8 +402,27 @@ function fmtPct(n) {
   return `${(Number(n) * 100).toFixed(0)}%`;
 }
 
-function metricCard(label, value, hint = '') {
-  return `<div class="metric">
+function isWriteFileSpan(s) {
+  if (!s || s.kind !== 'tool') return false;
+  if (s.name === 'tool:write_file') return true;
+  return s.attributes?.['agent.tool.name'] === 'write_file';
+}
+
+/** Prefer totals.writeFileMs; fall back to summing write_file tool spans. */
+function resolveWriteFileMs(runtimeTrace, totals) {
+  if (totals?.writeFileMs != null) return totals.writeFileMs;
+  return (runtimeTrace?.spans || [])
+    .filter(isWriteFileSpan)
+    .reduce((sum, s) => sum + (s.durationMs || 0), 0);
+}
+
+function countWriteFileSpans(runtimeTrace) {
+  return (runtimeTrace?.spans || []).filter(isWriteFileSpan).length;
+}
+
+function metricCard(label, value, hint = '', extraClass = '') {
+  const cls = ['metric', extraClass].filter(Boolean).join(' ');
+  return `<div class="${cls}">
     <div class="metric-label">${escapeHtml(label)}</div>
     <div class="metric-value">${escapeHtml(String(value))}</div>
     ${hint ? `<div class="metric-hint">${escapeHtml(hint)}</div>` : ''}
@@ -332,16 +470,22 @@ function formatReasonCounts(reasons) {
   return entries.map(([k, n]) => `${k}×${n}`).join(', ');
 }
 
-function renderTrace(runtimeTrace, harnessTrace) {
+function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
   if (!runtimeTrace && !harnessTrace) {
-    viewTrace.innerHTML = '<p class="empty">No trace data for this run.</p>';
+    traceContent.innerHTML = '<p class="empty">No trace data for this run.</p>';
     return;
   }
 
   const t = runtimeTrace?.totals || {};
   const h = harnessTrace || {};
   const ctx = summarizeContextDecisions(h.turns);
+  const writeFileMs = resolveWriteFileMs(runtimeTrace, t);
+  const writeFileCalls = countWriteFileSpans(runtimeTrace);
   const parts = [];
+
+  if (opts.heading) {
+    parts.push(`<div class="trace-section"><h3>${escapeHtml(opts.heading)}</h3></div>`);
+  }
 
   parts.push(`<div class="trace-section">
     <h3>Overview</h3>
@@ -349,6 +493,12 @@ function renderTrace(runtimeTrace, harnessTrace) {
       ${metricCard('Wall time', fmtMs(t.wallMs ?? h.runDurationMs))}
       ${metricCard('Model time', fmtMs(t.modelMs))}
       ${metricCard('Tool time', fmtMs(t.toolMs))}
+      ${metricCard(
+        'write_file time',
+        writeFileCalls ? `${fmtMs(writeFileMs)} (${writeFileCalls})` : fmtMs(writeFileMs),
+        'Sum of write_file tool spans',
+        'metric-write-file',
+      )}
       ${metricCard('Cost', fmtUsd(t.costUsd ?? h.estimatedCostUsd))}
       ${metricCard('Prompt tokens', t.promptTokens ?? h.totalPromptTokens ?? 0)}
       ${metricCard('Completion tokens', t.completionTokens ?? h.totalCompletionTokens ?? 0)}
@@ -409,7 +559,8 @@ function renderTrace(runtimeTrace, harnessTrace) {
         if (attrs['agent.cached']) bits.push('cached');
         if (s.error) bits.push('error');
         const pad = '&nbsp;'.repeat(Math.min(s.depth || 0, 4) * 2);
-        return `<div class="span-row ${s.error ? 'err' : ''} ${s.kind}">
+        const writeCls = isWriteFileSpan(s) ? ' write-file' : '';
+        return `<div class="span-row ${s.error ? 'err' : ''} ${s.kind}${writeCls}">
           <div class="span-name">${pad}<span class="kind">${escapeHtml(s.kind)}</span> ${escapeHtml(s.name)}</div>
           <div class="span-bar-wrap"><div class="span-bar" style="width:${width}%"></div></div>
           <div class="span-meta">${fmtMs(s.durationMs)} · +${fmtMs(s.startMs)}${bits.length ? ' · ' + bits.map(escapeHtml).join(' · ') : ''}</div>
@@ -457,7 +608,113 @@ function renderTrace(runtimeTrace, harnessTrace) {
     </div>`);
   }
 
-  viewTrace.innerHTML = parts.join('');
+  traceContent.innerHTML = parts.join('');
+}
+
+function renderSessionTraceBundle(bundle) {
+  const t = bundle.runtimeTotals || {};
+  const h = bundle.harnessAggregate || {};
+  // Session totals may omit writeFileMs on older aggregates — sum per-run spans.
+  const writeFileMs =
+    t.writeFileMs != null
+      ? t.writeFileMs
+      : (bundle.runs || []).reduce(
+          (sum, r) => sum + resolveWriteFileMs(r.runtimeTrace, r.runtimeTrace?.totals),
+          0,
+        );
+  const writeFileCalls = (bundle.runs || []).reduce(
+    (sum, r) => sum + countWriteFileSpans(r.runtimeTrace),
+    0,
+  );
+  const parts = [];
+  parts.push(`<div class="trace-section">
+    <h3>Session ${escapeHtml(bundle.title || bundle.sessionId)}</h3>
+    <p class="fine">${escapeHtml(bundle.sessionId)} · ${bundle.runCount || 0} runs · updated ${escapeHtml(bundle.updatedAt || '')}</p>
+    <div class="metrics">
+      ${metricCard('Wall time', fmtMs(t.wallMs ?? h.runDurationMs))}
+      ${metricCard('Model time', fmtMs(t.modelMs))}
+      ${metricCard('Tool time', fmtMs(t.toolMs))}
+      ${metricCard(
+        'write_file time',
+        writeFileCalls ? `${fmtMs(writeFileMs)} (${writeFileCalls})` : fmtMs(writeFileMs),
+        'Summed across session runs',
+        'metric-write-file',
+      )}
+      ${metricCard('Cost', fmtUsd(t.costUsd ?? h.estimatedCostUsd))}
+      ${metricCard('Prompt tokens', t.promptTokens ?? h.totalPromptTokens ?? 0)}
+      ${metricCard('Completion tokens', t.completionTokens ?? h.totalCompletionTokens ?? 0)}
+      ${metricCard('Model calls', t.modelCalls ?? h.totalTurns ?? 0)}
+      ${metricCard('Tool calls', `${t.toolCalls ?? h.totalToolCalls ?? 0} (${t.failedToolCalls ?? h.toolFail ?? 0} fail)`)}
+      ${metricCard('Harness turns', h.totalTurns ?? '—')}
+      ${metricCard('Harness retries', h.totalRetries ?? '—')}
+    </div>
+  </div>`);
+
+  const runs = bundle.runs || [];
+  if (runs.length) {
+    const rows = runs
+      .map((r) => {
+        const hasHarness = r.harnessTrace ? 'harness' : 'runtime-only';
+        return `<li>
+          <button type="button" class="linkish" data-run-trace="${escapeHtml(r.runId)}" title="Open this run's trace">${escapeHtml(r.runId)}</button>
+          <span class="meta">${escapeHtml(r.status)} · ${hasHarness}</span>
+        </li>`;
+      })
+      .join('');
+    parts.push(`<div class="trace-section">
+      <h3>Runs in session</h3>
+      <ul class="session-run-list">${rows}</ul>
+    </div>`);
+  } else {
+    parts.push('<p class="empty">This session has no runs yet.</p>');
+  }
+
+  traceContent.innerHTML = parts.join('');
+  traceContent.querySelectorAll('[data-run-trace]').forEach((btn) => {
+    btn.addEventListener('click', () => loadRunTrace(btn.dataset.runTrace).catch((e) => logLine(String(e), 'err')));
+  });
+}
+
+function renderSessionCompare(cmp) {
+  const a = cmp.baseline || {};
+  const b = cmp.candidate || {};
+  const rows = (cmp.deltas || [])
+    .map((d) => {
+      let pctCls = '';
+      let pctText = '—';
+      if (d.pct != null && !Number.isNaN(d.pct)) {
+        pctCls = d.pct > 0 ? 'up' : d.pct < 0 ? 'down' : '';
+        pctText = `${d.pct > 0 ? '+' : ''}${d.pct.toFixed(1)}%`;
+      }
+      const fmt = (n) =>
+        /cost|usd/i.test(d.metric) ? fmtUsd(n) : /ms|duration|wall/i.test(d.metric) ? fmtMs(n) : String(n);
+      return `<tr>
+        <td>${escapeHtml(d.label)}</td>
+        <td class="num">${escapeHtml(fmt(d.baseline))}</td>
+        <td class="num">${escapeHtml(fmt(d.candidate))}</td>
+        <td class="num ${pctCls}">${escapeHtml(pctText)}</td>
+      </tr>`;
+    })
+    .join('');
+
+  const parts = [];
+  parts.push(`<div class="trace-section">
+    <h3>Session compare</h3>
+    <p class="fine">${escapeHtml(a.title || a.sessionId)} → ${escapeHtml(b.title || b.sessionId)}</p>
+    <table class="compare-table">
+      <thead><tr><th>Metric</th><th>Baseline</th><th>Candidate</th><th>Δ</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">No comparable metrics</td></tr>'}</tbody>
+    </table>
+  </div>`);
+
+  if (cmp.harnessReport) {
+    parts.push(`<div class="trace-section">
+      <h3>Harness report</h3>
+      <pre class="compare-report">${escapeHtml(cmp.harnessReport)}</pre>
+    </div>`);
+  }
+
+  traceContent.innerHTML = parts.join('');
 }
 
 async function readSse(res) {
@@ -599,8 +856,11 @@ function handleEvent(event, data) {
   if (event === 'session') {
     currentSessionId = data.sessionId;
     sessionSelect.value = data.sessionId;
-    sessionHint.textContent = `Session ${data.sessionId}`;
-    logLine(`session ${data.sessionId}`);
+    syncSessionActions();
+    sessionHint.textContent = data.title
+      ? `Session ${data.title}`
+      : `Session ${data.sessionId}`;
+    logLine(`session ${data.sessionId}${data.title ? ` (${data.title})` : ''}`);
   }
   if (event === 'run') {
     currentRunId = data.runId;
@@ -711,9 +971,39 @@ document.getElementById('refreshSessionsBtn').addEventListener('click', () => {
 
 sessionSelect.addEventListener('change', () => {
   currentSessionId = sessionSelect.value || null;
+  syncSessionActions();
   sessionHint.textContent = currentSessionId
     ? `Continuing session ${currentSessionId}`
     : 'Each run is bound to a session for multi-turn continue.';
+});
+
+renameSessionBtn.addEventListener('click', () => {
+  const id = sessionSelect.value;
+  if (!id) return;
+  const s = cachedSessions.find((x) => x.sessionId === id);
+  openRenameDialog(id, s?.title || '');
+});
+
+loadSessionTraceBtn.addEventListener('click', () => {
+  const id = sessionSelect.value;
+  if (!id) return;
+  loadSessionTraces(id).catch((e) => logLine(String(e), 'err'));
+});
+
+compareSessionsBtn.addEventListener('click', () => {
+  compareSelectedSessions().catch((e) => logLine(String(e), 'err'));
+});
+
+renameDialog.addEventListener('close', () => {
+  if (renameDialog.returnValue !== 'ok' || !renameTargetId) return;
+  const title = renameTitle.value.trim();
+  const id = renameTargetId;
+  renameTargetId = null;
+  if (!title) {
+    logLine('session name cannot be empty', 'err');
+    return;
+  }
+  renameSession(id, title).catch((e) => logLine(String(e), 'err'));
 });
 
 resetBtn.addEventListener('click', async () => {
@@ -731,8 +1021,8 @@ resetBtn.addEventListener('click', async () => {
     logLine('sandbox reset', 'ok');
     viewAnalysis.innerHTML = '<p class="empty">Sandbox reset. Run again to regenerate analysis.</p>';
     viewDiffs.innerHTML = '<p class="empty">File diffs appear when the agent edits the workspace.</p>';
-    viewTrace.innerHTML =
-      '<p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries).</p>';
+    traceContent.innerHTML =
+      '<p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries). Load a session via Traces, or compare two sessions above.</p>';
   }
 });
 

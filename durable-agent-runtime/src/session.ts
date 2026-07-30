@@ -37,7 +37,7 @@ export interface SessionManifest {
   sessionId: string;
   /** Ordered list of run IDs in this conversation (oldest first). */
   runIds: string[];
-  /** First user prompt — used as the default title. */
+  /** Display name — defaults to the first user prompt; editable via rename. */
   title: string;
   createdAt: string;
   updatedAt: string;
@@ -335,6 +335,18 @@ export class SessionManager {
     });
 
     return { manifest, runs };
+  }
+
+  /** Rename a session (updates `title` in the manifest). */
+  rename(sessionId: string, title: string): SessionManifest {
+    const manifest = this.readManifest(sessionId);
+    if (!manifest) throw new Error(`Session not found: ${sessionId}`);
+    const next = title.trim();
+    if (!next) throw new Error('Session title must be non-empty');
+    manifest.title = truncate(next, 120);
+    manifest.updatedAt = new Date().toISOString();
+    this.writeManifest(manifest);
+    return manifest;
   }
 
   /** Delete a session manifest (does NOT delete the underlying runs). */

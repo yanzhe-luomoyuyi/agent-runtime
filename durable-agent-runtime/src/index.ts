@@ -21,7 +21,7 @@ export { createHarnessWorkflow, RuntimeChatModel, RuntimeToolInvoker } from './a
 export type { HarnessWorkflowOptions, HarnessAgentOptions } from './app/harness-adapter.js';
 export { ConflictError, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
 export { extractAnswer, extractHarnessMessages } from './run-state.js';
-export { buildTrace, renderTimeline, type Trace } from './trace.js';
+export { buildTrace, renderTimeline, type Trace, type TraceTotals } from './trace.js';
 export {
   SessionManager,
   createConversationSummarizer,
