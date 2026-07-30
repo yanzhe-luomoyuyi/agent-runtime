@@ -347,14 +347,113 @@ function logLine(text, cls = '') {
   eventLog.prepend(div);
 }
 
+function renderInlineMd(escaped) {
+  return escaped
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>')
+    .replace(/(^|[^_])_([^_]+)_(?!_)/g, '$1<em>$2</em>')
+    .replace(
+      /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+    );
+}
+
 function renderMarkdownLite(md) {
-  const esc = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const html = esc
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>');
-  return `<div class="markdown">${html}</div>`;
+  if (md == null || String(md) === '') return '<div class="markdown"></div>';
+  const lines = String(md).replace(/\r\n/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+  let para = [];
+
+  function flushPara() {
+    if (!para.length) return;
+    const body = renderInlineMd(escapeHtml(para.join('\n'))).replace(/\n/g, '<br>');
+    out.push(`<p>${body}</p>`);
+    para = [];
+  }
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    const fence = line.match(/^```([\w-]*)\s*$/);
+    if (fence) {
+      flushPara();
+      const lang = fence[1];
+      i += 1;
+      const code = [];
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      i += 1;
+      const langAttr = lang ? ` class="language-${escapeHtml(lang)}"` : '';
+      out.push(`<pre class="md-pre"><code${langAttr}>${escapeHtml(code.join('\n'))}</code></pre>`);
+      continue;
+    }
+
+    if (/^\s*$/.test(line)) {
+      flushPara();
+      i += 1;
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushPara();
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInlineMd(escapeHtml(heading[2]))}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushPara();
+      out.push('<hr>');
+      i += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      flushPara();
+      const quote = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        quote.push(lines[i].replace(/^>\s?/, ''));
+        i += 1;
+      }
+      const body = renderInlineMd(escapeHtml(quote.join('\n'))).replace(/\n/g, '<br>');
+      out.push(`<blockquote>${body}</blockquote>`);
+      continue;
+    }
+
+    if (/^[-*+]\s+/.test(line)) {
+      flushPara();
+      out.push('<ul>');
+      while (i < lines.length && /^[-*+]\s+/.test(lines[i])) {
+        out.push(`<li>${renderInlineMd(escapeHtml(lines[i].replace(/^[-*+]\s+/, '')))}</li>`);
+        i += 1;
+      }
+      out.push('</ul>');
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(line)) {
+      flushPara();
+      out.push('<ol>');
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+        out.push(`<li>${renderInlineMd(escapeHtml(lines[i].replace(/^\d+\.\s+/, '')))}</li>`);
+        i += 1;
+      }
+      out.push('</ol>');
+      continue;
+    }
+
+    para.push(line);
+    i += 1;
+  }
+  flushPara();
+  return `<div class="markdown">${out.join('')}</div>`;
 }
 
 function renderDiffs(diffs) {
@@ -402,22 +501,12 @@ function fmtPct(n) {
   return `${(Number(n) * 100).toFixed(0)}%`;
 }
 
-function isWriteFileSpan(s) {
-  if (!s || s.kind !== 'tool') return false;
-  if (s.name === 'tool:write_file') return true;
-  return s.attributes?.['agent.tool.name'] === 'write_file';
+function resolveWriteFileMs(totals) {
+  return totals?.writeFileMs ?? 0;
 }
 
-/** Prefer totals.writeFileMs; fall back to summing write_file tool spans. */
-function resolveWriteFileMs(runtimeTrace, totals) {
-  if (totals?.writeFileMs != null) return totals.writeFileMs;
-  return (runtimeTrace?.spans || [])
-    .filter(isWriteFileSpan)
-    .reduce((sum, s) => sum + (s.durationMs || 0), 0);
-}
-
-function countWriteFileSpans(runtimeTrace) {
-  return (runtimeTrace?.spans || []).filter(isWriteFileSpan).length;
+function resolveDurableWrites(totals) {
+  return totals?.durableWrites ?? 0;
 }
 
 function metricCard(label, value, hint = '', extraClass = '') {
@@ -479,8 +568,8 @@ function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
   const t = runtimeTrace?.totals || {};
   const h = harnessTrace || {};
   const ctx = summarizeContextDecisions(h.turns);
-  const writeFileMs = resolveWriteFileMs(runtimeTrace, t);
-  const writeFileCalls = countWriteFileSpans(runtimeTrace);
+  const writeFileMs = resolveWriteFileMs(t);
+  const durableWrites = resolveDurableWrites(t);
   const parts = [];
 
   if (opts.heading) {
@@ -494,9 +583,9 @@ function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
       ${metricCard('Model time', fmtMs(t.modelMs))}
       ${metricCard('Tool time', fmtMs(t.toolMs))}
       ${metricCard(
-        'write_file time',
-        writeFileCalls ? `${fmtMs(writeFileMs)} (${writeFileCalls})` : fmtMs(writeFileMs),
-        'Sum of write_file tool spans',
+        'event log write',
+        durableWrites ? `${fmtMs(writeFileMs)} (${durableWrites})` : fmtMs(writeFileMs),
+        'Time spent flushing the durable event log to disk',
         'metric-write-file',
       )}
       ${metricCard('Cost', fmtUsd(t.costUsd ?? h.estimatedCostUsd))}
@@ -559,8 +648,7 @@ function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
         if (attrs['agent.cached']) bits.push('cached');
         if (s.error) bits.push('error');
         const pad = '&nbsp;'.repeat(Math.min(s.depth || 0, 4) * 2);
-        const writeCls = isWriteFileSpan(s) ? ' write-file' : '';
-        return `<div class="span-row ${s.error ? 'err' : ''} ${s.kind}${writeCls}">
+        return `<div class="span-row ${s.error ? 'err' : ''} ${s.kind}">
           <div class="span-name">${pad}<span class="kind">${escapeHtml(s.kind)}</span> ${escapeHtml(s.name)}</div>
           <div class="span-bar-wrap"><div class="span-bar" style="width:${width}%"></div></div>
           <div class="span-meta">${fmtMs(s.durationMs)} · +${fmtMs(s.startMs)}${bits.length ? ' · ' + bits.map(escapeHtml).join(' · ') : ''}</div>
@@ -614,18 +702,14 @@ function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
 function renderSessionTraceBundle(bundle) {
   const t = bundle.runtimeTotals || {};
   const h = bundle.harnessAggregate || {};
-  // Session totals may omit writeFileMs on older aggregates — sum per-run spans.
-  const writeFileMs =
-    t.writeFileMs != null
-      ? t.writeFileMs
+  const writeFileMs = resolveWriteFileMs(t);
+  const durableWrites =
+    t.durableWrites != null
+      ? t.durableWrites
       : (bundle.runs || []).reduce(
-          (sum, r) => sum + resolveWriteFileMs(r.runtimeTrace, r.runtimeTrace?.totals),
+          (sum, r) => sum + resolveDurableWrites(r.runtimeTrace?.totals),
           0,
         );
-  const writeFileCalls = (bundle.runs || []).reduce(
-    (sum, r) => sum + countWriteFileSpans(r.runtimeTrace),
-    0,
-  );
   const parts = [];
   parts.push(`<div class="trace-section">
     <h3>Session ${escapeHtml(bundle.title || bundle.sessionId)}</h3>
@@ -635,9 +719,9 @@ function renderSessionTraceBundle(bundle) {
       ${metricCard('Model time', fmtMs(t.modelMs))}
       ${metricCard('Tool time', fmtMs(t.toolMs))}
       ${metricCard(
-        'write_file time',
-        writeFileCalls ? `${fmtMs(writeFileMs)} (${writeFileCalls})` : fmtMs(writeFileMs),
-        'Summed across session runs',
+        'event log write',
+        durableWrites ? `${fmtMs(writeFileMs)} (${durableWrites})` : fmtMs(writeFileMs),
+        'Summed event-log flush time across session runs',
         'metric-write-file',
       )}
       ${metricCard('Cost', fmtUsd(t.costUsd ?? h.estimatedCostUsd))}
@@ -942,7 +1026,7 @@ function handleEvent(event, data) {
     renderDiffs(data.diffs || []);
     renderTrace(data.runtimeTrace, data.harnessTrace);
     viewAnswer.innerHTML = data.answer
-      ? `<div class="markdown">${escapeHtml(data.answer)}</div>`
+      ? renderMarkdownLite(data.answer)
       : `<p class="empty">${escapeHtml(data.error || 'No final answer.')}</p>`;
     if (data.analysis) {
       document.querySelector('.tab[data-tab="analysis"]').click();

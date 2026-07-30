@@ -32,8 +32,8 @@ export type AgentEvent =
   | { type: 'StepCompleted'; phase: string; step: number; stepId: string; output: unknown; ts: string }
   | { type: 'PhaseCompleted'; phase: string; ts: string }
   | { type: 'PhaseSkipped'; phase: string; reason: string; ts: string }
-  | { type: 'RunCompleted'; summary: unknown; ts: string }
-  | { type: 'RunFailed'; error: string; ts: string };
+  | { type: 'RunCompleted'; summary: unknown; writeFileMs?: number; durableWrites?: number; ts: string }
+  | { type: 'RunFailed'; error: string; writeFileMs?: number; durableWrites?: number; ts: string };
 
 export type RunStatus = 'running' | 'completed' | 'failed';
 export type PhaseStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'SKIPPED';

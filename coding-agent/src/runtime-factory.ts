@@ -29,7 +29,7 @@ import { chatProviderFromEnv } from './model/openai-compatible.js';
 import { PACKAGE_ROOT } from './paths.js';
 import { resolveCodingMaxPromptTokens, resolveModelIdFromEnv } from './prompt-budget.js';
 import { createStdinApprover } from './stdin-approver.js';
-import { createFsTools } from './tools/fs-tools.js';
+import { createFsTools, MUTATING_FS_TOOLS } from './tools/fs-tools.js';
 import { createRunTestsTool } from './tools/run-tests.js';
 import { Workspace } from './workspace.js';
 
@@ -67,7 +67,7 @@ export interface CodingRuntimeOptions {
   maxPromptTokens?: number;
   /** Model id for budget lookup when maxPromptTokens omitted. */
   modelId?: string;
-  /** Default: approve write_file via stdin unless config/env auto-approve. */
+  /** Default: approve mutating FS tools via stdin unless config/env auto-approve. */
   approver?: Approver;
   autoApproveWrites?: boolean;
   /** Mid-run pause / steer / abort gate (Workbench / hosts). */
@@ -137,7 +137,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
   const auto = opts.autoApproveWrites ?? cfg.run.autoApproveWrites;
   const approver =
     opts.approver ??
-    (auto ? autoApprove : requireApprovalFor(['write_file'], createStdinApprover()));
+    (auto ? autoApprove : requireApprovalFor([...MUTATING_FS_TOOLS], createStdinApprover()));
 
   const modelId = opts.modelId ?? resolveModelIdFromEnv(process.env, cfg.model.model);
   const maxPromptTokens =

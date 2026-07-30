@@ -53,7 +53,7 @@
           <textarea id="goal" rows="7" spellcheck="false" placeholder="What should the agent do?"></textarea>
 
           <div class="ops-row">
-            <label class="check" title="Require approval before write_file (HITL)">
+            <label class="check" title="Require approval before write_file / str_replace / delete_file / apply_patch (HITL)">
               <input type="checkbox" id="hitlWrites" />
               HITL writes
             </label>
@@ -91,8 +91,8 @@
             <h2>Approve tool</h2>
             <pre class="approval-body" id="approvalBody"></pre>
             <div class="actions">
-              <button type="button" class="primary" id="approveYesBtn" title="Allow this write_file call">Approve</button>
-              <button type="button" class="ghost danger" id="approveNoBtn" title="Deny this write_file call">Deny</button>
+              <button type="button" class="primary" id="approveYesBtn" title="Allow this mutating FS tool call">Approve</button>
+              <button type="button" class="ghost danger" id="approveNoBtn" title="Deny this mutating FS tool call">Deny</button>
             </div>
           </div>
 

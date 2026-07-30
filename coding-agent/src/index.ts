@@ -1,5 +1,6 @@
 export { Workspace, WorkspaceEscapeError } from './workspace.js';
-export { createFsTools } from './tools/fs-tools.js';
+export { createFsTools, MUTATING_FS_TOOLS, compileGlob } from './tools/fs-tools.js';
+export { applyPatchToWorkspace, applyDiff, parsePatchEnvelope } from './tools/apply-patch.js';
 export { createRunTestsTool } from './tools/run-tests.js';
 export {
   createOpenAICompatibleChatProvider,

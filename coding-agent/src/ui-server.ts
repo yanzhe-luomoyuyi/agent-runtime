@@ -29,12 +29,8 @@ import { loadCodingConfig, type CodingConfig } from './config.js';
 import { resetCodingSandbox } from './fixture-reset.js';
 import { loadEnvFile } from './load-env.js';
 import { resolveCodingMaxPromptTokens, resolveModelIdFromEnv } from './prompt-budget.js';
-import {
-  createCodingRuntime,
-  DEFAULT_WORKSPACE,
-  PACKAGE_ROOT,
-  resolveWorkspaceRoot,
-} from './runtime-factory.js';
+import { createCodingRuntime, DEFAULT_WORKSPACE, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
+import { MUTATING_FS_TOOLS } from './tools/fs-tools.js';
 import {
   compareSessionTraces,
   loadHarnessTrace,
@@ -416,7 +412,7 @@ async function driveSse(
       ? Math.floor(body.crashAfterTurn)
       : undefined;
 
-  // hitlWrites: true → require UI approval for write_file; false → auto; omit → config
+  // hitlWrites: true → require UI approval for mutating FS tools; false → auto; omit → config
   const hitlWrites =
     typeof body.hitlWrites === 'boolean' ? body.hitlWrites : !cfg.run.autoApproveWrites;
 
@@ -487,7 +483,7 @@ async function driveSse(
       pricing: cfg.pricing,
       policy: cfg.policy,
       autoApproveWrites: !hitlWrites,
-      approver: hitlWrites ? requireApprovalFor(['write_file'], uiApprover) : autoApprove,
+      approver: hitlWrites ? requireApprovalFor([...MUTATING_FS_TOOLS], uiApprover) : autoApprove,
       maxTurns: cfg.run.maxTurns,
       crashAfterTurn,
       interrupter: sseInterrupter(active, send),

@@ -51,7 +51,7 @@ export interface CodingToolsSection {
 export interface CodingRunSection {
   maxTurns: number;
   runsDir: string;
-  /** When true, skip write_file HITL (same as AGENT_AUTO_APPROVE=1). */
+  /** When true, skip mutating FS tool HITL (write/str_replace/delete/apply_patch; same as AGENT_AUTO_APPROVE=1). */
   autoApproveWrites: boolean;
   compaction: {
     softCapTokens: number;
@@ -97,7 +97,7 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       'You are a coding agent operating inside a sandboxed workspace. ' +
       'Follow the coding-agent skill. ' +
       'For Q&A / explain goals with no code change: use read tools only and put the full answer in the final reply — do not write ANALYSIS.md or other files unless the user explicitly names an output file. ' +
-      'For fix/implement goals: analyze, edit with write_file, run_tests, then document as the skill says. ' +
+      'For fix/implement goals: analyze with targeted grep/read_file slices, edit with apply_patch or str_replace, run_tests, then document as the skill says. ' +
       'Never invent file paths — only use paths you observed from tools.',
     skillPath: 'skills/coding-agent/SKILL.md',
     skillLoadMode: 'eager',
@@ -134,7 +134,16 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     },
   },
   policy: {
-    allowedTools: ['list_dir', 'grep', 'read_file', 'write_file', 'run_tests'],
+    allowedTools: [
+      'list_dir',
+      'grep',
+      'read_file',
+      'write_file',
+      'str_replace',
+      'delete_file',
+      'apply_patch',
+      'run_tests',
+    ],
     maxCostUsd: 1.0,
   },
 };

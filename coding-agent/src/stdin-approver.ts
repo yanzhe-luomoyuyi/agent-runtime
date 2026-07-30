@@ -1,5 +1,5 @@
 /**
- * CLI stdin approver for write_file (and other gated tools).
+ * CLI stdin approver for mutating FS tools (and other gated tools).
  */
 
 import * as readline from 'node:readline';

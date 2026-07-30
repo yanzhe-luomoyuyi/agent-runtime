@@ -174,6 +174,9 @@ export class EventLog {
    * dir so resume with mismatched options cannot split history across formats.
    */
   private writeLayout: 'seq' | 'single';
+  /** Cumulative ms spent in durable event-log writes (for RunCompleted/RunFailed). */
+  private _writeFileMs = 0;
+  private _durableWrites = 0;
 
   constructor(
     private readonly _dir: string,
@@ -284,9 +287,14 @@ export class EventLog {
     // this halves the write count; for a burst of relaxed events (e.g.
     // concurrent tool calls in one step) it's an N-writes-to-1 reduction.
     const batch = this.pending.splice(0);
-    batch.push(event);
+    // Stamp terminal events with write totals so far (this write counted after).
+    const toAppend =
+      event.type === 'RunCompleted' || event.type === 'RunFailed'
+        ? { ...event, writeFileMs: this._writeFileMs, durableWrites: this._durableWrites }
+        : event;
+    batch.push(toAppend);
     this.writeBatch(batch);
-    this.events.push(event);
+    this.events.push(toAppend);
   }
 
   /**
@@ -311,22 +319,25 @@ export class EventLog {
    */
   private writeBatch(batch: AgentEvent[]): void {
     if (batch.length === 0) return;
+    const t0 = Date.now();
     if (!this.optimisticConcurrency) {
       this.writeSingleFile(batch);
-      return;
-    }
-    const start = this.writtenCount;
-    if (start === 0) mkdirSync(this._dir, { recursive: true }); // create the run dir lazily, on first write
-    const payload = batch.length === 1 ? JSON.stringify(batch[0]) : JSON.stringify(batch);
-    try {
-      writeFileSync(join(this._dir, seqFileName(start)), payload, { flag: 'wx' });
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new ConflictError(this._dir, start);
+    } else {
+      const start = this.writtenCount;
+      if (start === 0) mkdirSync(this._dir, { recursive: true }); // create the run dir lazily, on first write
+      const payload = batch.length === 1 ? JSON.stringify(batch[0]) : JSON.stringify(batch);
+      try {
+        writeFileSync(join(this._dir, seqFileName(start)), payload, { flag: 'wx' });
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new ConflictError(this._dir, start);
+        }
+        throw e;
       }
-      throw e;
+      this.writtenCount += batch.length;
     }
-    this.writtenCount += batch.length;
+    this._writeFileMs += Math.max(0, Date.now() - t0);
+    this._durableWrites += 1;
   }
 
   /**

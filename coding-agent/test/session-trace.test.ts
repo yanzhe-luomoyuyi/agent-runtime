@@ -44,6 +44,7 @@ function runtimeTotals(overrides: Partial<Trace['totals']> = {}): Trace {
       modelMs: 500,
       toolMs: 200,
       writeFileMs: 80,
+      durableWrites: 4,
       promptTokens: 100,
       completionTokens: 50,
       costUsd: 0.01,
