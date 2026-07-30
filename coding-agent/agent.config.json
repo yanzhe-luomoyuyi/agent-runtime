@@ -34,6 +34,11 @@
     "compaction": {
       "softCapTokens": 128000,
       "threshold": 0.85
+    },
+    "scratchpad": {
+      "enabled": true,
+      "offloadThreshold": 4000,
+      "previewChars": 300
     }
   },
   "pricing": {

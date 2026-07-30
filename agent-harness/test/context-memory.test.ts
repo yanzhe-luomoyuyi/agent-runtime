@@ -365,10 +365,33 @@ describe('ScratchpadToolInvoker', () => {
     expect(tools.store.size).toBe(0);
   });
 
-  it('passes structured (non-string) results through untouched', async () => {
-    const tools = new ScratchpadToolInvoker(baseTools(), { offloadThreshold: 1 });
+  it('passes small structured (non-string) results through untouched', async () => {
+    const tools = new ScratchpadToolInvoker(baseTools(), { offloadThreshold: 4000 });
     expect(await tools.call('structured', {})).toEqual({ files: ['a.ts'] });
     expect(tools.store.size).toBe(0);
+  });
+
+  it('offloads oversized structured results with path meta in the pointer', async () => {
+    const big = {
+      path: 'src/runtime.ts',
+      content: 'line\n'.repeat(2000),
+      truncated: true,
+      totalLines: 2000,
+      startLine: 1,
+      endLine: 200,
+    };
+    const tools = new ScratchpadToolInvoker(
+      new MockToolInvoker([makeTool('read_file', '', { type: 'object' }, () => big)]),
+      { offloadThreshold: 4000, previewChars: 40 },
+    );
+    const out = (await tools.call('read_file', {}, { key: 't9:c1' })) as string;
+    expect(out).toContain('Offloaded');
+    expect(out).toContain('path="src/runtime.ts"');
+    expect(out).toContain('totalLines=2000');
+    expect(out).toContain('Meta:');
+    const id = /id="([^"]+)"/.exec(out)![1]!;
+    const full = await tools.call('scratchpad_read', { id });
+    expect(full).toBe(JSON.stringify(big));
   });
 
   it('derives a deterministic id from the durable key', async () => {

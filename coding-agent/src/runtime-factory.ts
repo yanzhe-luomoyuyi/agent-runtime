@@ -164,6 +164,12 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
       maxPromptTokens,
       threshold: cfg.run.compaction.threshold,
     },
+    scratchpad: cfg.run.scratchpad.enabled
+      ? {
+          offloadThreshold: cfg.run.scratchpad.offloadThreshold,
+          previewChars: cfg.run.scratchpad.previewChars,
+        }
+      : false,
   });
 
   return new Runtime({

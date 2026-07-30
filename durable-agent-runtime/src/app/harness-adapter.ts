@@ -33,9 +33,11 @@ import {
   createModelSummarizer,
   parseTextToolCall,
   runAgent,
+  ScratchpadToolInvoker,
   type AgentConfig,
   type AgentRunResult,
   type RunInterrupter,
+  type ScratchpadToolInvokerOptions,
   type SkillLoadMode,
   type SkillSpec,
   type TraceCollector,
@@ -248,6 +250,12 @@ export interface HarnessWorkflowOptions {
    * Complements runtime `buildTrace` (event-log spans); they do not merge.
    */
   trace?: TraceCollector;
+  /**
+   * Wrap the durable tool invoker with Scratchpad offload (large results →
+   * pointer + scratchpad_read). Pass `true` for defaults, or options (no LLM
+   * summarize unless you set `summarize`). Omit / false to leave tools bare.
+   */
+  scratchpad?: boolean | ScratchpadToolInvokerOptions;
 }
 
 /**
@@ -276,10 +284,15 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
             name: 'Harness loop',
             run: async (ctx) => {
               const chatModel = new RuntimeChatModel(ctx);
-              const toolInvoker = new RuntimeToolInvoker(ctx, {
+              const durableTools = new RuntimeToolInvoker(ctx, {
                 hideFromModel: hideRetrievalTools,
                 maxDocumentSearches: opts.retrieval ? retrievalPolicy.maxRetrieves : undefined,
               });
+              const scratchOpts =
+                opts.scratchpad === true ? {} : opts.scratchpad === false || opts.scratchpad == null ? null : opts.scratchpad;
+              const toolInvoker: ToolInvoker = scratchOpts
+                ? new ScratchpadToolInvoker(durableTools, scratchOpts)
+                : durableTools;
               const agent: AgentConfig = createAgent({
                 name: opts.agent?.name ?? 'harness-agent',
                 instructions:

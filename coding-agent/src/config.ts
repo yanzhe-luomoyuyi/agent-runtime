@@ -57,6 +57,15 @@ export interface CodingRunSection {
     softCapTokens: number;
     threshold: number;
   };
+  /**
+   * Oversized tool results → scratchpad pointer (no LLM summarize by default).
+   * `scratchpad_read` / `scratchpad_list` are advertised to the model when enabled.
+   */
+  scratchpad: {
+    enabled: boolean;
+    offloadThreshold: number;
+    previewChars: number;
+  };
 }
 
 export interface CodingConfigFile {
@@ -68,8 +77,9 @@ export interface CodingConfigFile {
   tools?: Partial<Omit<CodingToolsSection, 'runTests'>> & {
     runTests?: Partial<CodingToolsSection['runTests']>;
   };
-  run?: Partial<Omit<CodingRunSection, 'compaction'>> & {
+  run?: Partial<Omit<CodingRunSection, 'compaction' | 'scratchpad'>> & {
     compaction?: Partial<CodingRunSection['compaction']>;
+    scratchpad?: Partial<CodingRunSection['scratchpad']>;
   };
   policy?: {
     allowedTools?: string[];
@@ -132,6 +142,11 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       softCapTokens: 128_000,
       threshold: 0.85,
     },
+    scratchpad: {
+      enabled: true,
+      offloadThreshold: 4000,
+      previewChars: 300,
+    },
   },
   policy: {
     allowedTools: [
@@ -166,6 +181,7 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
       ...base.run,
       ...overlay.run,
       compaction: { ...base.run.compaction, ...overlay.run?.compaction },
+      scratchpad: { ...base.run.scratchpad, ...overlay.run?.scratchpad },
     },
     policy: {
       allowedTools: overlay.policy?.allowedTools ?? base.policy.allowedTools,

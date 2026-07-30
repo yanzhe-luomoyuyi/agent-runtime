@@ -27,6 +27,8 @@ describe('loadCodingConfig', () => {
     expect(cfg.policy.allowedTools).toContain('write_file');
     expect(cfg.pricing?.promptUsdPerToken).toBe(0.00000014);
     expect(cfg.tools.runTests.command).toEqual(['npm', 'test']);
+    expect(cfg.run.scratchpad.enabled).toBe(true);
+    expect(cfg.run.scratchpad.offloadThreshold).toBe(4000);
   });
 
   it('merges a partial overlay file', () => {

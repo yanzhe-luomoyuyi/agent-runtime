@@ -8,6 +8,10 @@
  * store, and only a short pointer + preview stays in the window. The model can
  * pull the full content back on demand with a `scratchpad_read` tool.
  *
+ * Offload applies to string results and JSON-serializable objects (serialized
+ * length vs `offloadThreshold`). Default pointer preview is truncate / structured
+ * meta — optional `summarize` can replace that with an LLM blurb.
+ *
  * This is a `ToolInvoker` DECORATOR, mirroring `CompensatingToolInvoker`: the
  * core loop never changes. Wrap your tools with it and (a) oversized results are
  * auto-offloaded, (b) two extra tools (`scratchpad_read`, `scratchpad_list`) are
@@ -91,8 +95,8 @@ export interface ScratchpadToolInvokerOptions {
   /** The store to offload into. Defaults to a fresh in-memory `Scratchpad`. */
   store?: Scratchpad;
   /**
-   * Results whose string length exceeds this are offloaded and replaced by a
-   * pointer. Default 4000 characters.
+   * Results whose serialized length exceeds this are offloaded and replaced by a
+   * pointer. Applies to strings and JSON-serializable objects. Default 4000 characters.
    */
   offloadThreshold?: number;
   /**
@@ -168,6 +172,41 @@ interface ChunkResult {
   id: string;
 }
 
+/** Serialize a tool result for size checks / storage. Undefined => never offload. */
+export function serializeToolResult(result: unknown): string | undefined {
+  if (typeof result === 'string') return result;
+  if (result === undefined) return undefined;
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Pointer preview without an LLM: prefer structured read_file-style meta, else
+ * a leading character slice of the serialized payload.
+ */
+export function buildOffloadPreview(raw: unknown, text: string, previewChars: number): string {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>;
+    const meta: string[] = [];
+    if (typeof o.path === 'string') meta.push(`path=${JSON.stringify(o.path)}`);
+    if (typeof o.totalLines === 'number') meta.push(`totalLines=${o.totalLines}`);
+    if (typeof o.startLine === 'number') meta.push(`startLine=${o.startLine}`);
+    if (typeof o.endLine === 'number') meta.push(`endLine=${o.endLine}`);
+    if (typeof o.truncated === 'boolean') meta.push(`truncated=${o.truncated}`);
+    if (typeof o.content === 'string') {
+      const head = o.content.slice(0, previewChars);
+      meta.push(
+        `contentPreview=${JSON.stringify(head)}${o.content.length > previewChars ? '…' : ''}`,
+      );
+    }
+    if (meta.length > 0) return `Meta: ${meta.join(' ')}`;
+  }
+  return `Preview: ${JSON.stringify(text.slice(0, previewChars))}${text.length > previewChars ? '…' : ''}`;
+}
+
 /**
  * Wraps a `ToolInvoker`, auto-offloading oversized results to a `Scratchpad` and
  * exposing `scratchpad_read` / `scratchpad_list` so the model can retrieve them.
@@ -208,40 +247,40 @@ export class ScratchpadToolInvoker implements ToolInvoker {
 
     const result = await this.inner.call(name, args, opts);
 
-    // Only string results are candidates for offload; structured results pass through.
-    if (typeof result !== 'string' || this.neverOffload.has(name) || result.length <= this.offloadThreshold) {
-      return result;
-    }
+    if (this.neverOffload.has(name)) return result;
+
+    // Strings and JSON-serializable objects both count — coding-agent tools return objects.
+    const text = serializeToolResult(result);
+    if (text === undefined || text.length <= this.offloadThreshold) return result;
 
     const id = this.nextId(opts?.key);
 
-    // ── Write-time summarisation (only when the tool call has a durable key)
+    // Write-time LLM summary is opt-in; default pointer uses truncate / structured meta.
     let summary: string | undefined;
     if (this.summarize && opts?.key) {
       try {
-        summary = await this.summarize(result, {
+        summary = await this.summarize(text, {
           key: keyScope(opts.key).scratchpadSummary(),
           toolName: name,
         });
       } catch {
-        // Summarisation is best-effort — fall through to raw preview on failure.
+        // Best-effort — fall through to non-LLM preview.
       }
     }
 
-    this.store.write(id, result, name, summary);
+    this.store.write(id, text, name, summary);
 
-    // Build the offload pointer.
     const previewText = summary
       ? `Summary: ${summary}`
-      : `Preview: ${JSON.stringify(result.slice(0, this.previewChars))}${result.length > this.previewChars ? '…' : ''}`;
+      : buildOffloadPreview(result, text, this.previewChars);
 
     const chunkHint =
-      result.length > 8000
+      text.length > 8000
         ? ` Hint: use offset/limit with ${READ_TOOL} to read in chunks (e.g. {"id":"${id}","offset":0,"limit":4000}).`
         : '';
 
     return (
-      `[Offloaded ${result.length} chars from "${name}" to scratchpad id="${id}". ` +
+      `[Offloaded ${text.length} chars from "${name}" to scratchpad id="${id}". ` +
       `${previewText} ` +
       `Call ${READ_TOOL}({"id":"${id}"}) to read the full content.${chunkHint}]`
     );
