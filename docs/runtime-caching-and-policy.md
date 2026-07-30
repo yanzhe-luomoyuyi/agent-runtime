@@ -6,61 +6,53 @@
 
 ## 第一部分：Prompt 缓存
 
----
-
-## 两层对比
+本项目**不再**维护进程内「整段 prompt 精确哈希 → 跳过 API」的响应缓存。Agent 多轮工具循环里 prompt 几乎每轮都变，全量匹配基本打不中；真正省钱的是 **LLM Provider 的前缀 / context cache**。
 
 ```
 请求进来
   │
-  ├─① Runtime 层缓存（精确哈希）→ 整个 prompt 之前见过？
-  │   YES → 直接返回缓存（0 API 调用、0 费用）
-  │   NO  → 往下走
-  │
-  └─② LLM Provider 层缓存（前缀缓存）→ prompt 的前 N 个 token 之前算过？
-      YES → 复用 KV-cache（input token 费用打 1-5 折）
-      NO  → 全量计算
+  └─ LLM Provider 层缓存（前缀缓存）→ prompt 的前 N 个 token 之前算过？
+      YES → 复用磁盘/KV cache（input 命中部分按 cache-hit 价）
+      NO  → 按 cache-miss 价全量计算新增前缀
 ```
 
-| 维度 | ① Runtime 层（本项目的 `caching.ts`） | ② Provider 层（Anthropic/OpenAI/DeepSeek/Gemini） |
-|------|--------------------------------------|---------------------------------------------------|
-| 工作层 | Agent 进程内，调 API 之前 | LLM 服务端，GPU 推理时 |
-| 匹配方式 | 整个 prompt 的 sha256 哈希 | token 级的 prefix match |
-| 命中条件 | prompt 完全一致 | prompt 开头 N 个 token 完全一致 |
-| 命中收益 | **100% 节省**（不调 API） | **~90% off** input token 费用 |
-| 对 prompt 要求 | 必须完全一样 | 前缀一样即可，后缀可以不同 |
-| TTL | 自己控制（文件持久化则可跨天） | 通常 5-10 分钟（Anthropic），每次命中刷新 |
-| 典型命中场景 | 同一 issue 重跑、workflow step 重试 | 同一 system prompt + tools 的不同请求 |
-| 实现依赖 | 零外部依赖 | 需要对接各家 API |
+### 本项目怎么记账
 
-**关键洞察**：Runtime 缓存只能做"完全匹配"，因为 LLM 的响应是**整个 prompt 的函数**，不能把缓存的 system 响应和新的 query 响应拼起来。Provider 层的前缀缓存能做到"部分匹配"，因为它在 token 级别工作，天然知道 prompt 的哪些前缀段和之前完全一样。
+| 字段 | 含义 |
+|------|------|
+| `promptTokens` | API `prompt_tokens`（**含** cache hit + miss）。UI / trace 展示的「用了多少 token」用这个全量。 |
+| `cachedPromptTokens` | DeepSeek `prompt_cache_hit_tokens`（或其它 provider 等价字段）。是 `promptTokens` 的子集，**不从展示总量里扣除**。 |
+| `completionTokens` | 输出 token |
+| `costUsd` | miss × miss 价 + hit × hit 价 + completion × 输出价（`estimateModelCost` / harness `estimateCost`） |
+
+DeepSeek 响应示例（[官方 Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion)）：
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 1500,
+    "prompt_cache_hit_tokens": 1000,
+    "prompt_cache_miss_tokens": 500,
+    "completion_tokens": 200,
+    "total_tokens": 1700
+  }
+}
+```
+
+映射：`coding-agent` 的 OpenAI-compatible adapter 读入 hit/miss → `Usage.cachedPromptTokens`；harness `TraceCollector` 与 runtime `ModelCalled` / `buildTrace` 透传同一字段。
+
+**和 GitHub Copilot Session Info 的关系**：Copilot 的「60.6K / 1M」是**当前上下文窗口占用**（塞进模型的全量 token），不是扣掉 cache 后的账单口径。有 cache 命中时窗口数字通常不变，费用另计。
+
+客户端仍可做的优化（不是实现另一套 cache 存储）：
+
+- 保持 system / tools / 稳定前缀字节级一致，提高 provider 命中率
+- 少轮次、少把大结果反复塞进历史（减少 `prompt_tokens` 累加）
+
+Durable **事件日志幂等重放**（同一 `callId` 不重复调模型）仍然存在，那是 durability，不是 prompt 内容缓存。
 
 ---
 
-## ① Runtime 层：精确哈希缓存
-
-### 当前实现 (`src/model/caching.ts`)
-
-```
-prompt → normalize whitespace → sha256 → LRU lookup → hit? return : call LLM + cache
-```
-
-三个可替换的组件：
-
-| 组件 | 接口 | 默认实现 | 可换成 |
-|------|------|---------|--------|
-| keying | `CacheKeyFn` | `sha256(normalizedPrompt)` | 去掉可变参数、语义 embedding |
-| storage | `ResponseCache` | `InMemoryResponseCache` (LRU) | `FileResponseCache` / Redis |
-| layer | `CachingModelProvider` | Decorator 模式 | 不变，包裹任何 `ModelProvider` |
-
-**为什么是精确哈希而非语义匹配**：
-- 语义匹配（embedding 相似度）多一次 embedding 调用、有误命中风险
-- 对于 agent 场景，真正重复的 prompt（同一个 step 同一输入）hash 完全一致
-- 简单、可靠、零额外成本
-
----
-
-## ② Provider 层：各家前缀缓存做法
+## Provider 层：各家前缀缓存做法
 
 ### Anthropic（需要显式标记）
 
@@ -103,22 +95,23 @@ prompt → normalize whitespace → sha256 → LRU lookup → hit? return : call
 
 ### OpenAI（自动，无需标记）
 
-2025 年推出 Automatic Prefix Caching：
+Automatic Prefix Caching：
 
 - **不需要标记**，服务端自动检测重复前缀
-- 命中时 input token **50% off**
+- 命中时 input token **折扣**（按模型，常见约 50% off）
 - TTL 约 5-10 分钟
-- 仅对 >= 1024 token 的前缀生效
-- **黑盒**：不暴露命中状态、TTL 剩余时间
+- 仅对足够长的前缀生效
 - 无需改 prompt 结构，开箱即用
 
-### DeepSeek
+### DeepSeek（自动，无法手动打断点）
 
-- 2025 年推出 context caching
-- 类似 Anthropic 的 prefix caching 模型
-- 需要**显式标记** `cache_control`
-- 命中时 **90% off** input token 费用
-- 文档中标记为 beta 功能
+见官方 [Context Caching](https://api-docs.deepseek.com/guides/kv_cache)：
+
+- **默认开启**，无需改代码、**不能/不需要** 手动 `cache_control`
+- 磁盘前缀缓存；后续请求须**完整匹配**已持久化的 cache prefix unit 才算命中（best-effort）
+- 多轮对话：下一轮请求的公共前缀可命中上一轮
+- 用量字段：`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`（且通常 `prompt_tokens = hit + miss`）
+- 命中按 cache-hit 价计费（相对 miss 大幅打折）
 
 ### Google Gemini（显式创建 + 可配置 TTL）
 
@@ -133,59 +126,45 @@ response = model.generate_content("query", cached_content=cache)
 
 - **独立 API**创建缓存对象，后续请求引用
 - TTL 可配置（最长数小时），比 Anthropic 的 5 分钟长得多
-- 最少 **32768 token**
-- 按缓存的 token 量收费（不管命中次数）
+- 最少 token 门槛较高
 - 适合"大文档 + 多轮问答"场景
 
 ### 各家对比
 
 | | Anthropic | OpenAI | DeepSeek | Gemini |
 |---|---|---|---|---|
-| 标记方式 | 显式 `cache_control` | 自动，无需标记 | 显式标记 | 独立 API 创建 |
-| 节省比例 | 90% off input | 50% off input | 90% off input | 按缓存量收费 |
-| TTL | 5 min（命中刷新） | 5-10 min | 未明确公布 | 最长数小时 |
-| 最小 token | 1024 / 2048 | 1024 | 未公布 | 32768 |
-| 最大断点数 | 4 个 | 不适用 | 未公布 | 不适用 |
-| 可观测性 | 响应头返回命中信息 | 黑盒 | 未明确 | 明确（自己管理） |
+| 标记方式 | 显式 `cache_control` | 自动 | 自动（无手动断点） | 独立 API 创建 |
+| 节省比例 | ~90% off input hit | 按模型折扣 | cache-hit 价远低于 miss | 按缓存量收费 |
+| TTL | 5 min（命中刷新） | 约 5-10 min | 未用则数小时～数天清理 | 最长数小时 |
+| 可观测性 | usage / 头信息 | 因模型而异 | `prompt_cache_hit/miss_tokens` | 明确（自己管理） |
 
 ---
 
-## 协作示意
+## 协作示意（本项目）
 
 ```
 ┌─ Agent 发起请求 ─────────────────────────────────────────────┐
 │                                                               │
-│  prompt = systemPrompt + tools + issueContext                 │
+│  messages = system + tools + history + latest                 │
+│  （保持稳定前缀 → 提高 provider 命中率）                        │
 │                                                               │
-│  key = sha256(normalize(prompt))                              │
-│  hit = runtimeCache.get(key)   ←────── ① Runtime 层           │
-│  if (hit) return hit                ← 命中的话到这里结束      │
+│  response = deepseek.chat.completions.create({ ... })         │
+│  usage.prompt_tokens              → promptTokens（全量展示）   │
+│  usage.prompt_cache_hit_tokens    → cachedPromptTokens         │
+│  usage.prompt_cache_miss_tokens   → 用于校验 / 计费拆分        │
+│  cost = estimateModelCost(miss, hit, completion)              │
 │                                                               │
-│  response = anthropic.messages.create({                       │
-│    system: [{ text: systemPrompt, cache_control: {...} }],   │
-│    messages: [                                                │
-│      { role: "user", content: [                              │
-│        { text: tools, cache_control: {...} },                │
-│        { text: issueContext }       ←────── ② Provider 层     │
-│      ]}                                                       │
-│    ]                                                          │
-│  })                                                           │
-│                                                               │
-│  runtimeCache.set(key, response)   ← 存入 Runtime 缓存        │
+│  事件日志幂等：同一 callId 已有 ModelCalled → 不重调 API        │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**两个缓存覆盖不同的命中场景：**
-
-| 场景 | Runtime 命中？ | Provider 命中？ |
+| 场景 | Provider 前缀缓存？ | 事件日志重放？ |
 |------|:---:|:---:|
-| 完全相同的 prompt（同一 issue 重跑） | ✅ | ✅ |
-| 同一 system + tools + 不同 issue | ❌ | ✅ |
-| Session 续接：同 system + tools + 对话历史前缀相同 | ❌ | ✅ |
-| 改了 system prompt | ❌ | ❌ |
-| 5 分钟后（Anthropic TTL 过） | ✅ | ❌ |
-| 跨天（文件持久化） | ✅ | ❌ |
+| 多轮工具循环，前缀稳定增长 | ✅（hit 部分打折） | ❌（每轮新 callId） |
+| 崩溃恢复，同一 callId 再进入 | 视请求而定 | ✅（不重调模型） |
+| 完全相同 prompt 跨 run 再跑 | ✅（若仍在 TTL 内） | ❌（新 run） |
+| 改了 system / tool schema | ❌（前缀打破） | — |
 
 ---
 

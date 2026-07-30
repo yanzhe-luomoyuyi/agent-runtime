@@ -121,6 +121,7 @@ function spanAttributes(s: AgentSpan, trace: Trace): Record<string, string | num
       'agent.cost_saved_usd': t.costSavedUsd,
       'gen_ai.usage.prompt_tokens': t.promptTokens,
       'gen_ai.usage.completion_tokens': t.completionTokens,
+      'gen_ai.usage.cached_prompt_tokens': t.cachedPromptTokens,
       'agent.model_calls': t.modelCalls,
       'agent.tool_calls': t.toolCalls,
       'agent.failed_tool_calls': t.failedToolCalls,

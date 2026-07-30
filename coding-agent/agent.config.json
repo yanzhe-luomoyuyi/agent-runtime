@@ -43,6 +43,7 @@
   },
   "pricing": {
     "promptUsdPerToken": 0.00000014,
+    "cachedPromptUsdPerToken": 0.000000014,
     "completionUsdPerToken": 0.00000028
   },
   "policy": {

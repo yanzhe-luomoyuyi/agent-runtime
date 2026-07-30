@@ -26,7 +26,7 @@ npm run ui -w @agent/coding-agent
 - **Repository path**：可填任意本地仓库绝对路径（沙箱内读写）；点 Sandbox 回到内置 fixture
 - UI 内写文件自动批准（无需 stdin）
 - 右上角展示当前 **model** 与 **max prompt tokens**（`min(modelWindow, softCap)`；`DEEPSEEK_MODEL` / `AGENT_MAX_PROMPT_TOKENS`）
-- **Trace** 页：runtime 时间线（token / cost / duration / content-cache / replay）+ harness 按 turn（retries / provider cached tokens / assemble·compact）
+- **Trace** 页：runtime 时间线（token / cost / duration / provider prompt-cache / replay）+ harness 按 turn（retries / provider cached tokens / assemble·compact）
 - Q&A 只看 **Answer**；`ANALYSIS.md` 用于改代码后的文档，或用户点名写某个文件
 
 ### 离通用 coding agent 还有多远？

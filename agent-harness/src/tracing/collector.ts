@@ -65,7 +65,7 @@ export function estimateCost(
 export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
-  /** Tokens served from the provider's server-side cache (Anthropic / OpenAI). */
+  /** Tokens served from the provider's server-side prompt cache (subset of promptTokens). */
   cachedPromptTokens: number;
   /** Estimated cost for this call (USD). */
   costUsd: number;

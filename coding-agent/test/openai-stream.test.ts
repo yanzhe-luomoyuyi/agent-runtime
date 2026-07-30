@@ -35,6 +35,49 @@ describe('parseOpenAIChatStream', () => {
     });
   });
 
+  it('maps DeepSeek prompt_cache_hit_tokens into cachedPromptTokens', async () => {
+    const body = sseBody([
+      { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
+      {
+        usage: {
+          prompt_tokens: 1500,
+          prompt_cache_hit_tokens: 1000,
+          prompt_cache_miss_tokens: 500,
+          completion_tokens: 200,
+          total_tokens: 1700,
+        },
+      },
+    ]);
+    const out = [];
+    for await (const chunk of parseOpenAIChatStream(body)) out.push(chunk);
+    expect(out[out.length - 1]).toMatchObject({
+      stopReason: 'stop',
+      usage: {
+        promptTokens: 1500,
+        completionTokens: 200,
+        cachedPromptTokens: 1000,
+      },
+    });
+  });
+
+  it('derives cachedPromptTokens from miss when hit is absent', async () => {
+    const body = sseBody([
+      { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
+      {
+        usage: {
+          prompt_tokens: 100,
+          prompt_cache_miss_tokens: 40,
+          completion_tokens: 5,
+        },
+      },
+    ]);
+    const out = [];
+    for await (const chunk of parseOpenAIChatStream(body)) out.push(chunk);
+    expect(out[out.length - 1]).toMatchObject({
+      usage: { promptTokens: 100, completionTokens: 5, cachedPromptTokens: 60 },
+    });
+  });
+
   it('assembles incremental tool_calls into completed toolCall chunks', async () => {
     const body = sseBody([
       {

@@ -26,7 +26,7 @@ import {
   enforceRateLimit,
   enforceToolAllowed,
 } from './policy/enforcement.js';
-import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
+import { DEFAULT_PRICING, estimateModelCost, type ModelPricing } from './pricing.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { AgentEvent, RunState, StreamNotifyEvent } from './types.js';
 import type { CallOptions, StepContext } from './workflow.js';
@@ -96,8 +96,8 @@ async function callModel(deps: StepContextDeps, prompt: string, opts?: CallOptio
   const outbound = deps.policy ? deps.policy.redact(prompt).text : prompt;
 
   const startedAt = Date.now();
-  const { text, promptTokens, completionTokens, cached } = await deps.model.complete(outbound);
-  const costUsd = costOf(deps.pricing, promptTokens, completionTokens);
+  const { text, promptTokens, completionTokens, cachedPromptTokens } = await deps.model.complete(outbound);
+  const costUsd = costOf(deps.pricing, promptTokens, completionTokens, cachedPromptTokens);
 
   if (deps.policy) {
     await enforceOutputSafety(deps.policy, text, callId, deps.record);
@@ -112,9 +112,9 @@ async function callModel(deps: StepContextDeps, prompt: string, opts?: CallOptio
     response: text,
     promptTokens,
     completionTokens,
+    cachedPromptTokens,
     costUsd,
     latencyMs: Date.now() - startedAt,
-    cached: cached ?? false,
     ts: nowIso(),
   });
   return text;
@@ -149,8 +149,8 @@ async function callChat(
 
   const startedAt = Date.now();
   const response = await chatModel.chat(req);
-  const { promptTokens, completionTokens } = response.usage;
-  const costUsd = costOf(deps.pricing, promptTokens, completionTokens);
+  const { promptTokens, completionTokens, cachedPromptTokens } = response.usage;
+  const costUsd = costOf(deps.pricing, promptTokens, completionTokens, cachedPromptTokens);
   const encoded = encodeChatResponse(response);
 
   if (deps.policy) {
@@ -166,9 +166,9 @@ async function callChat(
     response: encoded,
     promptTokens,
     completionTokens,
+    cachedPromptTokens,
     costUsd,
     latencyMs: Date.now() - startedAt,
-    cached: false,
     ts: nowIso(),
   });
   return response;
@@ -223,8 +223,8 @@ async function* callChatStream(
   }
 
   const response = accumulateChatStream(chunks);
-  const { promptTokens, completionTokens } = response.usage;
-  const costUsd = costOf(deps.pricing, promptTokens, completionTokens);
+  const { promptTokens, completionTokens, cachedPromptTokens } = response.usage;
+  const costUsd = costOf(deps.pricing, promptTokens, completionTokens, cachedPromptTokens);
   const encoded = encodeChatResponse(response);
 
   if (deps.policy) {
@@ -240,9 +240,9 @@ async function* callChatStream(
     response: encoded,
     promptTokens,
     completionTokens,
+    cachedPromptTokens,
     costUsd,
     latencyMs: Date.now() - startedAt,
-    cached: false,
     ts: nowIso(),
   });
 }
@@ -276,9 +276,13 @@ async function callTool<R>(
   }
 }
 
-function costOf(pricing: ModelPricing | undefined, promptTokens: number, completionTokens: number): number {
-  const p = pricing ?? DEFAULT_PRICING;
-  return promptTokens * p.promptUsdPerToken + completionTokens * p.completionUsdPerToken;
+function costOf(
+  pricing: ModelPricing | undefined,
+  promptTokens: number,
+  completionTokens: number,
+  cachedPromptTokens?: number,
+): number {
+  return estimateModelCost(pricing ?? DEFAULT_PRICING, promptTokens, completionTokens, cachedPromptTokens ?? 0);
 }
 
 function nowIso(): string {

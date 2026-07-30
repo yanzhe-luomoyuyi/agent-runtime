@@ -56,7 +56,7 @@ flowchart LR
 - **模型 Provider** ([src/model/provider.ts](src/model/provider.ts)) — 文本 LLM（`complete`）；mock 用于离线开发和稳定测试。
 - **Chat Provider** ([src/model/chat-provider.ts](src/model/chat-provider.ts)) — `ChatModelProvider.chat(messages, tools) → ChatResponse`；与文本 provider 并列，供 harness native tool-calling。
 - **库导出** ([src/index.ts](src/index.ts)) — 外部宿主（如 `@agent/coding-agent`）可 `import … from 'durable-agent-runtime'`：`Runtime`、`createHarnessWorkflow`、`ToolRegistry`、`callChat` 相关类型等。Demo CLI 仍在本包 `bin`。
-- **响应缓存** ([src/model/caching.ts](src/model/caching.ts)) — `CachingModelProvider` 装饰器：内容寻址（规范化 prompt → sha256），LRU 淘汰，可选文件持久化。在一次次的 run 之间削减重复 prompt 的 token 消耗和成本。- **定价** ([src/pricing.ts](src/pricing.ts)) — 配置驱动（`agent.config.json`）的 token 定价，供 trace 做成本汇总。
+- **定价** ([src/pricing.ts](src/pricing.ts)) — 配置驱动（`agent.config.json`）的 token 定价（含可选 `cachedPromptUsdPerToken`），供 trace 做成本汇总。
 - **工具注册表** ([src/tools/registry.ts](src/tools/registry.ts)) — 遵循 MCP 规范的 `ToolDef` / `ToolRegistry` 契约，本地工具和远程 MCP 工具在运行时眼里完全一样。
 - **声明式策略层** ([src/policy.ts](src/policy.ts)) — 可复用的护栏中间件，作用于统一的工具/模型调用通道：以数据声明 `Policy`（工具 allow-list · 成本预算 · PII 脱敏 · **按工具的 token-bucket 限流**）。拒绝操作记录为 `PolicyDenied` 事件，护栏可观测、可 eval 测试——而不是硬编码在 server 代码里。限流 bucket 故意不事件源化（进程内存状态，重启重置满额）——重放历史不应该重新触发限流判断。
 - **共享 MCP base SDK** ([src/mcp/](src/mcp/)) — 把每个 MCP server 都要重复实现的横切逻辑一次性提取出来：JSON-RPC 框架、可替换 transport、**共享** token cache。adapter 把 server 的工具投影进 `ToolRegistry`。N 个 server 各有一个 `McpClient` 实例（各自一个 transport），但共用同一套 client 实现 + 同一个 `TokenCache`，而不是每个 server 各自实现一遍 curl / JSON-RPC / token 缓存。
@@ -64,7 +64,7 @@ flowchart LR
 - **Embedding 缝** ([src/memory/embedding.ts](src/memory/embedding.ts)) — 与 chat `ModelProvider` **正交**：默认 `HashingEmbeddingProvider`（feature-hashing 词袋，本地/确定性/无同义词，仅供离线跑通 semantic/hybrid）。真模型通过实现 `embed`（可选 `embedMany` batch）接入；`CachingEmbeddingProvider` 做进程内缓存；`createHttpEmbeddingProvider` 提供 HTTP API 适配骨架。mock chat 不妨碍接真 embedding。
 - **文档 RAG / Retriever** ([src/retrieval/](src/retrieval/)) — 与 Memory **平行**：corpus 级文档 chunk + `Retriever` + `RetrievalPolicy`。存储：`InMemoryDocumentStore` / **`FileDocumentStore`**（一 corpus 一 JSON，原子写）。策略：默认 `once`；`once_rewrite`（keyed `callModel` 改写 goal 后再搜一次）；`capped_agentic`（模型可见 search，硬顶 `maxRetrieves`）。`once*` 命中经 harness gate 后以 `kind: 'retrieval'` + `untrusted` 注入（重要性低于真人指令）。corpus 解析：`retrieval.corpusId` 或 skill 的 `corpusId`（`resolveRunCorpusId`）；每次 search 只打 **一个** corpus，多库需多次调用。hybrid 暴露 RRF 分；search 可选 `maxTextChars`。
 - **死信队列** ([src/dead-letter-store.ts](src/dead-letter-store.ts)) — `FileDeadLetterQueue`：实现 `@agent/contracts` 的 `DeadLetterQueue` 接口，一个 JSON 文件存整个队列，原子写（tmp+rename）。选配 `RuntimeOptions.deadLetterQueue` 后，工具调用在 `callTool` 漏斗里最终失败时会被内容寻址地记录下来（同一 tool+args 重复失败 upsert `attempts` 而非堆叠），供人工复盘后用 `retryDeadLetter()` 重放；日志仍正常记 `ToolCallFailed` 并失败，入队只是人工审阅的旁路通道。
-- **Trace 可观测性** ([src/trace.ts](src/trace.ts)) — 从事件日志派生 span 时间线 + token / 成本 / 延迟汇总。统计持久化重放的关键指标：`replayHitRate`、`cachedModelCalls`、`costSavedUsd`。
+- **Trace 可观测性** ([src/trace.ts](src/trace.ts)) — 从事件日志派生 span 时间线 + token / 成本 / 延迟汇总。统计持久化重放与 provider prompt-cache：`replayHitRate`、`cachedPromptTokens`、`cachedModelCalls`、`costSavedUsd`。
 - **OpenTelemetry 导出** ([src/otel.ts](src/otel.ts)) — 把 `trace.ts` 派生出的 span 桥接成真正的 OTel span（父子关系按 `Span.depth` 用栈重建，时间戳锚定在 `Trace.startedAtMs` 上，是历史真实时间而非导出时刻）。没配置 collector 时退回 `ConsoleSpanExporter`，离线也能跑；配置了 `OTEL_EXPORTER_OTLP_ENDPOINT` 就通过 OTLP/HTTP 发到 Jaeger / Tempo / Honeycomb 等任意标准后端。刻意放在运行时而不是 harness——导出是真实网络 IO，harness 只产出结构化数据、不碰 IO。
 - **Eval 框架** ([src/eval.ts](src/eval.ts)) — 可组合打分器（结果性：`runCompleted`/`touchedFile`/`proposalContains`、`toolSuccessRate` 连续成功率、`costUnderUsd`；过程性：`turnsUnder`（回合预算）、`trajectoryJudge`（LLM 裁判工具调用序列而非只看最终答案）；人机协同：`humanInterventionRequested`/`humanInterventionsUnder`（读 `countingApprover` 产出的 `ApprovalStats`）；护栏回归：`noPolicyViolations`/`policyDenied`）+ runner，对派生出的 RunState / trace 打分；`agent eval` 发现回归时以非零退出码退出。
 - **Session（多轮对话）** ([src/session.ts](src/session.ts)) — `SessionManager` 把多个 `run` 串联为持久对话线程。支持两种 history 模式：`qa-pairs`（默认，每轮传递 user↔assistant Q&A 对，零 LLM 开销）和 `full-summary`（LLM 摘要 prior runs 的全量 message transcript，摘要结果缓存在 manifest 中增量复用、不重复计算）。`createConversationSummarizer` 工厂 + `harness-adapter` 的 `extractHarnessMessages` 无缝对接。详见 `SESSION_HISTORY_MODE` / `SESSION_VERBATIM_MODE` 环境变量。
@@ -90,7 +90,7 @@ flowchart LR
 | `modelCalls` / `toolCalls` / `failedToolCalls` | 调用计数 |
 | `policyDenials` | 被声明式策略层拒绝的调用数 |
 | `replayedCalls` / `replayHitRate` | **持久化回放**节省的调用数和命中率（step 重入 → calls 重放） |
-| `cachedModelCalls` / `costSavedUsd` | **内容缓存**命中数 + 节省的费用 |
+| `cachedModelCalls` / `cachedPromptTokens` / `costSavedUsd` | **Provider prompt-cache** 命中调用数 / hit token 数 / 相对 miss 价估算节省 |
 | `byPhase` | `Record<string, { promptTokens, completionTokens, costUsd }>` 按阶段分解 |
 
 **渲染：** `renderTimeline(trace)` 以缩进时间线 + 汇总统计的格式打印。

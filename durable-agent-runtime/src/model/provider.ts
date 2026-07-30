@@ -13,10 +13,11 @@
 
 export interface ModelResult {
   text: string;
+  /** Full prompt size (hit + miss). */
   promptTokens: number;
   completionTokens: number;
-  /** True when served by a CachingModelProvider (no real model call happened). */
-  cached?: boolean;
+  /** Provider prompt-cache hits; subset of promptTokens. */
+  cachedPromptTokens?: number;
 }
 
 export interface ModelProvider {

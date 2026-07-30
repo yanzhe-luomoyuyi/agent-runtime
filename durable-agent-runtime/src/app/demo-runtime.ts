@@ -1,11 +1,10 @@
 /**
  * Shared demo Runtime factory — one wiring path for CLI `run`/`eval` and tests.
- * Chooses fixed workflow vs harness, local vs MCP tools, optional response cache.
+ * Chooses fixed workflow vs harness, local vs MCP tools.
  */
 
 import type { Approver } from '@agent/contracts';
 
-import { CachingModelProvider, FileResponseCache } from '../model/caching.js';
 import { MockModelProvider, type ModelProvider } from '../model/provider.js';
 import { registerMcpServer } from '../mcp/adapter.js';
 import { McpClient } from '../mcp/client.js';
@@ -35,9 +34,6 @@ export interface DemoRuntimeOptions {
   /** Suppress the MCP banner (for eval / tests). */
   quiet?: boolean;
   model?: ModelProvider;
-  /** Wrap the fixed-workflow model in a file response cache (CLI default). */
-  cache?: boolean;
-  cachePath?: string;
   pricing?: ModelPricing;
   policy?: Policy;
   crashAfter?: string;
@@ -97,12 +93,6 @@ export async function createDemoRuntime(opts: DemoRuntimeOptions): Promise<Runti
   }
 
   let model: ModelProvider = opts.model ?? new MockModelProvider(cannedResponses());
-  if (opts.cache) {
-    model = new CachingModelProvider(
-      model,
-      new FileResponseCache(opts.cachePath ?? process.env.AGENT_CACHE ?? '.agent-cache.json'),
-    );
-  }
 
   return new Runtime({
     baseDir: opts.baseDir,

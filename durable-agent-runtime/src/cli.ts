@@ -78,9 +78,8 @@ function loadPolicy(): Policy | undefined {
 }
 
 /**
- * Evals use the same factory as `run` (same tool source / workflow modes) but
- * skip the response cache so a stale hit can't mask a regression. Scenarios may
- * override policy or select the harness loop (`harness: true`).
+ * Evals use the same factory as `run` (same tool source / workflow modes).
+ * Scenarios may override policy or select the harness loop (`harness: true`).
  */
 function buildEvalRuntime(baseDir: string, scenario: Scenario): Promise<Runtime> {
   return createDemoRuntime({
@@ -100,7 +99,6 @@ async function makeRuntime(baseDir: string = BASE_DIR): Promise<Runtime> {
     baseDir,
     harness,
     toolSource: toolSourceFromEnv(),
-    cache: !harness,
     pricing: loadPricing(),
     policy: loadPolicy(),
     maxTurns: numFromEnv('AGENT_MAX_TURNS'),

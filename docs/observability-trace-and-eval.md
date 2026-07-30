@@ -71,7 +71,7 @@ console.log(formatTraceReport(trace));
 
 | 块 | 内容 |
 |----|------|
-| `model` | `ok`、`durationMs`、`retries`、`error?`、`usage?`（prompt / completion / cached / `costUsd`） |
+| `model` | `ok`、`durationMs`、`retries`、`error?`、`usage?`（prompt / completion / **cachedPromptTokens** / `costUsd`） |
 | `tools[]` | 每个工具：`tool`、`args`、`ok`、`durationMs`、`error?` |
 | `context?` | 本 turn 模型调用**之前**的上下文决策（见下） |
 
@@ -142,7 +142,7 @@ console.log(renderTimeline(trace));
 | `phase` | `phase:<name>` | 工作流阶段 |
 | `step` | `step:<stepId>` | 步骤 |
 | `tool` | `tool:<toolName>` | 工具调用；`error` 标记失败；attributes 含 tool name / call id |
-| `model` | `model` | 模型调用；attributes 含 prompt/completion tokens、cost、是否 content-cache |
+| `model` | `model` | 模型调用；attributes 含 prompt/completion/cached_prompt tokens、cost |
 
 每个 span：`startMs`（相对 run 起点）、`durationMs`、`depth`（缩进层级）。
 
@@ -155,7 +155,7 @@ console.log(renderTimeline(trace));
 | `modelCalls` / `toolCalls` / `failedToolCalls` | 调用计数 |
 | `policyDenials` | 策略层拒绝次数（`PolicyDenied`） |
 | `replayedCalls` / `replayHitRate` | resume 时从日志重放而未重执行的调用占比 |
-| `cachedModelCalls` / `costSavedUsd` | 内容缓存命中次数 / 按标价估算省下的钱 |
+| `cachedModelCalls` / `cachedPromptTokens` / `costSavedUsd` | Provider prompt-cache 命中调用数 / hit tokens / 相对 miss 价估算省下的钱 |
 
 > `HumanIntervention`（steer / abort）是 observability-only 事件：写入日志供审计，**不**进入 `TraceTotals` 计数；与 `PolicyDenied` 一样不改派生态 `RunState`。
 

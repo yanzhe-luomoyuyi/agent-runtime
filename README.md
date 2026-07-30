@@ -175,7 +175,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 | [runtime.ts](durable-agent-runtime/src/runtime.ts) | 驱动工作流、追加事件、从日志恢复，用确定性 `callId` 让工具调用幂等。 |
 | [workflow.ts](durable-agent-runtime/src/workflow.ts) | `WorkflowDef` / `PhaseDef` / `StepDef` / `StepContext` 契约——描述工作流长什么样；`emit` 可追加 observability 事件（如 `HumanIntervention`）。 |
 | [types.ts](durable-agent-runtime/src/types.ts) | `AgentEvent`（含 `HumanIntervention` 等）+ 派生态 `RunState`（永不落盘，靠 reducer 重建）。 |
-| [model/provider.ts](durable-agent-runtime/src/model/provider.ts) · [model/caching.ts](durable-agent-runtime/src/model/caching.ts) | 可换的模型 provider + 内容寻址的响应缓存装饰器。 |
+| [model/provider.ts](durable-agent-runtime/src/model/provider.ts) · [model/chat-provider.ts](durable-agent-runtime/src/model/chat-provider.ts) | 可换的文本 / Chat 模型 provider；token 用量含 provider prompt-cache hit。 |
 | [pricing.ts](durable-agent-runtime/src/pricing.ts) | 配置驱动（`agent.config.json`）的 token 定价，供成本核算使用。 |
 | [tools/registry.ts](durable-agent-runtime/src/tools/registry.ts) | 遵循 MCP 规范的 `ToolDef` / `ToolRegistry`——本地工具和远程 MCP 工具在 runtime 眼里一模一样。 |
 | [policy.ts](durable-agent-runtime/src/policy.ts) | 声明式护栏（工具 allow-list · 成本预算 · PII 脱敏 · 按工具 token-bucket 限流）；拒绝操作记录为 `PolicyDenied` 事件，可观测、可 eval。限流状态故意不事件源化（进程内存，重启重置）。 |

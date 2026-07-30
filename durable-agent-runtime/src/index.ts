@@ -7,7 +7,7 @@ export { Runtime, type RuntimeOptions } from './runtime.js';
 export type { StepContext, WorkflowDef, StepDef, PhaseDef, CallOptions } from './workflow.js';
 export { ToolRegistry, type ToolDef } from './tools/registry.js';
 export { PolicyEnforcer, type Policy, type RateLimitRule, resolveRedactions } from './policy.js';
-export { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
+export { DEFAULT_PRICING, estimateModelCost, type ModelPricing } from './pricing.js';
 export type { ModelProvider, ModelResult } from './model/provider.js';
 export { MockModelProvider, estimateTokens } from './model/provider.js';
 export type { ChatModelProvider, ChatModelRequest, ChatResponseEnvelope } from './model/chat-provider.js';

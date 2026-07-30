@@ -87,7 +87,7 @@
 |------|--------|
 | `model/provider.ts` | `ModelProvider.complete(text) → ModelResult` — 文本 LLM |
 | `model/chat-provider.ts` | `ChatModelProvider.chat(messages, tools) → ChatResponse` + envelope 编解码（durable `callChat`） |
-| `model/caching.ts` | 内容寻址 LRU 缓存装饰器（sha256 正则化 prompt） |
+| `model/provider.ts` / `chat-provider.ts` | 文本 / Chat provider；`Usage.cachedPromptTokens` 来自 provider |
 | `tools/registry.ts` | `ToolDef/ToolRegistry` — 本地工具和 MCP 工具统一接口 |
 | `index.ts` | 库导出：供外部宿主（如 coding-agent）使用 Runtime / harness-adapter / ToolRegistry |
 

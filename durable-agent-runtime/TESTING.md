@@ -17,7 +17,7 @@ Expected: **115 passed** across 15 files. Core areas:
 | `resume.test.ts` | Clean run, event-sourcing invariant, crash resume + tool idempotency |
 | `concurrency.test.ts` | Optimistic concurrency, `recover()`, side-effect-free `status()` |
 | `trace.test.ts` | Span timeline, replay hit rate, injected pricing |
-| `caching.test.ts` | Content-addressed model cache hit/miss/LRU |
+| `eval.test.ts` / scenario fixtures | Eval harness scenarios |
 | `eval.test.ts` | Demo scenarios pass; regression + LLM-judge catch degraded proposals |
 | `harness-integration.test.ts` | `@agent/harness` as a durable step; mid-loop resume |
 | `policy.test.ts` | Allow-list, budget, PII redaction, rate limits |

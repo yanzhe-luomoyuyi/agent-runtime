@@ -131,6 +131,7 @@ function emptyTotals(): TraceTotals {
     durableWrites: 0,
     promptTokens: 0,
     completionTokens: 0,
+    cachedPromptTokens: 0,
     costUsd: 0,
     modelCalls: 0,
     toolCalls: 0,
@@ -156,6 +157,7 @@ function aggregateRuntimeTotals(traces: Trace[]): TraceTotals | null {
     t.durableWrites += x.durableWrites ?? 0;
     t.promptTokens += x.promptTokens;
     t.completionTokens += x.completionTokens;
+    t.cachedPromptTokens += x.cachedPromptTokens ?? 0;
     t.costUsd += x.costUsd;
     t.modelCalls += x.modelCalls;
     t.toolCalls += x.toolCalls;
@@ -236,7 +238,7 @@ function buildDeltas(baseline: SessionTraceBundle, candidate: SessionTraceBundle
       { metric: 'toolCalls', label: 'Tool calls', a: bt.toolCalls, b: ct.toolCalls },
       { metric: 'writeFileMs', label: 'event log write (ms)', a: bt.writeFileMs, b: ct.writeFileMs },
       { metric: 'failedToolCalls', label: 'Failed tools', a: bt.failedToolCalls, b: ct.failedToolCalls },
-      { metric: 'cachedModelCalls', label: 'Cached model calls', a: bt.cachedModelCalls, b: ct.cachedModelCalls },
+      { metric: 'cachedModelCalls', label: 'Provider cache hit calls', a: bt.cachedModelCalls, b: ct.cachedModelCalls },
     );
   }
 

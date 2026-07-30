@@ -28,7 +28,7 @@ export type AgentEvent =
    * does not alter derived RunState; the harness applies the effect in-process.
    */
   | { type: 'HumanIntervention'; action: 'steer' | 'abort'; turn: number; inject?: string; goal?: string; reason?: string; ts: string }
-  | { type: 'ModelCalled'; callId: string; phase: string; step: number; prompt: string; response: string; promptTokens: number; completionTokens: number; costUsd: number; latencyMs: number; cached?: boolean; ts: string }
+  | { type: 'ModelCalled'; callId: string; phase: string; step: number; prompt: string; response: string; promptTokens: number; completionTokens: number; cachedPromptTokens?: number; costUsd: number; latencyMs: number; ts: string }
   | { type: 'StepCompleted'; phase: string; step: number; stepId: string; output: unknown; ts: string }
   | { type: 'PhaseCompleted'; phase: string; ts: string }
   | { type: 'PhaseSkipped'; phase: string; reason: string; ts: string }

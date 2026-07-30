@@ -725,16 +725,16 @@ function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
     <h3>Cache &amp; replay</h3>
     <div class="metrics">
       ${metricCard(
-        'Content cache hits',
-        `${t.cachedModelCalls ?? 0}/${t.modelCalls ?? 0}`,
-        'Runtime CachingModelProvider (callModel only)',
+        'Provider cache hits',
+        `${t.cachedPromptTokens ?? h.totalCachedPromptTokens ?? 0} tok`,
+        'Subset of prompt tokens billed at cache-hit rate (DeepSeek prompt_cache_hit_tokens). Totals above still include these.',
       )}
-      ${metricCard('Cache saved', fmtUsd(t.costSavedUsd))}
       ${metricCard(
-        'Provider cached prompt',
-        h.totalCachedPromptTokens ?? 0,
-        'Harness: provider KV / prompt-cache tokens',
+        'Calls with cache hit',
+        `${t.cachedModelCalls ?? 0}/${t.modelCalls ?? 0}`,
+        'Model calls where provider reported cachedPromptTokens > 0',
       )}
+      ${metricCard('Cache saved', fmtUsd(t.costSavedUsd), 'Est. USD vs billing all prompt tokens at miss rate')}
       ${metricCard('Replay hits', `${t.replayedCalls ?? 0} (${fmtPct(t.replayHitRate)})`)}
       ${metricCard('Policy denials', t.policyDenials ?? 0)}
       ${metricCard('Model retries', h.totalRetries ?? 0, 'Harness retry counter')}
@@ -752,7 +752,9 @@ function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
           bits.push(`${attrs['gen_ai.usage.prompt_tokens']}+${attrs['gen_ai.usage.completion_tokens'] ?? 0} tok`);
         }
         if (attrs['agent.cost_usd'] != null) bits.push(fmtUsd(attrs['agent.cost_usd']));
-        if (attrs['agent.cached']) bits.push('cached');
+        if (attrs['gen_ai.usage.cached_prompt_tokens']) {
+          bits.push(`cache ${attrs['gen_ai.usage.cached_prompt_tokens']}`);
+        }
         if (s.error) bits.push('error');
         const pad = '&nbsp;'.repeat(Math.min(s.depth || 0, 4) * 2);
         return `<div class="span-row ${s.error ? 'err' : ''} ${s.kind}">
@@ -1088,9 +1090,9 @@ function handleEvent(event, data) {
   if (event === 'model') {
     const cost = data.costUsd != null ? ` ${fmtUsd(data.costUsd)}` : '';
     const lat = data.latencyMs != null ? ` ${fmtMs(data.latencyMs)}` : '';
-    const cache = data.cached ? ' cached' : '';
+    const cached = data.cachedPromptTokens ? ` cache ${data.cachedPromptTokens}` : '';
     logLine(
-      `model ${data.callId} ${data.promptTokens ?? '?'}+${data.completionTokens ?? '?'} tok${lat}${cost}${cache}`,
+      `model ${data.callId} ${data.promptTokens ?? '?'}+${data.completionTokens ?? '?'} tok${lat}${cost}${cached}`,
       'model',
     );
   }

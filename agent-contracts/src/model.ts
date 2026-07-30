@@ -14,8 +14,14 @@ import type { ToolSpec } from './tools.js';
 
 /** Token accounting for one model call. */
 export interface Usage {
+  /** Full prompt size (cache hit + miss). Display/totals always use this. */
   promptTokens: number;
   completionTokens: number;
+  /**
+   * Provider prompt-cache hits (e.g. DeepSeek `prompt_cache_hit_tokens`).
+   * Subset of `promptTokens` — does not reduce displayed token totals; used for cost.
+   */
+  cachedPromptTokens?: number;
 }
 
 /** Why the model stopped generating this turn. */

@@ -118,10 +118,7 @@ export async function* parseOpenAIChatStream(
     }
 
     if (data.usage) {
-      usage = {
-        promptTokens: data.usage.prompt_tokens ?? usage.promptTokens,
-        completionTokens: data.usage.completion_tokens ?? usage.completionTokens,
-      };
+      usage = usageFromApi(data.usage, usage);
     }
 
     const choice = data.choices?.[0];
@@ -195,7 +192,7 @@ interface ApiChatCompletion {
     };
     finish_reason?: string | null;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: ApiUsage;
 }
 
 interface ApiStreamChunk {
@@ -213,7 +210,32 @@ interface ApiStreamChunk {
     };
     finish_reason?: string | null;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: ApiUsage;
+}
+
+/** OpenAI-compatible usage; DeepSeek adds prompt_cache_{hit,miss}_tokens. */
+interface ApiUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
+}
+
+function usageFromApi(api: ApiUsage, prev?: Usage): Usage {
+  const promptTokens = api.prompt_tokens ?? prev?.promptTokens ?? 0;
+  const completionTokens = api.completion_tokens ?? prev?.completionTokens ?? 0;
+  let cachedPromptTokens = api.prompt_cache_hit_tokens;
+  if (cachedPromptTokens === undefined && api.prompt_cache_miss_tokens !== undefined) {
+    cachedPromptTokens = Math.max(0, promptTokens - api.prompt_cache_miss_tokens);
+  }
+  if (cachedPromptTokens === undefined) {
+    cachedPromptTokens = prev?.cachedPromptTokens;
+  }
+  const usage: Usage = { promptTokens, completionTokens };
+  if (cachedPromptTokens !== undefined) {
+    usage.cachedPromptTokens = Math.min(Math.max(0, cachedPromptTokens), promptTokens);
+  }
+  return usage;
 }
 
 function buildRequestBody(model: string, req: ChatModelRequest, stream: boolean): Record<string, unknown> {
@@ -336,10 +358,7 @@ function toApiTool(t: ToolSpec): Record<string, unknown> {
 function fromApiCompletion(data: ApiChatCompletion): ChatResponse {
   const choice = data.choices?.[0];
   const msg = choice?.message;
-  const usage: Usage = {
-    promptTokens: data.usage?.prompt_tokens ?? 0,
-    completionTokens: data.usage?.completion_tokens ?? 0,
-  };
+  const usage = usageFromApi(data.usage ?? {});
   const thinking = msg?.reasoning_content?.trim() || msg?.reasoning?.trim() || undefined;
   const toolCalls = (msg?.tool_calls ?? [])
     .map((tc): ToolCall | undefined => {

@@ -456,6 +456,7 @@ async function driveSse(
   const harnessTrace = new TraceCollector({
     promptUsdPerToken: cfg.pricing?.promptUsdPerToken ?? FALLBACK_PRICING.promptUsdPerToken,
     completionUsdPerToken: cfg.pricing?.completionUsdPerToken ?? FALLBACK_PRICING.completionUsdPerToken,
+    cachedPromptUsdPerToken: cfg.pricing?.cachedPromptUsdPerToken,
   });
   const runStartedAt = Date.now();
 
@@ -510,10 +511,10 @@ async function driveSse(
             phase: e.phase,
             promptTokens: e.promptTokens,
             completionTokens: e.completionTokens,
+            cachedPromptTokens: e.cachedPromptTokens ?? 0,
             tokens: e.promptTokens + e.completionTokens,
             costUsd: e.costUsd,
             latencyMs: e.latencyMs,
-            cached: Boolean(e.cached),
           });
         }
         if (e.type === 'PolicyDenied') {

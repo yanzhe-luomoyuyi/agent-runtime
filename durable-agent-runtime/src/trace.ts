@@ -6,6 +6,7 @@
  */
 
 import type { AgentEvent } from './types.js';
+import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 
 export type SpanKind = 'run' | 'phase' | 'step' | 'tool' | 'model';
 
@@ -37,6 +38,11 @@ export interface TraceTotals {
   durableWrites: number;
   promptTokens: number;
   completionTokens: number;
+  /**
+   * Provider prompt-cache hits (subset of promptTokens). Displayed totals still
+   * include these — this field is for cost / hit-rate breakdown only.
+   */
+  cachedPromptTokens: number;
   costUsd: number;
   modelCalls: number;
   toolCalls: number;
@@ -47,9 +53,9 @@ export interface TraceTotals {
   replayedCalls: number;
   /** replayedCalls / (executed + replayed) — work saved by durable replay. */
   replayHitRate: number;
-  /** Model calls served by the content cache (CachingModelProvider). */
+  /** Model calls with provider prompt-cache hits (cachedPromptTokens > 0). */
   cachedModelCalls: number;
-  /** List-price cost of cached model calls — money saved by the content cache. */
+  /** Estimated USD saved vs billing all prompt tokens at the miss rate. */
   costSavedUsd: number;
 }
 
@@ -107,6 +113,7 @@ export function buildTrace(events: AgentEvent[]): Trace {
     durableWrites: 0,
     promptTokens: 0,
     completionTokens: 0,
+    cachedPromptTokens: 0,
     costUsd: 0,
     modelCalls: 0,
     toolCalls: 0,
@@ -117,6 +124,10 @@ export function buildTrace(events: AgentEvent[]): Trace {
     cachedModelCalls: 0,
     costSavedUsd: 0,
   };
+
+  const pricing: ModelPricing = DEFAULT_PRICING;
+  const cachedRate = pricing.cachedPromptUsdPerToken ?? pricing.promptUsdPerToken;
+  const cacheDiscountPerToken = Math.max(0, pricing.promptUsdPerToken - cachedRate);
 
   for (const e of events) {
     const t = ms(e.ts);
@@ -151,14 +162,16 @@ export function buildTrace(events: AgentEvent[]): Trace {
         failedCallIds.add(e.callId);
         break;
       case 'ModelCalled': {
+        const cached = e.cachedPromptTokens ?? 0;
         totals.modelCalls++;
         totals.promptTokens += e.promptTokens;
         totals.completionTokens += e.completionTokens;
+        totals.cachedPromptTokens += cached;
         totals.costUsd += e.costUsd;
         totals.modelMs += e.latencyMs;
-        if (e.cached) {
+        if (cached > 0) {
           totals.cachedModelCalls++;
-          totals.costSavedUsd += e.costUsd;
+          totals.costSavedUsd += cached * cacheDiscountPerToken;
         }
         const sid = stepIdOf(e.callId);
         stepExecutedCalls.set(sid, (stepExecutedCalls.get(sid) ?? 0) + 1);
@@ -179,8 +192,8 @@ export function buildTrace(events: AgentEvent[]): Trace {
           attributes: {
             'gen_ai.usage.prompt_tokens': e.promptTokens,
             'gen_ai.usage.completion_tokens': e.completionTokens,
+            'gen_ai.usage.cached_prompt_tokens': cached,
             'agent.cost_usd': e.costUsd,
-            'agent.cached': Boolean(e.cached),
           },
         });
         break;
@@ -253,10 +266,13 @@ export function renderTimeline(trace: Trace): string {
     `Totals: wall ${t.wallMs}ms | model ${t.modelMs}ms (${t.modelCalls} calls) | ` +
       `tools ${t.toolMs}ms (${t.toolCalls} calls, ${t.failedToolCalls} failed) | ` +
       `eventlog ${t.writeFileMs}ms (${t.durableWrites} writes) | ` +
-      `tokens ${t.promptTokens}+${t.completionTokens} | $${t.costUsd.toFixed(6)}`,
+      `tokens ${t.promptTokens}+${t.completionTokens} (cached ${t.cachedPromptTokens}) | $${t.costUsd.toFixed(6)}`,
   );
   lines.push(`Replay: ${t.replayedCalls} calls replayed from log (hit rate ${(t.replayHitRate * 100).toFixed(0)}%)`);
-  lines.push(`Cache:  ${t.cachedModelCalls}/${t.modelCalls} model calls served from cache (saved $${t.costSavedUsd.toFixed(6)})`);
+  lines.push(
+    `Provider cache: ${t.cachedPromptTokens} prompt tokens hit across ${t.cachedModelCalls}/${t.modelCalls} calls ` +
+      `(est. saved $${t.costSavedUsd.toFixed(6)})`,
+  );
   if (t.policyDenials > 0) lines.push(`Policy: ${t.policyDenials} call(s) denied by guardrails`);
   const phases = Object.keys(trace.byPhase);
   if (phases.length > 0) {
