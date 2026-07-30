@@ -12,11 +12,11 @@
  * ./app/issue-workflow.ts).
  */
 
-import type { ChatResponse } from '@agent/contracts';
+import type { ChatResponse, ChatStreamOutput } from '@agent/contracts';
 
 import type { ChatModelRequest } from './model/chat-provider.js';
 import type { ToolRegistry } from './tools/registry.js';
-import type { AgentEvent, RunState } from './types.js';
+import type { AgentEvent, RunState, StreamNotifyEvent } from './types.js';
 
 /**
  * Options for a single tool/model call. A `key` disambiguates multiple calls
@@ -43,6 +43,12 @@ export interface StepContext {
    * same key space. Present when Runtime was constructed with `chatModel`.
    */
   callChat?: (req: ChatModelRequest, opts?: CallOptions) => Promise<ChatResponse>;
+  /**
+   * Streaming chat turn. Yields tokens live; still records one final
+   * `ModelCalled` with the full ChatResponse (replay synthesises the stream).
+   * Present when Runtime was constructed with `chatModel`.
+   */
+  callChatStream?: (req: ChatModelRequest, opts?: CallOptions) => AsyncIterable<ChatStreamOutput>;
   /** Read the output an earlier step produced (e.g. "analyze.1"). */
   getStepOutput: <R = unknown>(stepId: string) => R | undefined;
   /**
@@ -50,6 +56,11 @@ export interface StepContext {
    * audit — e.g. mid-run steer / abort — so the log records who changed what.
    */
   emit: (event: Extract<AgentEvent, { type: 'HumanIntervention' }>) => void;
+  /**
+   * Live-only stream notify (tokens). Not written to the durable event log —
+   * hosts use RuntimeOptions.onStreamEvent for CLI/SSE UX.
+   */
+  notifyStream?: (event: StreamNotifyEvent) => void;
 }
 
 export interface StepDef {

@@ -23,7 +23,7 @@ import { readSnapshot, writeSnapshot } from './snapshot.js';
 import { createStepContext } from './step-context.js';
 import type { ToolRegistry } from './tools/registry.js';
 import { buildTrace, type Trace } from './trace.js';
-import type { AgentEvent, RunInput, RunState } from './types.js';
+import type { AgentEvent, RunInput, RunState, StreamNotifyEvent } from './types.js';
 import type { StepContext, WorkflowDef } from './workflow.js';
 
 export interface RuntimeOptions {
@@ -44,6 +44,12 @@ export interface RuntimeOptions {
   crashAfter?: string;
   /** Observability seam — invoked for every appended event (D4 tracing hooks here). */
   onEvent?: (event: AgentEvent) => void;
+  /**
+   * Live model-token stream (not persisted). Used by CLI / Workbench SSE for
+   * incremental answer rendering while the durable log still records one
+   * ModelCalled per turn.
+   */
+  onStreamEvent?: (event: StreamNotifyEvent) => void;
   /** Token cost model. Defaults to DEFAULT_PRICING; the CLI loads it from agent.config.json. */
   pricing?: ModelPricing;
   /** Declarative guardrails (tool allow-list / cost budget / rate limits / PII redaction). Optional. */
@@ -297,6 +303,7 @@ export class Runtime {
       record,
       getState,
       getSpentUsd,
+      onStreamEvent: this.opts.onStreamEvent,
       onToolFailure: this.opts.deadLetterQueue
         ? (tool, args, error, callId) =>
             this.enqueueDeadLetter(this.opts.deadLetterQueue!, tool, args, error, callId)

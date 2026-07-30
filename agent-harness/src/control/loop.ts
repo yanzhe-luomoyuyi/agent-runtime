@@ -613,6 +613,7 @@ export async function* runAgentStreamed(
         throw e;
       }
       let content = '';
+      let thinking = '';
       const streamToolCalls: ToolCall[] = [];
       let stopReason: StopReason = 'stop';
       let usage: Usage = { promptTokens: 0, completionTokens: 0 };
@@ -622,7 +623,10 @@ export async function* runAgentStreamed(
         if ('stopReason' in chunk) {
           stopReason = chunk.stopReason; usage = chunk.usage; refusalReason = chunk.refusalReason;
         } else {
-          if (chunk.thinking) yield { type: 'thinking_token', turn, token: chunk.thinking };
+          if (chunk.thinking) {
+            thinking += chunk.thinking;
+            yield { type: 'thinking_token', turn, token: chunk.thinking };
+          }
           if (chunk.content) { content += chunk.content; yield { type: 'model_token', turn, token: chunk.content }; }
           if (chunk.toolCall) {
             streamToolCalls.push(chunk.toolCall);
@@ -631,8 +635,16 @@ export async function* runAgentStreamed(
         }
       }
       resp = {
-        message: { role: 'assistant', content: content || undefined, toolCalls: streamToolCalls.length > 0 ? streamToolCalls : undefined },
-        stopReason, usage, refusalReason,
+        message: {
+          role: 'assistant',
+          content: content || undefined,
+          toolCalls: streamToolCalls.length > 0 ? streamToolCalls : undefined,
+          thinking: thinking || undefined,
+        },
+        stopReason,
+        usage,
+        refusalReason,
+        thinking: thinking || undefined,
       };
       opts.trace?.endModelCall(usage);
       opts.hooks?.onModelEnd?.(turn, usage);
@@ -652,6 +664,8 @@ export async function* runAgentStreamed(
         }
         throw e;
       }
+      const batchThinking = resp.thinking ?? resp.message.thinking;
+      if (batchThinking) yield { type: 'thinking_token', turn, token: batchThinking };
       if (resp.message.content) yield { type: 'model_token', turn, token: resp.message.content };
       for (const tc of resp.message.toolCalls ?? []) {
         yield { type: 'tool_call_detected', turn, callId: tc.id, name: tc.name, arguments: tc.arguments };

@@ -73,6 +73,12 @@ export interface CodingRuntimeOptions {
   /** Mid-run pause / steer / abort gate (Workbench / hosts). */
   interrupter?: RunInterrupter;
   onEvent?: ConstructorParameters<typeof Runtime>[0]['onEvent'];
+  onStreamEvent?: ConstructorParameters<typeof Runtime>[0]['onStreamEvent'];
+  /**
+   * Drive harness `runAgentStreamed` (default true). Set false for batch
+   * `runAgent` — no live token notify.
+   */
+  stream?: boolean;
   /** Optional harness TraceCollector (retries / per-turn usage). */
   harnessTrace?: TraceCollector;
   /** Pre-loaded config; default loads agent.config.json + env. */
@@ -154,6 +160,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     approver,
     interrupter: opts.interrupter,
     trace: opts.harnessTrace,
+    stream: opts.stream ?? true,
     agent: {
       name: cfg.agent.name,
       instructions: cfg.agent.instructions,
@@ -180,5 +187,6 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     pricing: opts.pricing ?? cfg.pricing,
     policy: opts.policy ?? defaultCodingPolicy(cfg),
     onEvent: opts.onEvent,
+    onStreamEvent: opts.onStreamEvent,
   });
 }

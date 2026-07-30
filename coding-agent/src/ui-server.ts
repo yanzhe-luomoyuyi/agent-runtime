@@ -19,6 +19,7 @@ import {
 } from '@agent/harness';
 import {
   extractAnswer,
+  extractThinking,
   listRunIds,
   SessionManager,
   type ChatModelProvider,
@@ -528,6 +529,13 @@ async function driveSse(
           });
         }
       },
+      onStreamEvent: (e) => {
+        if (e.type === 'model_token') {
+          send('model_token', { turn: e.turn, token: e.token });
+        } else if (e.type === 'thinking_token') {
+          send('thinking_token', { turn: e.turn, token: e.token });
+        }
+      },
     });
 
     liveSessions = new SessionManager(rt, runsDir);
@@ -589,6 +597,7 @@ function finishDone(
   const diffs: FileDiff[] = diffSnapshots(before, after);
   const analysis = readAnalysisMd(workspace);
   const answer = extractAnswer(state);
+  const thinking = extractThinking(state);
   const runtimeTrace = rt.trace(state.runId);
   const agentTrace = harnessTrace.snapshot(Date.now() - runStartedAt);
   try {
@@ -604,6 +613,7 @@ function finishDone(
     status: state.status,
     error: state.error,
     answer,
+    thinking,
     analysis,
     diffs: diffs.map((d) => ({
       path: d.path,

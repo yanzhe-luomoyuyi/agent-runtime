@@ -118,6 +118,7 @@
             <button type="button" class="tab active" data-tab="analysis" role="tab" title="ANALYSIS.md from the workspace">Analysis</button>
             <button type="button" class="tab" data-tab="diffs" role="tab" title="File changes vs pre-run snapshot">Diffs</button>
             <button type="button" class="tab" data-tab="trace" role="tab" title="Runtime + harness cost, cache, and turn timeline">Trace</button>
+            <button type="button" class="tab" data-tab="compare" role="tab" title="Compare aggregated traces of two sessions">Compare</button>
             <button type="button" class="tab" data-tab="answer" role="tab" title="Final agent answer text">Answer</button>
           </div>
           <div class="tab-body">
@@ -128,6 +129,11 @@
               <p class="empty">File diffs appear when the agent edits the workspace.</p>
             </article>
             <article id="view-trace" class="view">
+              <div id="traceContent">
+                <p class="empty">Runtime + harness metrics appear after a run. Load a session via Traces, or open a run from Recent runs.</p>
+              </div>
+            </article>
+            <article id="view-compare" class="view">
               <div class="trace-toolbar">
                 <label class="field-label" for="compareBaseline">Compare sessions</label>
                 <div class="path-row compare-row">
@@ -140,8 +146,8 @@
                   <button type="button" class="ghost" id="compareSessionsBtn" title="Compare aggregated traces of two sessions">Compare</button>
                 </div>
               </div>
-              <div id="traceContent">
-                <p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries). Load a session via Traces, or compare two sessions above.</p>
+              <div id="compareContent">
+                <p class="empty">Pick two sessions and click Compare.</p>
               </div>
             </article>
             <article id="view-answer" class="view">

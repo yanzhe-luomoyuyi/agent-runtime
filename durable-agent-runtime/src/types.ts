@@ -35,6 +35,14 @@ export type AgentEvent =
   | { type: 'RunCompleted'; summary: unknown; writeFileMs?: number; durableWrites?: number; ts: string }
   | { type: 'RunFailed'; error: string; writeFileMs?: number; durableWrites?: number; ts: string };
 
+/**
+ * Live-only model token notify (not persisted in the event log).
+ * Forwarded via RuntimeOptions.onStreamEvent / StepContext.notifyStream.
+ */
+export type StreamNotifyEvent =
+  | { type: 'model_token'; turn: number; token: string }
+  | { type: 'thinking_token'; turn: number; token: string };
+
 export type RunStatus = 'running' | 'completed' | 'failed';
 export type PhaseStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'SKIPPED';
 

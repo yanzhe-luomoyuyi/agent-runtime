@@ -56,10 +56,38 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(`▶ coding-agent workspace=${workspaceRoot}\n`);
-  printResult(await buildRuntime(workspaceRoot, cfg).run(goal));
+  let streamedAnswer = false;
+  let thinkingHeader = false;
+  const state = await buildRuntime(workspaceRoot, cfg, {
+    onThinkingToken: (token) => {
+      if (!thinkingHeader) {
+        process.stderr.write('thinking:\n');
+        thinkingHeader = true;
+      }
+      process.stderr.write(token);
+    },
+    onModelToken: (token) => {
+      if (thinkingHeader && !streamedAnswer) {
+        process.stderr.write('\n');
+        process.stdout.write('\n');
+      }
+      process.stdout.write(token);
+      streamedAnswer = true;
+    },
+  }).run(goal);
+  if (thinkingHeader && !streamedAnswer) process.stderr.write('\n');
+  if (streamedAnswer) process.stdout.write('\n');
+  printResult(state, { skipAnswer: streamedAnswer });
 }
 
-function buildRuntime(workspaceRoot: string, cfg = loadCodingConfig()) {
+function buildRuntime(
+  workspaceRoot: string,
+  cfg = loadCodingConfig(),
+  stream?: {
+    onModelToken?: (token: string) => void;
+    onThinkingToken?: (token: string) => void;
+  },
+) {
   return createCodingRuntime({
     baseDir: cfg.run.runsDir,
     workspaceRoot,
@@ -75,13 +103,21 @@ function buildRuntime(workspaceRoot: string, cfg = loadCodingConfig()) {
       if (e.type === 'RunCompleted') process.stderr.write(`✔ completed\n`);
       if (e.type === 'RunFailed') process.stderr.write(`✖ failed: ${e.error}\n`);
     },
+    onStreamEvent:
+      stream?.onModelToken || stream?.onThinkingToken
+        ? (e) => {
+            if (e.type === 'model_token') stream.onModelToken?.(e.token);
+            if (e.type === 'thinking_token') stream.onThinkingToken?.(e.token);
+          }
+        : undefined,
   });
 }
 
-function printResult(state: RunState): void {
+function printResult(state: RunState, opts?: { skipAnswer?: boolean }): void {
   console.log(`runId: ${state.runId}`);
   console.log(`status: ${state.status}`);
   if (state.error) console.log(`error: ${state.error}`);
+  if (opts?.skipAnswer) return;
   const answer = extractAnswer(state);
   if (answer) console.log(`\n${answer}\n`);
   else if (state.summary) console.log(JSON.stringify(state.summary, null, 2));

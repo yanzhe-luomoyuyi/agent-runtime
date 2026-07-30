@@ -13,14 +13,19 @@
  * Bridging note: the runtime's `ModelProvider` is text-in/text-out, so
  * `RuntimeChatModel` renders the transcript to a prompt, calls `ctx.callModel`,
  * and parses the reply back into a structured `ChatResponse` via the harness's
- * tolerant text protocol. A live tool-calling provider would skip that text
- * round-trip and return `toolCalls` directly — nothing else here would change.
+ * tolerant text protocol. A live tool-calling provider skips that text
+ * round-trip and returns `toolCalls` directly — nothing else here would change.
+ * Token streaming: pass `stream: true` to drive `runAgentStreamed` and forward
+ * tokens via `ctx.notifyStream` (not the durable log). `callChatStream` still
+ * records one final `ModelCalled` per turn for resume. Default `stream: false`
+ * keeps the classic batch `runAgent` path.
  */
 
 import type {
   ChatModel,
   ChatRequest,
   ChatResponse,
+  ChatStreamOutput,
   JSONSchema,
   Message,
   ToolInvoker,
@@ -33,9 +38,11 @@ import {
   createModelSummarizer,
   parseTextToolCall,
   runAgent,
+  runAgentStreamed,
   ScratchpadToolInvoker,
   type AgentConfig,
   type AgentRunResult,
+  type RunAgentOptions,
   type RunInterrupter,
   type ScratchpadToolInvokerOptions,
   type SkillLoadMode,
@@ -55,8 +62,9 @@ import {
   type Retriever,
 } from '../retrieval/index.js';
 import { extractHarnessMessages } from '../run-state.js';
-import type { RunState } from '../types.js';
+import type { RunState, StreamNotifyEvent } from '../types.js';
 import type { StepContext, WorkflowDef } from '../workflow.js';
+import { chatResponseToStream } from '../model/chat-provider.js';
 
 export { extractHarnessMessages };
 
@@ -166,6 +174,22 @@ export class RuntimeChatModel implements ChatModel {
       decision?.thinking,
     );
   }
+
+  async *chatStream(req: ChatRequest): AsyncIterable<ChatStreamOutput> {
+    if (this.ctx.callChatStream) {
+      yield* this.ctx.callChatStream(
+        {
+          messages: req.messages,
+          tools: req.tools,
+          textCompletion: req.textCompletion,
+        },
+        { key: req.key },
+      );
+      return;
+    }
+    // Text-bridge path has no native stream — batch then synthesise.
+    yield* chatResponseToStream(await this.chat(req));
+  }
 }
 
 /** Mirror thinking onto both ChatResponse and Message (contracts convenience). */
@@ -256,6 +280,12 @@ export interface HarnessWorkflowOptions {
    * summarize unless you set `summarize`). Omit / false to leave tools bare.
    */
   scratchpad?: boolean | ScratchpadToolInvokerOptions;
+  /**
+   * When true, drive `runAgentStreamed` and forward `model_token` /
+   * `thinking_token` via `ctx.notifyStream`. When false (default), use batch
+   * `runAgent` — same durable semantics, no live token notify.
+   */
+  stream?: boolean;
 }
 
 /**
@@ -328,7 +358,7 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                   })
                 : undefined;
 
-              return runAgent({
+              const runOpts: RunAgentOptions = {
                 agent,
                 goal: ctx.input.issue,
                 conversationHistory: ctx.input.conversationHistory as import('@agent/contracts').Message[] | undefined,
@@ -348,7 +378,31 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                       },
                     }
                   : undefined,
-              });
+              };
+
+              if (!opts.stream) {
+                return runAgent(runOpts);
+              }
+
+              // stream: true — live tokens via notifyStream; without chatStream
+              // the harness still batch-calls and synthesises a single chunk.
+              let result: AgentRunResult | undefined;
+              for await (const ev of runAgentStreamed(runOpts)) {
+                if (
+                  (ev.type === 'model_token' || ev.type === 'thinking_token') &&
+                  ctx.notifyStream
+                ) {
+                  const notify: StreamNotifyEvent = {
+                    type: ev.type,
+                    turn: ev.turn,
+                    token: ev.token,
+                  };
+                  ctx.notifyStream(notify);
+                }
+                if (ev.type === 'done') result = ev.result;
+              }
+              if (!result) throw new Error('harness loop ended without a done event');
+              return result;
             },
           },
         ],

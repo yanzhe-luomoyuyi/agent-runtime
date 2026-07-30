@@ -5,10 +5,12 @@
  * while idempotency + policy + provider I/O for a single step live here.
  */
 
-import type { ChatResponse } from '@agent/contracts';
+import type { ChatResponse, ChatStreamOutput } from '@agent/contracts';
 import { runtimeModelCallId, runtimeToolCallId } from '@agent/contracts';
 
 import {
+  accumulateChatStream,
+  chatResponseToStream,
   encodeChatPrompt,
   encodeChatResponse,
   tryDecodeChatResponse,
@@ -26,7 +28,7 @@ import {
 } from './policy/enforcement.js';
 import { DEFAULT_PRICING, type ModelPricing } from './pricing.js';
 import type { ToolRegistry } from './tools/registry.js';
-import type { AgentEvent, RunState } from './types.js';
+import type { AgentEvent, RunState, StreamNotifyEvent } from './types.js';
 import type { CallOptions, StepContext } from './workflow.js';
 
 export interface StepContextDeps {
@@ -42,6 +44,8 @@ export interface StepContextDeps {
   getSpentUsd: () => number;
   /** Invoked after a tool failure is logged (e.g. dead-letter enqueue). */
   onToolFailure?: (tool: string, args: unknown, error: string, callId: string) => Promise<void>;
+  /** Live-only token notify — not persisted. */
+  onStreamEvent?: (event: StreamNotifyEvent) => void;
 }
 
 /** Build the StepContext the workflow steps see. */
@@ -61,8 +65,13 @@ export function createStepContext(deps: StepContextDeps): StepContext {
     callTool: (tool, args, opts) => callTool(deps, tool, args, opts),
   };
 
+  if (deps.onStreamEvent) {
+    ctx.notifyStream = deps.onStreamEvent;
+  }
+
   if (deps.chatModel) {
     ctx.callChat = (req, opts) => callChat(deps, req, opts);
+    ctx.callChatStream = (req, opts) => callChatStream(deps, req, opts);
   }
 
   return ctx;
@@ -163,6 +172,79 @@ async function callChat(
     ts: nowIso(),
   });
   return response;
+}
+
+/**
+ * Stream a chat turn. On resume, synthesises chunks from the stored envelope.
+ * Live path records one final ModelCalled after the stream completes (same as callChat).
+ */
+async function* callChatStream(
+  deps: StepContextDeps,
+  req: ChatModelRequest,
+  opts?: CallOptions,
+): AsyncIterable<ChatStreamOutput> {
+  const state = deps.getState();
+  const callId = runtimeModelCallId(state.currentPhase!, state.currentStep!, opts?.key);
+  if (callId in state.modelResults) {
+    const decoded = tryDecodeChatResponse(state.modelResults[callId]!);
+    if (!decoded) {
+      throw new Error(`callChatStream: stored result for ${callId} is not a chat envelope`);
+    }
+    yield* chatResponseToStream(decoded);
+    return;
+  }
+
+  const chatModel = deps.chatModel;
+  if (!chatModel) {
+    throw new Error('callChatStream: Runtime was constructed without a ChatModelProvider');
+  }
+
+  enforceBudget(deps.policy, deps.getSpentUsd(), callId, deps.record);
+
+  const promptAudit = encodeChatPrompt(req);
+  if (deps.policy) {
+    await enforceContentSafety(deps.policy, promptAudit, callId, deps.record);
+  }
+
+  const startedAt = Date.now();
+  const chunks: ChatStreamOutput[] = [];
+
+  if (chatModel.chatStream) {
+    for await (const chunk of chatModel.chatStream(req)) {
+      chunks.push(chunk);
+      yield chunk;
+    }
+  } else {
+    const response = await chatModel.chat(req);
+    for await (const chunk of chatResponseToStream(response)) {
+      chunks.push(chunk);
+      yield chunk;
+    }
+  }
+
+  const response = accumulateChatStream(chunks);
+  const { promptTokens, completionTokens } = response.usage;
+  const costUsd = costOf(deps.pricing, promptTokens, completionTokens);
+  const encoded = encodeChatResponse(response);
+
+  if (deps.policy) {
+    await enforceOutputSafety(deps.policy, encoded, callId, deps.record);
+  }
+
+  deps.record({
+    type: 'ModelCalled',
+    callId,
+    phase: state.currentPhase!,
+    step: state.currentStep!,
+    prompt: promptAudit,
+    response: encoded,
+    promptTokens,
+    completionTokens,
+    costUsd,
+    latencyMs: Date.now() - startedAt,
+    cached: false,
+    ts: nowIso(),
+  });
 }
 
 async function callTool<R>(

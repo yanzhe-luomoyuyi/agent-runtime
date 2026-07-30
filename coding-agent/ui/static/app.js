@@ -12,7 +12,12 @@ const budgetPill = document.getElementById('budgetPill');
 const viewAnalysis = document.getElementById('view-analysis');
 const viewDiffs = document.getElementById('view-diffs');
 const traceContent = document.getElementById('traceContent');
+const compareContent = document.getElementById('compareContent');
 const viewAnswer = document.getElementById('view-answer');
+/** Live token buffers for SSE model_token / thinking_token (final markdown on `done`). */
+let streamAnswerBuf = '';
+let streamThinkingBuf = '';
+let streamAnswerActive = false;
 const sessionSelect = document.getElementById('sessionSelect');
 const sessionHint = document.getElementById('sessionHint');
 const renameSessionBtn = document.getElementById('renameSessionBtn');
@@ -216,12 +221,72 @@ async function selectSession(sessionId, { focusTab = 'auto' } = {}) {
 }
 
 function clearResultViews() {
+  streamAnswerBuf = '';
+  streamThinkingBuf = '';
+  streamAnswerActive = false;
   viewAnswer.innerHTML = '<p class="empty">The agent’s final answer lands here.</p>';
   viewAnalysis.innerHTML =
     '<p class="empty">ANALYSIS.md appears after code fixes (or when you ask for a doc). Q&amp;A goes to Answer.</p>';
   viewDiffs.innerHTML = '<p class="empty">File diffs appear when the agent edits the workspace.</p>';
   traceContent.innerHTML =
-    '<p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries). Load a session via Traces, or compare two sessions above.</p>';
+    '<p class="empty">Runtime + harness metrics appear after a run. Load a session via Traces, or open a run from Recent runs.</p>';
+  if (compareContent) {
+    compareContent.innerHTML = '<p class="empty">Pick two sessions and click Compare.</p>';
+  }
+}
+
+function ensureStreamPanels() {
+  if (streamAnswerActive && document.getElementById('streamAnswer')) return;
+  streamAnswerActive = true;
+  if (!streamAnswerBuf) streamAnswerBuf = '';
+  if (!streamThinkingBuf) streamThinkingBuf = '';
+  viewAnswer.innerHTML = `
+    <details class="thinking-block" id="thinkingBlock" open hidden>
+      <summary>Thinking</summary>
+      <pre class="stream-thinking" id="streamThinking"></pre>
+    </details>
+    <pre class="stream-answer" id="streamAnswer"></pre>
+  `;
+  const tab = document.querySelector('.tab[data-tab="answer"]');
+  if (tab) tab.click();
+  syncThinkingVisibility();
+}
+
+function syncThinkingVisibility() {
+  const block = document.getElementById('thinkingBlock');
+  if (!block) return;
+  block.hidden = !streamThinkingBuf;
+}
+
+function appendThinkingToken(token) {
+  ensureStreamPanels();
+  streamThinkingBuf += token;
+  const el = document.getElementById('streamThinking');
+  if (el) el.textContent = streamThinkingBuf;
+  syncThinkingVisibility();
+}
+
+function appendAnswerToken(token) {
+  ensureStreamPanels();
+  streamAnswerBuf += token;
+  const el = document.getElementById('streamAnswer');
+  if (el) el.textContent = streamAnswerBuf;
+}
+
+function renderAnswerPanel(answer, thinking) {
+  const parts = [];
+  if (thinking && String(thinking).trim()) {
+    parts.push(`<details class="thinking-block" open>
+      <summary>Thinking</summary>
+      <pre class="stream-thinking">${escapeHtml(thinking)}</pre>
+    </details>`);
+  }
+  if (answer) {
+    parts.push(renderMarkdownLite(answer));
+  } else {
+    parts.push('<p class="empty">No final answer.</p>');
+  }
+  viewAnswer.innerHTML = parts.join('');
 }
 
 function syncSessionActions() {
@@ -336,7 +401,7 @@ async function compareSelectedSessions() {
     return;
   }
   renderSessionCompare(data);
-  document.querySelector('.tab[data-tab="trace"]').click();
+  document.querySelector('.tab[data-tab="compare"]').click();
   logLine(`compared ${baselineSessionId} vs ${candidateSessionId}`);
 }
 
@@ -853,7 +918,7 @@ function renderSessionCompare(cmp) {
     </div>`);
   }
 
-  traceContent.innerHTML = parts.join('');
+  compareContent.innerHTML = parts.join('');
 }
 
 async function readSse(res) {
@@ -908,6 +973,10 @@ async function runAgent() {
   resumeDurableBtn.hidden = true;
   runHint.textContent = 'Running…';
   eventLog.innerHTML = '';
+  streamAnswerBuf = '';
+  streamThinkingBuf = '';
+  streamAnswerActive = false;
+  viewAnswer.innerHTML = '<p class="empty">Streaming…</p>';
   logLine(`workspace ${workspace}`);
   logLine(sessionId ? `continue session ${sessionId}` : 'new session…');
 
@@ -945,6 +1014,10 @@ async function resumeRun(runId) {
   syncControlLabel();
   runHint.textContent = 'Resuming…';
   eventLog.innerHTML = '';
+  streamAnswerBuf = '';
+  streamThinkingBuf = '';
+  streamAnswerActive = false;
+  viewAnswer.innerHTML = '<p class="empty">Streaming…</p>';
   logLine(`resume ${runId}`);
 
   // Do not re-inject crashAfterTurn on resume unless the user sets it again after a crash.
@@ -1021,6 +1094,12 @@ function handleEvent(event, data) {
       'model',
     );
   }
+  if (event === 'model_token') {
+    appendAnswerToken(data.token || '');
+  }
+  if (event === 'thinking_token') {
+    appendThinkingToken(data.token || '');
+  }
   if (event === 'policy') logLine(`policy deny ${data.scope}:${data.target} — ${data.reason}`, 'err');
   if (event === 'paused') {
     pauseBanner.hidden = false;
@@ -1054,6 +1133,7 @@ function handleEvent(event, data) {
   }
   if (event === 'error') logLine(data.message, 'err');
   if (event === 'done') {
+    streamAnswerActive = false;
     pauseBanner.hidden = true;
     approvalPanel.hidden = true;
     crashBanner.hidden = true;
@@ -1080,14 +1160,18 @@ function handleEvent(event, data) {
     }
     renderDiffs(data.diffs || []);
     renderTrace(data.runtimeTrace, data.harnessTrace);
-    viewAnswer.innerHTML = data.answer
-      ? renderMarkdownLite(data.answer)
-      : `<p class="empty">${escapeHtml(data.error || 'No final answer.')}</p>`;
+    const thinking = data.thinking || streamThinkingBuf || '';
+    viewAnswer.innerHTML = ''; // clear before renderAnswerPanel
+    if (data.answer || thinking) {
+      renderAnswerPanel(data.answer, thinking);
+    } else {
+      viewAnswer.innerHTML = `<p class="empty">${escapeHtml(data.error || 'No final answer.')}</p>`;
+    }
     if (data.analysis) {
       document.querySelector('.tab[data-tab="analysis"]').click();
     } else if ((data.diffs || []).length) {
       document.querySelector('.tab[data-tab="diffs"]').click();
-    } else if (data.answer) {
+    } else if (data.answer || thinking) {
       document.querySelector('.tab[data-tab="answer"]').click();
     } else if (data.runtimeTrace || data.harnessTrace) {
       document.querySelector('.tab[data-tab="trace"]').click();
@@ -1158,7 +1242,10 @@ resetBtn.addEventListener('click', async () => {
     viewAnalysis.innerHTML = '<p class="empty">Sandbox reset. Run again to regenerate analysis.</p>';
     viewDiffs.innerHTML = '<p class="empty">File diffs appear when the agent edits the workspace.</p>';
     traceContent.innerHTML =
-      '<p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries). Load a session via Traces, or compare two sessions above.</p>';
+      '<p class="empty">Runtime + harness metrics appear after a run. Load a session via Traces, or open a run from Recent runs.</p>';
+    if (compareContent) {
+      compareContent.innerHTML = '<p class="empty">Pick two sessions and click Compare.</p>';
+    }
   }
 });
 

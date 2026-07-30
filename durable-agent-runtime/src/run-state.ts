@@ -18,6 +18,23 @@ export function extractAnswer(state: RunState): string {
   return state.error ?? '(no answer)';
 }
 
+/**
+ * Last assistant `thinking` on the harness step transcript (extended-reasoning
+ * models). Empty when the model never emitted reasoning tokens.
+ */
+export function extractThinking(state: RunState, stepId = 'agent.1'): string | undefined {
+  const result = state.stepOutputs[stepId] as {
+    messages?: Array<{ role: string; thinking?: string }>;
+  } | undefined;
+  const msgs = result?.messages;
+  if (!msgs?.length) return undefined;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]!;
+    if (m.role === 'assistant' && m.thinking?.trim()) return m.thinking;
+  }
+  return undefined;
+}
+
 type TranscriptMessage = {
   role: string;
   content?: string | null;
