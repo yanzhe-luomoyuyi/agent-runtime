@@ -1015,6 +1015,135 @@ button.compact.linkish {
   color: var(--err);
 }
 
+.run-id {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.error-list,
+.ctx-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.error-card,
+.ctx-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.error-head,
+.ctx-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  background: #f3f6fa;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.78rem;
+}
+
+.error-msg,
+.error-detail {
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-detail {
+  border-top: 1px dashed var(--line);
+  color: var(--muted);
+  background: #fafbfc;
+}
+
+.ctx-card-summary {
+  padding: 0.45rem 0.75rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: #334155;
+  border-bottom: 1px dashed var(--line);
+}
+
+.ctx-before-after {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+}
+
+.ctx-panel {
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  padding: 0.5rem 0.65rem 0.65rem;
+}
+
+.ctx-panel:last-child {
+  border-right: none;
+}
+
+.ctx-panel h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.ctx-msgs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 28rem;
+  overflow: auto;
+}
+
+.ctx-msg {
+  border: 1px solid rgba(215, 222, 232, 0.9);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.ctx-msg-head {
+  padding: 0.25rem 0.45rem;
+  background: #f8fafc;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+
+.ctx-msg-body {
+  margin: 0;
+  padding: 0.35rem 0.45rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 12rem;
+  overflow: auto;
+}
+
+@media (max-width: 900px) {
+  .ctx-before-after {
+    grid-template-columns: 1fr;
+  }
+
+  .ctx-panel {
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .ctx-panel:last-child {
+    border-bottom: none;
+  }
+}
+
 @media (max-width: 720px) {
   .span-row {
     grid-template-columns: 1fr;

@@ -258,6 +258,42 @@ export interface ContextManagerOptions {
 }
 
 /**
+ * Lightweight message preview for assemble/compact before·after audits.
+ * Content is truncated so harness traces stay bounded.
+ */
+export interface ContextMessageSnapshot {
+  role: string;
+  content?: string;
+  name?: string;
+  toolCallId?: string;
+  kind?: string;
+  toolCalls?: Array<{ id: string; name: string }>;
+}
+
+/** Cap per-message content in context decision snapshots. */
+const CONTEXT_SNAPSHOT_MAX_CHARS = 4_000;
+
+/** Serialize transcript messages for TraceCollector / Workbench Context tab. */
+export function snapshotContextMessages(messages: Message[]): ContextMessageSnapshot[] {
+  return messages.map((m) => {
+    const snap: ContextMessageSnapshot = { role: m.role };
+    if (m.content != null) {
+      snap.content =
+        m.content.length > CONTEXT_SNAPSHOT_MAX_CHARS
+          ? `${m.content.slice(0, CONTEXT_SNAPSHOT_MAX_CHARS)}\n… [truncated ${m.content.length - CONTEXT_SNAPSHOT_MAX_CHARS} chars]`
+          : m.content;
+    }
+    if (m.name) snap.name = m.name;
+    if (m.toolCallId) snap.toolCallId = m.toolCallId;
+    if (m.kind) snap.kind = m.kind;
+    if (m.toolCalls?.length) {
+      snap.toolCalls = m.toolCalls.map((tc) => ({ id: tc.id, name: tc.name }));
+    }
+    return snap;
+  });
+}
+
+/**
  * Auditable outcome of one `assemble` call. Suitable for TraceCollector /
  * ablation fixtures — answers "what was kept, what was folded, why".
  */
@@ -276,6 +312,10 @@ export interface AssembleDecision {
   importanceScoring: boolean;
   /** Machine-readable tags, e.g. `under_budget`, `hard_cap_trim`, `pinned_recent`. */
   reasons: string[];
+  /** Set when `outcome === 'assembled'` — transcript before assemble. */
+  beforeMessages?: ContextMessageSnapshot[];
+  /** Set when `outcome === 'assembled'` — transcript sent to the model. */
+  afterMessages?: ContextMessageSnapshot[];
 }
 
 /**
@@ -290,6 +330,10 @@ export interface CompactDecision {
   summarizedMessages: number;
   /** Durable model key when a summary was produced. */
   key?: string;
+  /** Set when `outcome === 'compacted'` — durable transcript before compact. */
+  beforeMessages?: ContextMessageSnapshot[];
+  /** Set when `outcome === 'compacted'` — durable transcript after compact. */
+  afterMessages?: ContextMessageSnapshot[];
 }
 
 export interface AssembleResult {
@@ -524,6 +568,8 @@ export class ContextManager {
         hardCapTrimmed,
         importanceScoring: this.importanceScoring,
         reasons,
+        beforeMessages: snapshotContextMessages(messages),
+        afterMessages: snapshotContextMessages(out),
       },
     };
   }
@@ -673,6 +719,8 @@ export class ContextManager {
         protectedUnits: protectedOlderUnits.length,
         summarizedMessages: older.length,
         key,
+        beforeMessages: snapshotContextMessages(messages),
+        afterMessages: snapshotContextMessages(out),
       },
     };
   }

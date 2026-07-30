@@ -113,5 +113,8 @@ describe('context assemble ablation', () => {
     expect(importance.decision.keptMessages).toBeGreaterThan(0);
     expect(importance.decision.inputTokens).toBeGreaterThan(0);
     expect(importance.decision.availableBudget).toBe(100);
+    expect(importance.decision.beforeMessages?.length).toBe(msgs.length);
+    expect(importance.decision.afterMessages?.length).toBe(importance.messages.length);
+    expect(importance.decision.afterMessages!.length).toBeLessThan(importance.decision.beforeMessages!.length);
   });
 });

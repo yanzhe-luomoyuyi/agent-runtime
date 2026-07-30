@@ -73,7 +73,10 @@ export function readAnalysisMd(rootDir: string): string | null {
   }
 }
 
-/** Minimal Myers-inspired LCS line diff → unified hunks. */
+/**
+ * Minimal Myers-inspired LCS line diff → unified hunks.
+ * Only emits changed lines (`+`/`-`) and hunk headers — no unchanged context.
+ */
 export function unifiedDiff(path: string, before: string, after: string): string {
   const a = before.split(/\r?\n/);
   const b = after.split(/\r?\n/);
@@ -102,13 +105,8 @@ export function unifiedDiff(path: string, before: string, after: string): string
 
   for (const e of edits) {
     if (e.type === 'equal') {
-      if (hunk.length === 0) {
-        hunkStartA = i + 1;
-        hunkStartB = j + 1;
-      }
-      hunk.push(` ${e.line}`);
-      countA++;
-      countB++;
+      // Close the current change hunk; skip unchanged lines entirely.
+      flush();
       i++;
       j++;
       continue;
@@ -127,7 +125,7 @@ export function unifiedDiff(path: string, before: string, after: string): string
       j++;
     }
   }
-  if (hunk.some((l) => l.startsWith('-') || l.startsWith('+'))) flush();
+  flush();
   return lines.join('\n');
 }
 

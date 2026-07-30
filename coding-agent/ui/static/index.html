@@ -20,7 +20,7 @@
         <div class="hero-copy">
           <p class="eyebrow">Local workbench</p>
           <h1>coding-agent</h1>
-          <p class="lede">Point at a repo, describe the change, review analysis and diffs.</p>
+          <p class="lede">Point at a repo, describe the change, review diffs and traces.</p>
         </div>
         <div class="hero-meta">
           <span class="pill" id="keyPill">API key</span>
@@ -115,18 +115,22 @@
 
         <section class="card results">
           <div class="tabs" role="tablist">
-            <button type="button" class="tab active" data-tab="analysis" role="tab" title="ANALYSIS.md from the workspace">Analysis</button>
-            <button type="button" class="tab" data-tab="diffs" role="tab" title="File changes vs pre-run snapshot">Diffs</button>
+            <button type="button" class="tab active" data-tab="diffs" role="tab" title="File changes vs pre-run snapshot">Diffs</button>
+            <button type="button" class="tab" data-tab="errors" role="tab" title="Tool, model, policy, and run errors">Errors</button>
+            <button type="button" class="tab" data-tab="context" role="tab" title="Assemble and compact before/after transcripts">Context</button>
             <button type="button" class="tab" data-tab="trace" role="tab" title="Runtime + harness cost, cache, and turn timeline">Trace</button>
             <button type="button" class="tab" data-tab="compare" role="tab" title="Compare aggregated traces of two sessions">Compare</button>
             <button type="button" class="tab" data-tab="answer" role="tab" title="Final agent answer text">Answer</button>
           </div>
           <div class="tab-body">
-            <article id="view-analysis" class="view active">
-              <p class="empty">ANALYSIS.md appears after code fixes (or when you ask for a doc). Q&amp;A goes to Answer.</p>
-            </article>
-            <article id="view-diffs" class="view">
+            <article id="view-diffs" class="view active">
               <p class="empty">File diffs appear when the agent edits the workspace.</p>
+            </article>
+            <article id="view-errors" class="view">
+              <p class="empty">Tool, model, policy, and run errors appear here.</p>
+            </article>
+            <article id="view-context" class="view">
+              <p class="empty">Assemble / compact before·after transcripts appear after a run (or when you load a harness trace).</p>
             </article>
             <article id="view-trace" class="view">
               <div id="traceContent">

@@ -9,11 +9,14 @@ const eventLog = document.getElementById('eventLog');
 const keyPill = document.getElementById('keyPill');
 const modelPill = document.getElementById('modelPill');
 const budgetPill = document.getElementById('budgetPill');
-const viewAnalysis = document.getElementById('view-analysis');
 const viewDiffs = document.getElementById('view-diffs');
+const viewErrors = document.getElementById('view-errors');
+const viewContext = document.getElementById('view-context');
 const traceContent = document.getElementById('traceContent');
 const compareContent = document.getElementById('compareContent');
 const viewAnswer = document.getElementById('view-answer');
+/** Live error list for the Errors tab (also rebuilt from traces on done/load). */
+let runErrors = [];
 /** Live token buffers for SSE model_token / thinking_token (final markdown on `done`). */
 let streamAnswerBuf = '';
 let streamThinkingBuf = '';
@@ -224,10 +227,12 @@ function clearResultViews() {
   streamAnswerBuf = '';
   streamThinkingBuf = '';
   streamAnswerActive = false;
+  runErrors = [];
   viewAnswer.innerHTML = '<p class="empty">The agent’s final answer lands here.</p>';
-  viewAnalysis.innerHTML =
-    '<p class="empty">ANALYSIS.md appears after code fixes (or when you ask for a doc). Q&amp;A goes to Answer.</p>';
   viewDiffs.innerHTML = '<p class="empty">File diffs appear when the agent edits the workspace.</p>';
+  viewErrors.innerHTML = '<p class="empty">Tool, model, policy, and run errors appear here.</p>';
+  viewContext.innerHTML =
+    '<p class="empty">Assemble / compact before·after transcripts appear after a run (or when you load a harness trace).</p>';
   traceContent.innerHTML =
     '<p class="empty">Runtime + harness metrics appear after a run. Load a session via Traces, or open a run from Recent runs.</p>';
   if (compareContent) {
@@ -347,7 +352,7 @@ async function loadSessionTraces(sessionId, { focusTab = 'auto' } = {}) {
   logLine(`loaded session ${sessionId} (${data.runCount || 0} runs)`);
 }
 
-/** Fill Answer (and clear live-only Analysis/Diffs) from a session trace bundle. */
+/** Fill Answer / Errors / Context (and clear live-only Diffs) from a session trace bundle. */
 function hydrateSessionPanels(bundle, { focusTab = 'auto' } = {}) {
   const runs = bundle.runs || [];
   const lastWithAnswer =
@@ -358,11 +363,18 @@ function hydrateSessionPanels(bundle, { focusTab = 'auto' } = {}) {
     ? renderMarkdownLite(lastWithAnswer.answer)
     : '<p class="empty">No final answer in this session.</p>';
 
-  // Analysis/Diffs come from the live workspace / run snapshot — not session history.
-  viewAnalysis.innerHTML =
-    '<p class="empty">Historical sessions do not restore ANALYSIS.md — it reflects the current workspace after a live run.</p>';
+  // Diffs come from the live workspace / run snapshot — not session history.
   viewDiffs.innerHTML =
     '<p class="empty">Historical sessions do not restore file diffs — diffs come from the live run snapshot.</p>';
+
+  const lastRun = runs[runs.length - 1];
+  const errors = collectErrorsFromTraces(lastRun?.runtimeTrace, lastRun?.harnessTrace, {
+    runError: lastRun?.error,
+    runId: lastRun?.runId,
+  });
+  runErrors = errors;
+  renderErrors(errors);
+  renderContext(lastRun?.harnessTrace);
 
   let tab = focusTab;
   if (tab === 'auto') {
@@ -378,7 +390,12 @@ async function loadRunTrace(runId) {
     return;
   }
   const payload = await tr.json();
-  renderTrace(payload.runtimeTrace, payload.harnessTrace, { heading: `Run ${runId}` });
+  currentRunId = runId;
+  renderTrace(payload.runtimeTrace, payload.harnessTrace, { runId });
+  const errors = collectErrorsFromTraces(payload.runtimeTrace, payload.harnessTrace, { runId });
+  runErrors = errors;
+  renderErrors(errors);
+  renderContext(payload.harnessTrace);
   document.querySelector('.tab[data-tab="trace"]').click();
   logLine(`loaded trace ${runId}`);
 }
@@ -570,22 +587,209 @@ function renderDiffs(diffs) {
   }
   viewDiffs.innerHTML = diffs
     .map((d) => {
+      // Only changed lines + headers — skip unchanged context (` ` prefix).
       const lines = (d.unified || '')
         .split('\n')
+        .filter((line) => {
+          if (!line) return false;
+          if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) return true;
+          if (line.startsWith('+') || line.startsWith('-')) return true;
+          return false;
+        })
         .map((line) => {
-          let cls = 'ctx';
-          if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) cls = 'meta';
-          else if (line.startsWith('+')) cls = 'add';
-          else if (line.startsWith('-')) cls = 'del';
+          let cls = 'meta';
+          if (line.startsWith('+') && !line.startsWith('+++')) cls = 'add';
+          else if (line.startsWith('-') && !line.startsWith('---')) cls = 'del';
           return `<span class="ln ${cls}">${escapeHtml(line)}</span>`;
         })
         .join('');
       return `<div class="file-card">
         <div class="file-head"><span>${escapeHtml(d.path)}</span><span class="badge">${escapeHtml(d.status)}</span></div>
-        <pre class="diff">${lines}</pre>
+        <pre class="diff">${lines || '<span class="ln meta">(no changed lines)</span>'}</pre>
       </div>`;
     })
     .join('');
+}
+
+function pushError(entry) {
+  runErrors.push({
+    at: entry.at || new Date().toISOString(),
+    source: entry.source || 'run',
+    turn: entry.turn,
+    message: entry.message || '',
+    detail: entry.detail,
+  });
+  renderErrors(runErrors);
+}
+
+function collectErrorsFromTraces(runtimeTrace, harnessTrace, opts = {}) {
+  const out = [];
+  if (opts.runError) {
+    out.push({
+      at: '',
+      source: 'run',
+      message: String(opts.runError),
+      detail: opts.runId ? `runId ${opts.runId}` : undefined,
+    });
+  }
+  for (const turn of harnessTrace?.turns || []) {
+    const m = turn.model || {};
+    if (m.ok === false && m.error) {
+      out.push({
+        at: '',
+        source: 'model',
+        turn: turn.turn,
+        message: m.error,
+      });
+    }
+    for (const tc of turn.tools || []) {
+      if (!tc.ok) {
+        out.push({
+          at: '',
+          source: 'tool',
+          turn: turn.turn,
+          message: `${tc.tool}: ${tc.error || 'failed'}`,
+          detail: tc.args != null ? JSON.stringify(tc.args).slice(0, 500) : undefined,
+        });
+      }
+    }
+  }
+  for (const s of runtimeTrace?.spans || []) {
+    if (!s.error) continue;
+    out.push({
+      at: '',
+      source: 'span',
+      message: `${s.kind || 'span'} ${s.name || ''}: ${s.error}`,
+    });
+  }
+  const denials = runtimeTrace?.totals?.policyDenials;
+  if (denials > 0) {
+    out.push({
+      at: '',
+      source: 'policy',
+      message: `${denials} policy denial(s) recorded in runtime totals`,
+    });
+  }
+  return out;
+}
+
+function renderErrors(errors) {
+  if (!viewErrors) return;
+  if (!errors?.length) {
+    viewErrors.innerHTML = '<p class="empty">No errors for this run.</p>';
+    return;
+  }
+  viewErrors.innerHTML = `<div class="error-list">${errors
+    .map((e) => {
+      const turn = e.turn != null ? ` · turn ${escapeHtml(String(e.turn))}` : '';
+      return `<div class="error-card">
+        <div class="error-head">
+          <span class="badge">${escapeHtml(e.source || 'error')}</span>
+          <span class="meta">${escapeHtml(e.at || '')}${turn}</span>
+        </div>
+        <pre class="error-msg">${escapeHtml(e.message || '')}</pre>
+        ${e.detail ? `<pre class="error-detail">${escapeHtml(e.detail)}</pre>` : ''}
+      </div>`;
+    })
+    .join('')}</div>`;
+}
+
+function formatContextMessage(m) {
+  const bits = [m.role || '?'];
+  if (m.name) bits.push(m.name);
+  if (m.kind) bits.push(`kind=${m.kind}`);
+  if (m.toolCallId) bits.push(`toolCallId=${m.toolCallId}`);
+  if (m.toolCalls?.length) {
+    bits.push(`tools=${m.toolCalls.map((t) => t.name).join(',')}`);
+  }
+  const head = bits.join(' · ');
+  const body = m.content != null ? m.content : '(no content)';
+  return `<div class="ctx-msg">
+    <div class="ctx-msg-head">${escapeHtml(head)}</div>
+    <pre class="ctx-msg-body">${escapeHtml(body)}</pre>
+  </div>`;
+}
+
+function renderMessageList(messages, label) {
+  if (!messages?.length) {
+    return `<div class="ctx-panel"><h4>${escapeHtml(label)}</h4><p class="empty">Empty</p></div>`;
+  }
+  return `<div class="ctx-panel">
+    <h4>${escapeHtml(label)} <span class="meta">(${messages.length})</span></h4>
+    <div class="ctx-msgs">${messages.map(formatContextMessage).join('')}</div>
+  </div>`;
+}
+
+function renderContextDecision(kind, turn, decision) {
+  if (!decision) return '';
+  const changed =
+    (kind === 'assemble' && decision.outcome === 'assembled') ||
+    (kind === 'compact' && decision.outcome === 'compacted');
+  const summary =
+    kind === 'assemble'
+      ? `${decision.outcome} · in ${decision.inputTokens} → out ${decision.outputTokens}/${decision.availableBudget}` +
+        ` · kept ${decision.keptMessages} · summarized ${decision.summarizedMessages}` +
+        (decision.hardCapTrimmed ? ' · hard-cap' : '') +
+        ` · ${(decision.reasons || []).join(', ') || '—'}`
+      : `${decision.outcome}/${decision.reason} · in ${decision.inputTokens} → out ${decision.outputTokens}` +
+        ` · summarized ${decision.summarizedMessages}` +
+        (decision.key ? ` · key ${decision.key}` : '');
+
+  const panels = changed
+    ? `<div class="ctx-before-after">
+        ${renderMessageList(decision.beforeMessages, 'Before')}
+        ${renderMessageList(decision.afterMessages, 'After')}
+      </div>`
+    : `<p class="fine">No transcript change (${escapeHtml(decision.outcome)}).</p>`;
+
+  return `<div class="ctx-card">
+    <div class="ctx-card-head">
+      <strong>Turn ${turn}</strong>
+      <span class="badge">${escapeHtml(kind)}</span>
+    </div>
+    <div class="ctx-card-summary">${escapeHtml(summary)}</div>
+    ${panels}
+  </div>`;
+}
+
+function renderContext(harnessTrace) {
+  if (!viewContext) return;
+  const turns = harnessTrace?.turns || [];
+  const cards = [];
+  let compactNoop = 0;
+  let assemblePassthrough = 0;
+  for (const turn of turns) {
+    const compact = turn.context?.compact;
+    const assemble = turn.context?.assemble;
+    if (compact) {
+      if (compact.outcome === 'compacted') {
+        cards.push(renderContextDecision('compact', turn.turn, compact));
+      } else {
+        compactNoop++;
+      }
+    }
+    if (assemble) {
+      if (assemble.outcome === 'assembled') {
+        cards.push(renderContextDecision('assemble', turn.turn, assemble));
+      } else {
+        assemblePassthrough++;
+      }
+    }
+  }
+  if (!cards.length) {
+    const bits = [];
+    if (assemblePassthrough) bits.push(`${assemblePassthrough} assemble passthrough`);
+    if (compactNoop) bits.push(`${compactNoop} compact noop`);
+    viewContext.innerHTML = bits.length
+      ? `<p class="empty">No assemble / compact changes this run (${escapeHtml(bits.join(', '))}).</p>`
+      : '<p class="empty">No assemble / compact decisions recorded for this run.</p>';
+    return;
+  }
+  const footer =
+    compactNoop || assemblePassthrough
+      ? `<p class="fine">Also: ${assemblePassthrough} assemble passthrough · ${compactNoop} compact noop (unchanged — not expanded).</p>`
+      : '';
+  viewContext.innerHTML = `<div class="ctx-list">${cards.join('')}</div>${footer}`;
 }
 
 function escapeHtml(s) {
@@ -678,7 +882,14 @@ function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
   const writeFileMs = resolveWriteFileMs(t);
   const durableWrites = resolveDurableWrites(t);
   const parts = [];
+  const runId = opts.runId || currentRunId || null;
 
+  if (runId) {
+    parts.push(`<div class="trace-section">
+      <h3>Run ID</h3>
+      <p class="run-id mono">${escapeHtml(runId)}</p>
+    </div>`);
+  }
   if (opts.heading) {
     parts.push(`<div class="trace-section"><h3>${escapeHtml(opts.heading)}</h3></div>`);
   }
@@ -871,7 +1082,15 @@ function renderSessionTraceBundle(bundle) {
         viewAnswer.innerHTML = renderMarkdownLite(run.answer);
       }
       if (run?.runtimeTrace || run?.harnessTrace) {
-        renderTrace(run.runtimeTrace, run.harnessTrace, { heading: `Run ${runId}` });
+        currentRunId = runId;
+        renderTrace(run.runtimeTrace, run.harnessTrace, { runId });
+        const errors = collectErrorsFromTraces(run.runtimeTrace, run.harnessTrace, {
+          runError: run.error,
+          runId,
+        });
+        runErrors = errors;
+        renderErrors(errors);
+        renderContext(run.harnessTrace);
         document.querySelector('.tab[data-tab="trace"]').click();
         logLine(`loaded run ${runId} from session`);
         return;
@@ -1078,6 +1297,10 @@ function handleEvent(event, data) {
   }
   if (event === 'run') {
     currentRunId = data.runId;
+    runErrors = [];
+    renderErrors(runErrors);
+    viewContext.innerHTML =
+      '<p class="empty">Assemble / compact before·after transcripts appear after a run (or when you load a harness trace).</p>';
     syncControlLabel();
     controlBar.hidden = false;
     logLine(`run ${data.runId}`);
@@ -1085,7 +1308,10 @@ function handleEvent(event, data) {
   if (event === 'tool') {
     if (data.status === 'start') logLine(`→ ${data.tool}`);
     if (data.status === 'ok') logLine(`✓ ${data.tool}`, 'ok');
-    if (data.status === 'error') logLine(`✗ ${data.tool}: ${data.error}`, 'err');
+    if (data.status === 'error') {
+      logLine(`✗ ${data.tool}: ${data.error}`, 'err');
+      pushError({ source: 'tool', message: `${data.tool}: ${data.error || 'failed'}` });
+    }
   }
   if (event === 'model') {
     const cost = data.costUsd != null ? ` ${fmtUsd(data.costUsd)}` : '';
@@ -1102,7 +1328,13 @@ function handleEvent(event, data) {
   if (event === 'thinking_token') {
     appendThinkingToken(data.token || '');
   }
-  if (event === 'policy') logLine(`policy deny ${data.scope}:${data.target} — ${data.reason}`, 'err');
+  if (event === 'policy') {
+    logLine(`policy deny ${data.scope}:${data.target} — ${data.reason}`, 'err');
+    pushError({
+      source: 'policy',
+      message: `deny ${data.scope}:${data.target} — ${data.reason}`,
+    });
+  }
   if (event === 'paused') {
     pauseBanner.hidden = false;
     logLine(`paused at turn ${data.turn}`, 'warn');
@@ -1131,9 +1363,17 @@ function handleEvent(event, data) {
     crashTurnEl.value = '';
     abortBanner.hidden = true;
     logLine(`crashed ${data.runId}: ${data.message} — use Resume`, 'err');
+    pushError({
+      source: 'crash',
+      message: data.message || 'run crashed',
+      detail: data.runId ? `runId ${data.runId}` : undefined,
+    });
     syncResumeUi();
   }
-  if (event === 'error') logLine(data.message, 'err');
+  if (event === 'error') {
+    logLine(data.message, 'err');
+    pushError({ source: 'error', message: data.message || 'unknown error' });
+  }
   if (event === 'done') {
     streamAnswerActive = false;
     pauseBanner.hidden = true;
@@ -1145,6 +1385,7 @@ function handleEvent(event, data) {
       currentSessionId = data.sessionId;
       sessionSelect.value = data.sessionId;
     }
+    if (data.runId) currentRunId = data.runId;
     const aborted = data.status !== 'completed' || (data.error && /abort/i.test(String(data.error)));
     if (aborted && data.status !== 'completed') {
       abortBanner.hidden = false;
@@ -1154,14 +1395,27 @@ function handleEvent(event, data) {
       abortBanner.hidden = false;
     }
     logLine(`done (${data.status})`, data.status === 'completed' ? 'ok' : 'err');
-    if (data.analysis) {
-      viewAnalysis.innerHTML = renderMarkdownLite(data.analysis);
-    } else {
-      viewAnalysis.innerHTML =
-        '<p class="empty">No ANALYSIS.md (normal for Q&A — see Answer). Written only when fixing code or when you ask for a doc.</p>';
-    }
     renderDiffs(data.diffs || []);
-    renderTrace(data.runtimeTrace, data.harnessTrace);
+    renderTrace(data.runtimeTrace, data.harnessTrace, { runId: data.runId || currentRunId });
+    renderContext(data.harnessTrace);
+    const fromTrace = collectErrorsFromTraces(data.runtimeTrace, data.harnessTrace, {
+      runError: data.error,
+      runId: data.runId || currentRunId,
+    });
+    // Prefer the richer trace-derived list when present; keep live-only entries otherwise.
+    runErrors = fromTrace.length ? fromTrace : runErrors;
+    if (data.error && !runErrors.some((e) => e.message === String(data.error))) {
+      runErrors = [
+        {
+          at: '',
+          source: 'run',
+          message: String(data.error),
+          detail: data.runId ? `runId ${data.runId}` : undefined,
+        },
+        ...runErrors,
+      ];
+    }
+    renderErrors(runErrors);
     const thinking = data.thinking || streamThinkingBuf || '';
     viewAnswer.innerHTML = ''; // clear before renderAnswerPanel
     if (data.answer || thinking) {
@@ -1169,10 +1423,10 @@ function handleEvent(event, data) {
     } else {
       viewAnswer.innerHTML = `<p class="empty">${escapeHtml(data.error || 'No final answer.')}</p>`;
     }
-    if (data.analysis) {
-      document.querySelector('.tab[data-tab="analysis"]').click();
-    } else if ((data.diffs || []).length) {
+    if ((data.diffs || []).length) {
       document.querySelector('.tab[data-tab="diffs"]').click();
+    } else if (runErrors.length) {
+      document.querySelector('.tab[data-tab="errors"]').click();
     } else if (data.answer || thinking) {
       document.querySelector('.tab[data-tab="answer"]').click();
     } else if (data.runtimeTrace || data.harnessTrace) {
@@ -1241,8 +1495,11 @@ resetBtn.addEventListener('click', async () => {
   }
   if (data.ok) {
     logLine('sandbox reset', 'ok');
-    viewAnalysis.innerHTML = '<p class="empty">Sandbox reset. Run again to regenerate analysis.</p>';
     viewDiffs.innerHTML = '<p class="empty">File diffs appear when the agent edits the workspace.</p>';
+    runErrors = [];
+    viewErrors.innerHTML = '<p class="empty">Tool, model, policy, and run errors appear here.</p>';
+    viewContext.innerHTML =
+      '<p class="empty">Assemble / compact before·after transcripts appear after a run (or when you load a harness trace).</p>';
     traceContent.innerHTML =
       '<p class="empty">Runtime + harness metrics appear after a run. Load a session via Traces, or open a run from Recent runs.</p>';
     if (compareContent) {

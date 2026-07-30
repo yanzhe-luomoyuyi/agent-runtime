@@ -17,6 +17,19 @@ describe('workspace-diff', () => {
     expect(diffs[0]!.unified).toContain('+const x = 2;');
   });
 
+  it('unifiedDiff omits unchanged context lines', () => {
+    const u = unifiedDiff(
+      'a.js',
+      'keep-a\nchange-me\nkeep-b\n',
+      'keep-a\nchanged\nkeep-b\n',
+    );
+    expect(u).toContain('-change-me');
+    expect(u).toContain('+changed');
+    expect(u).not.toContain(' keep-a');
+    expect(u).not.toContain(' keep-b');
+    expect(u.split('\n').some((l) => l.startsWith(' ') && !l.startsWith('---'))).toBe(false);
+  });
+
   it('unifiedDiff headers include path', () => {
     const u = unifiedDiff('src/x.js', 'a\n', 'b\n');
     expect(u).toContain('--- a/src/x.js');
