@@ -430,7 +430,13 @@ export function createFsTools(workspace: Workspace, opts: FsToolsOptions = {}): 
       const before = readFileSync(abs, 'utf8');
       const occurrences = countOccurrences(before, old_string);
       if (occurrences === 0) {
-        throw new Error(`str_replace: old_string not found in ${workspace.relative(abs)}`);
+        const rel = workspace.relative(abs);
+        const hint = whitespaceNearMissHint(before, old_string);
+        throw new Error(
+          hint
+            ? `str_replace: old_string not found in ${rel} (${hint})`
+            : `str_replace: old_string not found in ${rel}`,
+        );
       }
       if (!replace_all && occurrences > 1) {
         throw new Error(
@@ -514,6 +520,44 @@ function countOccurrences(haystack: string, needle: string): number {
     from = idx + needle.length;
   }
   return count;
+}
+
+/**
+ * When old_string is missing, detect a unique line-trim-equal region so the model
+ * can fix whitespace without auto-applying a fuzzy edit.
+ */
+function whitespaceNearMissHint(content: string, old_string: string): string | null {
+  const needleLines = old_string.split('\n');
+  const n = needleLines.length;
+  if (n === 0) return null;
+
+  const needleTrimmed = needleLines.map((l) => l.trim());
+  // Require at least one non-empty trimmed line so blank-only needles don't match everything.
+  if (!needleTrimmed.some((l) => l.length > 0)) return null;
+
+  const lines = content.split('\n');
+  const matches: Array<{ startLine: number; actual: string }> = [];
+
+  for (let i = 0; i <= lines.length - n; i += 1) {
+    const slice = lines.slice(i, i + n);
+    const equalTrimmed = slice.every((line, j) => line.trim() === needleTrimmed[j]);
+    if (!equalTrimmed) continue;
+    const actual = slice.join('\n');
+    if (actual === old_string) continue;
+    matches.push({ startLine: i + 1, actual });
+    if (matches.length > 1) return null;
+  }
+
+  if (matches.length !== 1) return null;
+  const m = matches[0]!;
+  return (
+    `whitespace-only mismatch near line ${m.startLine}: ` +
+    `file has ${JSON.stringify(clipHint(m.actual))} but old_string has ${JSON.stringify(clipHint(old_string))}`
+  );
+}
+
+function clipHint(s: string, max = 160): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
 function escapeRegExp(s: string): string {

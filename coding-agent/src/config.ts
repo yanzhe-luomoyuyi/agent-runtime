@@ -139,7 +139,7 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     },
   },
   run: {
-    maxTurns: 24,
+    maxTurns: 36,
     runsDir: '.coding-agent-runs',
     autoApproveWrites: false,
     compaction: {

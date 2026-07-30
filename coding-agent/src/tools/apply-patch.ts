@@ -217,15 +217,10 @@ function parseUpdateDiff(lines: string[], input: string): { chunks: Chunk[]; fuz
     }
 
     const { nextContext, sectionChunks, endIndex, eof } = readSection(parser.lines, parser.index);
-    const nextContextText = nextContext.join('\n');
     const { newIndex, fuzz } = findContext(inputLines, nextContext, cursor, eof);
 
     if (newIndex === -1) {
-      throw new Error(
-        eof
-          ? `apply_patch: invalid EOF context ${cursor}:\n${nextContextText}`
-          : `apply_patch: context not found ${cursor}:\n${nextContextText}`,
-      );
+      throw new Error(formatContextNotFoundError(inputLines, nextContext, cursor, eof));
     }
 
     parser.fuzz += fuzz;
@@ -384,6 +379,61 @@ function findContext(
     return { newIndex: fallback.newIndex, fuzz: fallback.fuzz + 10000 };
   }
   return findContextCore(lines, context, start);
+}
+
+/** Pinpoint the first mismatched line instead of dumping the whole expected context. */
+function formatContextNotFoundError(
+  lines: string[],
+  context: string[],
+  start: number,
+  eof: boolean,
+): string {
+  const prefix = eof
+    ? `apply_patch: invalid EOF context (search from line ${start + 1})`
+    : `apply_patch: context not found (search from line ${start + 1})`;
+
+  if (!context.length) {
+    return `${prefix}: empty context`;
+  }
+
+  let bestAt = start;
+  let bestMatched = -1;
+  const searchEnd = Math.max(start, lines.length - 1);
+  for (let i = start; i <= searchEnd; i += 1) {
+    let matched = 0;
+    while (matched < context.length && i + matched < lines.length) {
+      if (!lineFuzzEqual(lines[i + matched]!, context[matched]!)) break;
+      matched += 1;
+    }
+    if (matched > bestMatched) {
+      bestMatched = matched;
+      bestAt = i;
+    }
+    if (i + context.length > lines.length && matched === 0 && i > start) break;
+  }
+
+  const mismatchIdx = bestMatched < 0 ? 0 : bestMatched;
+  const fileLine = bestAt + mismatchIdx + 1;
+  const expected = context[mismatchIdx] ?? '(end of expected context)';
+  const actual =
+    bestAt + mismatchIdx < lines.length ? lines[bestAt + mismatchIdx]! : '(EOF)';
+
+  const detail =
+    bestMatched > 0
+      ? `matched ${bestMatched}/${context.length} lines from line ${bestAt + 1}; `
+      : '';
+  return (
+    `${prefix}: ${detail}at file line ${fileLine}, ` +
+    `expected ${JSON.stringify(clipErr(expected))} got ${JSON.stringify(clipErr(actual))}`
+  );
+}
+
+function lineFuzzEqual(a: string, b: string): boolean {
+  return a === b || a.trimEnd() === b.trimEnd() || a.trim() === b.trim();
+}
+
+function clipErr(s: string, max = 120): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
 function findContextCore(

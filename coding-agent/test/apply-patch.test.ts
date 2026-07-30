@@ -18,6 +18,26 @@ describe('applyDiff', () => {
   it('fails when context cannot be found', () => {
     expect(() => applyDiff('hello\n', ['@@', '-missing', '+x'])).toThrow(/context not found/);
   });
+
+  it('pinpoints the first mismatched line in context-not-found errors', () => {
+    const input = [
+      'export interface RunAgentOptions {',
+      '  goal: string;',
+      '  /** detection). When provided, loopLimit is ignored in favour of this object. */',
+      '  loopOptions?: object;',
+      '}',
+    ].join('\n');
+    expect(() =>
+      applyDiff(input, [
+        '@@',
+        ' export interface RunAgentOptions {',
+        '   goal: string;',
+        '   /** detection). When provided, loopLimit is ignored (use loopOptions.limit). */',
+        '   loopOptions?: object;',
+        ' }',
+      ]),
+    ).toThrow(/at file line 3.*expected .*use loopOptions\.limit.*got .*in favour of this object/);
+  });
 });
 
 describe('parsePatchEnvelope', () => {

@@ -134,6 +134,28 @@ describe('fs tools', () => {
     }
   });
 
+  it('str_replace hints when old_string only mismatches whitespace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-'));
+    try {
+      const tmp = new Workspace(dir);
+      const tools = Object.fromEntries(createFsTools(tmp).map((t) => [t.name, t]));
+      tools.write_file!.run({
+        path: 'loop.ts',
+        content: '/** Context passed to error handlers. */\nexport type Ctx = {};\n',
+      });
+
+      expect(() =>
+        tools.str_replace!.run({
+          path: 'loop.ts',
+          old_string: '  /** Context passed to error handlers. */',
+          new_string: '/** Short. */',
+        }),
+      ).toThrow(/whitespace-only mismatch near line 1/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('read_file returns pagination metadata and supports negative offset', () => {
     const dir = mkdtempSync(join(tmpdir(), 'coding-ws-'));
     try {

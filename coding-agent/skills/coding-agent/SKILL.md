@@ -33,9 +33,12 @@ Use when the user asks what something does, where code lives, how it works, or s
 
 1. **Analyze** — Exploration above, then state root cause briefly before editing.
 2. **Edit** —
+   - Before editing a file: `read_file` the exact target slice; copy `old_string` / patch context **verbatim** from that read (do not edit from memory).
+   - Prefer small hunks (one file, short context). Avoid huge multi-region patches or multiple `*** Begin Patch` envelopes in one call.
    - Prefer `apply_patch` for multi-hunk or multi-file changes (V4A: `*** Begin Patch` … `*** End Patch`).
    - Prefer `str_replace` for a single exact swap in one file (`replace_all` only when intentional).
    - Use `write_file` only for new files or intentional full rewrites; `delete_file` to remove a single file (or Delete File in a patch).
+   - If `apply_patch` / `str_replace` fails: `read_file` the failure region first, then retry — never retry from memory.
    - Then `run_tests`; iterate until tests pass.
 3. **Document** — write workspace-root `ANALYSIS.md` (problem, root cause, change, test result) **unless** the user said not to, or already named a different output file (then write that path instead). Prefer `write_file` for that new doc.
 4. Final answer: short summary of what changed (and point at the doc if you wrote one). No further tool calls.
