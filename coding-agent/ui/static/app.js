@@ -173,7 +173,7 @@ async function refreshSessions() {
         .map(
           (s) =>
             `<li>
-              <button type="button" class="linkish" data-session="${escapeHtml(s.sessionId)}" data-action="select" title="Select this session for the next Run">${escapeHtml(s.title || s.sessionId)}</button>
+              <button type="button" class="linkish" data-session="${escapeHtml(s.sessionId)}" data-action="select" title="Load this session's answer &amp; traces (also sets continue target)">${escapeHtml(s.title || s.sessionId)}</button>
               <span class="meta">${s.runIds?.length || 0} runs</span>
               <span class="list-actions">
                 <button type="button" class="linkish compact" data-session="${escapeHtml(s.sessionId)}" data-action="traces" title="Load session traces">traces</button>
@@ -192,18 +192,36 @@ async function refreshSessions() {
         return;
       }
       if (action === 'traces') {
-        sessionSelect.value = id;
-        currentSessionId = id;
-        syncSessionActions();
-        loadSessionTraces(id).catch((e) => logLine(String(e), 'err'));
+        selectSession(id, { focusTab: 'trace' }).catch((e) => logLine(String(e), 'err'));
         return;
       }
-      sessionSelect.value = id;
-      currentSessionId = id;
-      syncSessionActions();
-      sessionHint.textContent = `Continuing session ${currentSessionId}`;
+      selectSession(id).catch((e) => logLine(String(e), 'err'));
     });
   });
+}
+
+/** Bind continue target and hydrate Answer / Trace from persisted session runs. */
+async function selectSession(sessionId, { focusTab = 'auto' } = {}) {
+  sessionSelect.value = sessionId || '';
+  currentSessionId = sessionId || null;
+  syncSessionActions();
+  if (!sessionId) {
+    sessionHint.textContent = 'Each run is bound to a session for multi-turn continue.';
+    clearResultViews();
+    return;
+  }
+  const s = cachedSessions.find((x) => x.sessionId === sessionId);
+  sessionHint.textContent = `Continuing session ${s?.title || sessionId}`;
+  await loadSessionTraces(sessionId, { focusTab });
+}
+
+function clearResultViews() {
+  viewAnswer.innerHTML = '<p class="empty">The agent’s final answer lands here.</p>';
+  viewAnalysis.innerHTML =
+    '<p class="empty">ANALYSIS.md appears after code fixes (or when you ask for a doc). Q&amp;A goes to Answer.</p>';
+  viewDiffs.innerHTML = '<p class="empty">File diffs appear when the agent edits the workspace.</p>';
+  traceContent.innerHTML =
+    '<p class="empty">Runtime + harness metrics appear after a run (cost, duration, cache, retries). Load a session via Traces, or compare two sessions above.</p>';
 }
 
 function syncSessionActions() {
@@ -252,7 +270,7 @@ async function renameSession(sessionId, title) {
   await refreshSessions();
 }
 
-async function loadSessionTraces(sessionId) {
+async function loadSessionTraces(sessionId, { focusTab = 'auto' } = {}) {
   const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/traces`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -260,8 +278,32 @@ async function loadSessionTraces(sessionId) {
     return;
   }
   renderSessionTraceBundle(data);
-  document.querySelector('.tab[data-tab="trace"]').click();
-  logLine(`loaded session traces ${sessionId} (${data.runCount || 0} runs)`);
+  hydrateSessionPanels(data, { focusTab });
+  logLine(`loaded session ${sessionId} (${data.runCount || 0} runs)`);
+}
+
+/** Fill Answer (and clear live-only Analysis/Diffs) from a session trace bundle. */
+function hydrateSessionPanels(bundle, { focusTab = 'auto' } = {}) {
+  const runs = bundle.runs || [];
+  const lastWithAnswer =
+    [...runs].reverse().find((r) => typeof r.answer === 'string' && r.answer.trim()) ||
+    runs[runs.length - 1];
+
+  viewAnswer.innerHTML = lastWithAnswer?.answer
+    ? renderMarkdownLite(lastWithAnswer.answer)
+    : '<p class="empty">No final answer in this session.</p>';
+
+  // Analysis/Diffs come from the live workspace / run snapshot — not session history.
+  viewAnalysis.innerHTML =
+    '<p class="empty">Historical sessions do not restore ANALYSIS.md — it reflects the current workspace after a live run.</p>';
+  viewDiffs.innerHTML =
+    '<p class="empty">Historical sessions do not restore file diffs — diffs come from the live run snapshot.</p>';
+
+  let tab = focusTab;
+  if (tab === 'auto') {
+    tab = lastWithAnswer?.answer ? 'answer' : 'trace';
+  }
+  document.querySelector(`.tab[data-tab="${tab}"]`)?.click();
 }
 
 async function loadRunTrace(runId) {
@@ -755,7 +797,20 @@ function renderSessionTraceBundle(bundle) {
 
   traceContent.innerHTML = parts.join('');
   traceContent.querySelectorAll('[data-run-trace]').forEach((btn) => {
-    btn.addEventListener('click', () => loadRunTrace(btn.dataset.runTrace).catch((e) => logLine(String(e), 'err')));
+    btn.addEventListener('click', () => {
+      const runId = btn.dataset.runTrace;
+      const run = runs.find((r) => r.runId === runId);
+      if (run?.answer) {
+        viewAnswer.innerHTML = renderMarkdownLite(run.answer);
+      }
+      if (run?.runtimeTrace || run?.harnessTrace) {
+        renderTrace(run.runtimeTrace, run.harnessTrace, { heading: `Run ${runId}` });
+        document.querySelector('.tab[data-tab="trace"]').click();
+        logLine(`loaded run ${runId} from session`);
+        return;
+      }
+      loadRunTrace(runId).catch((e) => logLine(String(e), 'err'));
+    });
   });
 }
 
@@ -1054,11 +1109,8 @@ document.getElementById('refreshSessionsBtn').addEventListener('click', () => {
 });
 
 sessionSelect.addEventListener('change', () => {
-  currentSessionId = sessionSelect.value || null;
-  syncSessionActions();
-  sessionHint.textContent = currentSessionId
-    ? `Continuing session ${currentSessionId}`
-    : 'Each run is bound to a session for multi-turn continue.';
+  const id = sessionSelect.value || null;
+  selectSession(id).catch((e) => logLine(String(e), 'err'));
 });
 
 renameSessionBtn.addEventListener('click', () => {
@@ -1071,7 +1123,7 @@ renameSessionBtn.addEventListener('click', () => {
 loadSessionTraceBtn.addEventListener('click', () => {
   const id = sessionSelect.value;
   if (!id) return;
-  loadSessionTraces(id).catch((e) => logLine(String(e), 'err'));
+  loadSessionTraces(id, { focusTab: 'trace' }).catch((e) => logLine(String(e), 'err'));
 });
 
 compareSessionsBtn.addEventListener('click', () => {
