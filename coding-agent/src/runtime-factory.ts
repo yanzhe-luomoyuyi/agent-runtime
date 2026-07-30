@@ -175,6 +175,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
       ? {
           offloadThreshold: cfg.run.scratchpad.offloadThreshold,
           previewChars: cfg.run.scratchpad.previewChars,
+          neverOffload: cfg.run.scratchpad.neverOffload,
         }
       : false,
   });

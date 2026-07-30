@@ -60,11 +60,14 @@ export interface CodingRunSection {
   /**
    * Oversized tool results → scratchpad pointer (no LLM summarize by default).
    * `scratchpad_read` / `scratchpad_list` are advertised to the model when enabled.
+   * Prefer `neverOffload` for tools the model already requested in full (read/list/grep).
    */
   scratchpad: {
     enabled: boolean;
     offloadThreshold: number;
     previewChars: number;
+    /** Tool names whose results stay inline even above the threshold. */
+    neverOffload: string[];
   };
 }
 
@@ -107,6 +110,7 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       'You are a coding agent operating inside a sandboxed workspace. ' +
       'Follow the coding-agent skill. ' +
       'For Q&A / explain goals with no code change: use read tools only and put the full answer in the final reply — do not write ANALYSIS.md or other files unless the user explicitly names an output file. ' +
+      'Explore with list_tree (shallow) + grep first; read README/index/entrypoints before deep source; prefer read_file offset/limit slices; avoid listing every subdirectory one-by-one. ' +
       'For fix/implement goals: analyze with targeted grep/read_file slices, edit with apply_patch or str_replace, run_tests, then document as the skill says. ' +
       'Never invent file paths — only use paths you observed from tools.',
     skillPath: 'skills/coding-agent/SKILL.md',
@@ -144,13 +148,16 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     },
     scratchpad: {
       enabled: true,
-      offloadThreshold: 4000,
+      /** Large enough that typical source reads stay inline; still caps huge run_tests dumps. */
+      offloadThreshold: 24_000,
       previewChars: 300,
+      neverOffload: ['read_file', 'list_dir', 'list_tree', 'grep'],
     },
   },
   policy: {
     allowedTools: [
       'list_dir',
+      'list_tree',
       'grep',
       'read_file',
       'write_file',
@@ -181,7 +188,11 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
       ...base.run,
       ...overlay.run,
       compaction: { ...base.run.compaction, ...overlay.run?.compaction },
-      scratchpad: { ...base.run.scratchpad, ...overlay.run?.scratchpad },
+      scratchpad: {
+        ...base.run.scratchpad,
+        ...overlay.run?.scratchpad,
+        neverOffload: overlay.run?.scratchpad?.neverOffload ?? base.run.scratchpad.neverOffload,
+      },
     },
     policy: {
       allowedTools: overlay.policy?.allowedTools ?? base.policy.allowedTools,

@@ -10,21 +10,28 @@ description: >-
 
 Operate only inside the workspace exposed by tools. Do not invent paths.
 
+## Exploration (both modes)
+
+Prefer a **narrow → deep** path; avoid fan-out `list_dir` on every subdirectory.
+
+1. **Layout** — one `list_tree` (depth 2) or a single `list_dir` on `.` / `src`.
+2. **Docs / entrypoints** — `read_file` `README.md`, package manifest, and public `index` / main modules first (use `offset`/`limit`).
+3. **Locate** — `grep` with `glob` + `outputMode=files_with_matches` (or `count`), then `content` only for hits you need.
+4. **Deep reads** — `read_file` slices on the few files that matter; do not dump every `.ts` file.
+
 ## Choose a mode from the goal
 
 ### A — Q&A / explain (no code change)
 
 Use when the user asks what something does, where code lives, how it works, or similar — and does **not** ask you to fix, implement, or edit.
 
-1. Use `list_dir` / `grep` / `read_file` as needed.
-   - `grep`: narrow with `glob`; use `outputMode=files_with_matches` or `count` to discover, then `content` (+ `context`) for hits.
-   - `read_file`: read small windows via `offset`/`limit` (use returned `totalLines` to paginate); avoid whole-file reads.
+1. Follow **Exploration** above (`list_tree` / `grep` / `read_file`).
 2. Put the **full** answer in the final reply (this is what the UI **Answer** tab shows).
 3. Do **not** call `write_file` / `str_replace` / `delete_file` / `apply_patch`. Do **not** create `ANALYSIS.md` (or any other doc) unless the user **explicitly** asks to write results into a named file/path.
 
 ### B — Code change (fix / implement / refactor)
 
-1. **Analyze** — `list_dir`, then `grep` (prefer glob + files_with_matches) / `read_file` slices. State root cause briefly before editing.
+1. **Analyze** — Exploration above, then state root cause briefly before editing.
 2. **Edit** —
    - Prefer `apply_patch` for multi-hunk or multi-file changes (V4A: `*** Begin Patch` … `*** End Patch`).
    - Prefer `str_replace` for a single exact swap in one file (`replace_all` only when intentional).

@@ -39,7 +39,9 @@ export function createFsTools(workspace: Workspace, opts: FsToolsOptions = {}): 
 
   const list_dir: ToolDef<{ path?: string }, { entries: Array<{ name: string; type: 'file' | 'dir' }> }> = {
     name: 'list_dir',
-    description: 'List files and directories under a workspace-relative path (default "."). Honors .gitignore.',
+    description:
+      'List one directory level under a workspace-relative path (default "."). Honors .gitignore. ' +
+      'For multi-level layout discovery prefer list_tree (depth=2) instead of calling list_dir on every child.',
     inputSchema: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Relative path inside the workspace.' } },
@@ -57,6 +59,84 @@ export function createFsTools(workspace: Workspace, opts: FsToolsOptions = {}): 
           return !(ignorer.ignores(rel) || (e.type === 'dir' && ignorer.ignores(`${rel}/`)));
         });
       return { entries };
+    },
+  };
+
+  const list_tree: ToolDef<
+    { path?: string; depth?: number; maxEntries?: number },
+    { tree: string; truncated: boolean; entries: number; depth: number }
+  > = {
+    name: 'list_tree',
+    description:
+      'Show a shallow directory tree (default depth 2) under a workspace path. ' +
+      'Use this once for layout discovery instead of many list_dir calls. Honors .gitignore.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path inside the workspace (default ".").' },
+        depth: { type: 'number', description: 'Max directory depth to expand (default 2, max 4).' },
+        maxEntries: {
+          type: 'number',
+          description: 'Cap on files+dirs listed (default 200, max 500). Truncates with a marker.',
+        },
+      },
+    },
+    run: ({ path, depth, maxEntries }) => {
+      const maxDepth = Math.min(4, Math.max(1, Math.floor(depth ?? 2)));
+      const cap = Math.min(500, Math.max(1, Math.floor(maxEntries ?? 200)));
+      const absRoot = workspace.resolve(path ?? '.');
+      const baseRel = workspace.relative(absRoot);
+      const lines: string[] = [];
+      let counted = 0;
+      let truncated = false;
+
+      const walk = (abs: string, rel: string, level: number, prefix: string): void => {
+        if (truncated || counted >= cap) {
+          truncated = true;
+          return;
+        }
+        let entries: Array<{ name: string; type: 'file' | 'dir' }>;
+        try {
+          entries = readdirSync(abs, { withFileTypes: true })
+            .map((d) => ({
+              name: d.name,
+              type: d.isDirectory() ? ('dir' as const) : ('file' as const),
+            }))
+            .filter((e) => {
+              const childRel = rel === '.' ? e.name : `${rel}/${e.name}`;
+              return !(ignorer.ignores(childRel) || (e.type === 'dir' && ignorer.ignores(`${childRel}/`)));
+            })
+            .sort((a, b) => {
+              if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            });
+        } catch {
+          return;
+        }
+
+        for (let i = 0; i < entries.length; i++) {
+          if (counted >= cap) {
+            truncated = true;
+            lines.push(`${prefix}… (truncated at ${cap} entries)`);
+            return;
+          }
+          const e = entries[i]!;
+          const last = i === entries.length - 1;
+          const branch = last ? '└── ' : '├── ';
+          const childRel = rel === '.' ? e.name : `${rel}/${e.name}`;
+          lines.push(`${prefix}${branch}${e.name}${e.type === 'dir' ? '/' : ''}`);
+          counted += 1;
+          if (e.type === 'dir' && level < maxDepth) {
+            const nextPrefix = prefix + (last ? '    ' : '│   ');
+            walk(join(abs, e.name), childRel, level + 1, nextPrefix);
+          }
+        }
+      };
+
+      const rootLabel = baseRel === '.' ? '.' : baseRel;
+      lines.push(`${rootLabel}/`);
+      walk(absRoot, baseRel === '.' ? '.' : baseRel, 1, '');
+      return { tree: lines.join('\n'), truncated, entries: counted, depth: maxDepth };
     },
   };
 
@@ -419,7 +499,7 @@ export function createFsTools(workspace: Workspace, opts: FsToolsOptions = {}): 
     },
   };
 
-  return [list_dir, grep, read_file, write_file, str_replace, delete_file, apply_patch] as ToolDef[];
+  return [list_dir, list_tree, grep, read_file, write_file, str_replace, delete_file, apply_patch] as ToolDef[];
 }
 
 /** Count non-overlapping occurrences of `needle` in `haystack`. */

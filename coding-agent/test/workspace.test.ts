@@ -34,6 +34,35 @@ describe('compileGlob', () => {
 });
 
 describe('fs tools', () => {
+  it('list_tree returns a shallow indented tree', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-tree-'));
+    try {
+      mkdirSync(join(dir, 'src', 'util'), { recursive: true });
+      writeFileSync(join(dir, 'README.md'), '# hi');
+      writeFileSync(join(dir, 'src', 'index.ts'), 'export {}');
+      writeFileSync(join(dir, 'src', 'util', 'a.ts'), 'export const a = 1');
+      const tools = Object.fromEntries(createFsTools(new Workspace(dir)).map((t) => [t.name, t]));
+      const out = tools.list_tree!.run({ path: '.', depth: 2 }) as {
+        tree: string;
+        truncated: boolean;
+        entries: number;
+        depth: number;
+      };
+      expect(out.depth).toBe(2);
+      expect(out.truncated).toBe(false);
+      expect(out.tree).toContain('README.md');
+      expect(out.tree).toContain('src/');
+      expect(out.tree).toContain('index.ts');
+      expect(out.tree).toContain('util/');
+      // tree -L 2 shows util/ but not its children
+      expect(out.tree).not.toContain('a.ts');
+      const deep = tools.list_tree!.run({ path: '.', depth: 3 }) as { tree: string };
+      expect(deep.tree).toContain('a.ts');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('list_dir / read_file / write_file round-trip in a temp copy path', () => {
     const fixture = join(import.meta.dirname, '../fixtures/coding-sandbox');
     const ws = new Workspace(fixture);
