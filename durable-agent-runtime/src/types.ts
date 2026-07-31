@@ -39,9 +39,11 @@ export type AgentEvent =
  * Live-only model token notify (not persisted in the event log).
  * Forwarded via RuntimeOptions.onStreamEvent / StepContext.notifyStream.
  */
+export type StreamLane = 'agent' | 'planner' | 'reflection';
+
 export type StreamNotifyEvent =
-  | { type: 'model_token'; turn: number; token: string }
-  | { type: 'thinking_token'; turn: number; token: string };
+  | { type: 'model_token'; turn: number; token: string; lane?: StreamLane }
+  | { type: 'thinking_token'; turn: number; token: string; lane?: StreamLane };
 
 export type RunStatus = 'running' | 'completed' | 'failed';
 export type PhaseStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'SKIPPED';

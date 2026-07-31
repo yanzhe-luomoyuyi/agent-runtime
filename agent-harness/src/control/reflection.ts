@@ -14,9 +14,15 @@
  * the next attempt a targeted fix instead of a vague "try again".
  */
 
-import type { ChatModel } from '@agent/contracts';
+import type { ChatModel, Message } from '@agent/contracts';
 import { extractJsonObject, keyScope, systemMessage, userMessage } from '@agent/contracts';
-import { runAgent, type AgentRunResult, type RunAgentOptions } from './loop.js';
+import {
+  runAgentStreamed,
+  streamTextModelCall,
+  type AgentRunResult,
+  type AgentStreamEvent,
+  type RunAgentOptions,
+} from './loop.js';
 
 export interface Critique {
   satisfactory: boolean;
@@ -30,9 +36,14 @@ export interface Critique {
   whatWorked?: string[];
 }
 
-/** Ask the model to critique an answer against the goal. Tolerant JSON parse. */
-export async function critique(goal: string, answer: string, model: ChatModel, opts: { key?: string } = {}): Promise<Critique> {
-  const messages = [
+export type ReflectiveAgentResult = AgentRunResult & { critiques: Critique[] };
+
+export type ReflectiveStreamEvent =
+  | Extract<AgentStreamEvent, { type: 'model_token' | 'thinking_token' }>
+  | { type: 'done'; result: ReflectiveAgentResult };
+
+function critiqueMessages(goal: string, answer: string): Message[] {
+  return [
     systemMessage(
       'You are a strict reviewer. Decide whether the answer fully satisfies the goal. ' +
         'If it does not, diagnose precisely what is wrong instead of a vague verdict. Reply with ONLY JSON: ' +
@@ -43,8 +54,45 @@ export async function critique(goal: string, answer: string, model: ChatModel, o
     ),
     userMessage(`Goal: ${goal}\n\nProposed answer:\n${answer}`),
   ];
-  const resp = await model.chat({ messages, tools: [], key: opts.key ?? keyScope().reflect(0) });
+}
+
+/** Ask the model to critique an answer against the goal. Tolerant JSON parse. */
+export async function critique(
+  goal: string,
+  answer: string,
+  model: ChatModel,
+  opts: { key?: string } = {},
+): Promise<Critique> {
+  const resp = await model.chat({
+    messages: critiqueMessages(goal, answer),
+    tools: [],
+    key: opts.key ?? keyScope().reflect(0),
+  });
   return parseCritique(resp.message.content ?? '');
+}
+
+/** Streaming critique — yields reflection-lane tokens, returns Critique. */
+export async function* critiqueStreamed(
+  goal: string,
+  answer: string,
+  model: ChatModel,
+  opts: { key?: string } = {},
+): AsyncGenerator<ReflectiveStreamEvent, Critique, void> {
+  const gen = streamTextModelCall(
+    model,
+    {
+      messages: critiqueMessages(goal, answer),
+      tools: [],
+      key: opts.key ?? keyScope().reflect(0),
+    },
+    'reflection',
+  );
+  let next = await gen.next();
+  while (!next.done) {
+    yield next.value;
+    next = await gen.next();
+  }
+  return parseCritique(next.value);
 }
 
 /** Parse a critique from model text. */
@@ -78,7 +126,10 @@ export function parseCritique(text: string): Critique {
       /* fall through */
     }
   }
-  return { satisfactory: /\b(satisfactory|looks good|correct|approved|lgtm)\b/i.test(text), feedback: text.trim().slice(0, 500) };
+  return {
+    satisfactory: /\b(satisfactory|looks good|correct|approved|lgtm)\b/i.test(text),
+    feedback: text.trim().slice(0, 500),
+  };
 }
 
 /**
@@ -97,7 +148,9 @@ export function buildRevisedGoal(goal: string, previousAnswer: string, c: Critiq
     parts.push(`How to fix it this time:\n${c.correctionStrategy}`);
   }
   if (c.whatWorked && c.whatWorked.length > 0) {
-    parts.push(`Parts of the previous attempt that were already correct — keep them:\n- ${c.whatWorked.join('\n- ')}`);
+    parts.push(
+      `Parts of the previous attempt that were already correct — keep them:\n- ${c.whatWorked.join('\n- ')}`,
+    );
   }
   parts.push(`Reviewer feedback to address:\n${c.feedback}`);
 
@@ -109,26 +162,65 @@ export interface ReflectiveAgentOptions extends RunAgentOptions {
   maxReflections?: number;
 }
 
-/** Run the agent, then critique and optionally revise up to `maxReflections` times. */
-export async function runReflectiveAgent(opts: ReflectiveAgentOptions): Promise<AgentRunResult & { critiques: Critique[] }> {
+/** Batch wrapper — drains {@link runReflectiveAgentStreamed}. */
+export async function runReflectiveAgent(
+  opts: ReflectiveAgentOptions,
+): Promise<ReflectiveAgentResult> {
+  let result: ReflectiveAgentResult | undefined;
+  for await (const ev of runReflectiveAgentStreamed(opts)) {
+    if (ev.type === 'done') result = ev.result;
+  }
+  if (!result) throw new Error('runReflectiveAgent: stream ended without done');
+  return result;
+}
+
+/** Streaming attempt → critique → revise. Token events carry `lane`. */
+export async function* runReflectiveAgentStreamed(
+  opts: ReflectiveAgentOptions,
+): AsyncGenerator<ReflectiveStreamEvent, ReflectiveAgentResult, void> {
   const scope = keyScope(opts.keyPrefix);
   const maxReflections = opts.maxReflections ?? 1;
   const critiques: Critique[] = [];
 
-  // Resolve model from explicit override or agent config (backward compat).
   const model = opts.model ?? opts.agent?.model;
   if (!model) throw new Error('runReflectiveAgent: a model is required');
 
-  let result = await runAgent({ ...opts, keyPrefix: scope.attempt(0).toPrefix() });
+  let result: AgentRunResult | undefined;
+  for await (const ev of runAgentStreamed({ ...opts, keyPrefix: scope.attempt(0).toPrefix() })) {
+    if (ev.type === 'model_token' || ev.type === 'thinking_token') {
+      yield { ...ev, lane: ev.lane ?? 'agent' };
+    }
+    if (ev.type === 'done') result = ev.result;
+  }
+  if (!result) throw new Error('runReflectiveAgent: attempt ended without done');
 
   for (let i = 0; i < maxReflections; i++) {
-    const c = await critique(opts.goal, result.answer, model, { key: scope.reflect(i) });
+    const critiqueGen = critiqueStreamed(opts.goal, result.answer, model, { key: scope.reflect(i) });
+    let cNext = await critiqueGen.next();
+    while (!cNext.done) {
+      yield cNext.value;
+      cNext = await critiqueGen.next();
+    }
+    const c = cNext.value;
     critiques.push(c);
     if (c.satisfactory) break;
 
     const revisedGoal = buildRevisedGoal(opts.goal, result.answer, c);
-    result = await runAgent({ ...opts, goal: revisedGoal, keyPrefix: scope.attempt(i + 1).toPrefix() });
+    result = undefined;
+    for await (const ev of runAgentStreamed({
+      ...opts,
+      goal: revisedGoal,
+      keyPrefix: scope.attempt(i + 1).toPrefix(),
+    })) {
+      if (ev.type === 'model_token' || ev.type === 'thinking_token') {
+        yield { ...ev, lane: ev.lane ?? 'agent' };
+      }
+      if (ev.type === 'done') result = ev.result;
+    }
+    if (!result) throw new Error('runReflectiveAgent: revise attempt ended without done');
   }
 
-  return { ...result, critiques };
+  const out: ReflectiveAgentResult = { ...result, critiques };
+  yield { type: 'done', result: out };
+  return out;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildRevisedGoal, parseCritique, runReflectiveAgent } from '../src/control/reflection.js';
+import { buildRevisedGoal, parseCritique, runReflectiveAgent, runReflectiveAgentStreamed } from '../src/control/reflection.js';
 import { MockToolInvoker, ScriptedChatModel, finalResponse, makeTool } from '../src/testkit/index.js';
 
 describe('reflection', () => {
@@ -88,5 +88,21 @@ describe('reflection', () => {
     expect(res.critiques[0]!.rootCause).toBe('assumed input is never empty');
     expect(res.critiques[0]!.correctionStrategy).toBe('add an explicit empty-input branch');
     expect(res.critiques[0]!.whatWorked).toEqual(['overall structure is correct']);
+  });
+
+  it('streamed reflection tags agent vs reflection lanes', async () => {
+    const tools = new MockToolInvoker([makeTool('noop', 'noop', { type: 'object' }, () => ({}))]);
+    const model = new ScriptedChatModel([
+      finalResponse('draft 1'),
+      finalResponse('{"satisfactory":true,"feedback":"good"}'),
+    ]);
+    const lanes: string[] = [];
+    for await (const ev of runReflectiveAgentStreamed({ goal: 'g', model, tools, maxReflections: 1 })) {
+      if (ev.type === 'model_token' || ev.type === 'thinking_token') {
+        lanes.push(ev.lane ?? 'missing');
+      }
+    }
+    expect(lanes).toContain('agent');
+    expect(lanes).toContain('reflection');
   });
 });

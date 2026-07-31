@@ -91,7 +91,6 @@ export interface CodingRuntimeOptions {
   longTermMemory?: boolean;
   /**
    * Harness control-flow mode. Default: `config.run.loopMode`.
-   * Planner / reflection run batch (no live token stream).
    */
   loopMode?: HarnessLoopMode;
   /** Mid-run pause / steer / abort gate (Workbench / hosts). */
@@ -99,8 +98,8 @@ export interface CodingRuntimeOptions {
   onEvent?: ConstructorParameters<typeof Runtime>[0]['onEvent'];
   onStreamEvent?: ConstructorParameters<typeof Runtime>[0]['onStreamEvent'];
   /**
-   * Drive harness `runAgentStreamed` (default true). Set false for batch
-   * `runAgent` — no live token notify.
+   * Drive harness streamed loops (default true for all loop modes).
+   * Set false for batch — no live token notify.
    */
   stream?: boolean;
   /** Optional harness TraceCollector (retries / per-turn usage). */
@@ -151,8 +150,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
   }
 
   const loopMode = opts.loopMode ?? cfg.run.loopMode;
-  // Planner / reflection are multi-phase batch wrappers — disable live token stream.
-  const stream = loopMode === 'agent' ? (opts.stream ?? true) : false;
+  const stream = opts.stream ?? true;
 
   const chatModel =
     opts.chatModel ??

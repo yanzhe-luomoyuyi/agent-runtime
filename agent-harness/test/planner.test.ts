@@ -9,6 +9,7 @@ import {
   formatPlanForPrompt,
   validatePlanFeasibility,
   runPlannedAgent,
+  runPlannedAgentStreamed,
 } from '../src/control/planner.js';
 import {
   MockToolInvoker,
@@ -93,6 +94,22 @@ describe('planner — runPlannedAgent', () => {
     expect(res.replans).toBe(0);
     // Each step had its own runAgent call
     expect(model.requests.length).toBe(3); // plan + 2 steps
+  });
+
+  it('streamed planner tags planner vs agent lanes', async () => {
+    const tools = new MockToolInvoker([makeTool('noop', 'noop', { type: 'object' }, () => ({}))]);
+    const model = new ScriptedChatModel([
+      finalResponse('{"steps":["only step"]}'),
+      finalResponse('done'),
+    ]);
+    const lanes: string[] = [];
+    for await (const ev of runPlannedAgentStreamed({ goal: 'g', model, tools })) {
+      if (ev.type === 'model_token' || ev.type === 'thinking_token') {
+        lanes.push(ev.lane ?? 'missing');
+      }
+    }
+    expect(lanes).toContain('planner');
+    expect(lanes).toContain('agent');
   });
 
   it('re-plans on failure', async () => {

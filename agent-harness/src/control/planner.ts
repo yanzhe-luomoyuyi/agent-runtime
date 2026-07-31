@@ -27,10 +27,17 @@
  */
 
 import type { ChatModel, Message, ToolInvoker } from '@agent/contracts';
-import { keyScope, systemMessage, userMessage } from '@agent/contracts';
+import { extractJsonObject, keyScope, systemMessage, userMessage } from '@agent/contracts';
 
-import { extractJsonObject } from '@agent/contracts';
-import { DEFAULT_SYSTEM_PROMPT, runAgent, type AgentRunResult, type AgentStopReason, type RunAgentOptions } from './loop.js';
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  runAgentStreamed,
+  streamTextModelCall,
+  type AgentRunResult,
+  type AgentStopReason,
+  type AgentStreamEvent,
+  type RunAgentOptions,
+} from './loop.js';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -91,6 +98,10 @@ export interface PlannedAgentResult extends AgentRunResult {
   replans: number;
 }
 
+export type PlannedStreamEvent =
+  | Extract<AgentStreamEvent, { type: 'model_token' | 'thinking_token' }>
+  | { type: 'done'; result: PlannedAgentResult };
+
 // ── Plan helpers ────────────────────────────────────────────────────
 
 export function newPlan(steps: string[]): PlanState {
@@ -126,7 +137,7 @@ export function validatePlanFeasibility(plan: PlanState, tools: ToolInvoker): st
   const available = new Set(tools.list().map((t) => t.name));
   const planText = plan.steps.join(' ');
   const referenced = [...available].filter((t) => planText.includes(t));
-  if (referenced.length === 0 && available.size > 0) {
+  if (available.size > 0 && referenced.length === 0) {
     return [`Plan does not reference any available tools (${[...available].join(', ')}).`];
   }
   return [];
@@ -134,11 +145,10 @@ export function validatePlanFeasibility(plan: PlanState, tools: ToolInvoker): st
 
 // ── Plan generation ─────────────────────────────────────────────────
 
-export async function makePlan(
+function planMessages(
   goal: string,
-  model: ChatModel,
-  opts: { key?: string; tools?: ToolInvoker; previousFailures?: string[] } = {},
-): Promise<PlanState> {
+  opts: { tools?: ToolInvoker; previousFailures?: string[] } = {},
+): Message[] {
   const toolList = opts.tools
     ? opts.tools.list().map((t) => `- ${t.name}: ${t.description}`).join('\n')
     : '(tools become available during execution)';
@@ -147,16 +157,50 @@ export async function makePlan(
     ? `\n\nPrevious attempts failed. Adjust the plan:\n${opts.previousFailures.map((f) => `- ${f}`).join('\n')}`
     : '';
 
-  const messages = [
+  return [
     systemMessage(
       'You are a planner. Decompose the goal into a short ordered list of concrete, ' +
-      'actionable steps. Each step should correspond to roughly one or two tool calls. ' +
-      'Reply with ONLY a JSON object: {"steps":["step 1","step 2"]}.',
+        'actionable steps. Each step should correspond to roughly one or two tool calls. ' +
+        'Reply with ONLY a JSON object: {"steps":["step 1","step 2"]}.',
     ),
     userMessage(`Goal: ${goal}\n\nAvailable tools:\n${toolList}${failureCtx}`),
   ];
-  const resp = await model.chat({ messages, tools: [], key: opts.key ?? keyScope().plan() });
+}
+
+export async function makePlan(
+  goal: string,
+  model: ChatModel,
+  opts: { key?: string; tools?: ToolInvoker; previousFailures?: string[] } = {},
+): Promise<PlanState> {
+  const resp = await model.chat({
+    messages: planMessages(goal, opts),
+    tools: [],
+    key: opts.key ?? keyScope().plan(),
+  });
   return newPlan(parsePlanSteps(resp.message.content ?? ''));
+}
+
+/** Streaming plan generation — yields planner-lane tokens, returns PlanState. */
+export async function* makePlanStreamed(
+  goal: string,
+  model: ChatModel,
+  opts: { key?: string; tools?: ToolInvoker; previousFailures?: string[] } = {},
+): AsyncGenerator<PlannedStreamEvent, PlanState, void> {
+  const gen = streamTextModelCall(
+    model,
+    {
+      messages: planMessages(goal, opts),
+      tools: [],
+      key: opts.key ?? keyScope().plan(),
+    },
+    'planner',
+  );
+  let next = await gen.next();
+  while (!next.done) {
+    yield next.value;
+    next = await gen.next();
+  }
+  return newPlan(parsePlanSteps(next.value));
 }
 
 export function parsePlanSteps(text: string): string[] {
@@ -168,7 +212,9 @@ export function parsePlanSteps(text: string): string[] {
         const steps = parsed.steps.filter((s): s is string => typeof s === 'string' && s.trim().length > 0);
         if (steps.length > 0) return steps;
       }
-    } catch { /* fall through */ }
+    } catch {
+      /* fall through */
+    }
   }
   return text
     .split('\n')
@@ -180,7 +226,7 @@ export function parsePlanSteps(text: string): string[] {
  * Run a plan through the reviewer. Returns the (possibly edited) plan, or
  * `null` when the reviewer rejects without a usable remake.
  */
-async function reviewGeneratedPlan(
+async function* reviewGeneratedPlanStreamed(
   plan: PlanState,
   goal: string,
   attempt: number,
@@ -188,7 +234,7 @@ async function reviewGeneratedPlan(
   model: ChatModel,
   tools: ToolInvoker,
   remakeKey: string,
-): Promise<PlanState | null> {
+): AsyncGenerator<PlannedStreamEvent, PlanState | null, void> {
   let current = plan.steps.length === 0 ? newPlan(['Accomplish the goal']) : plan;
   let rejectRemakes = 0;
 
@@ -199,44 +245,80 @@ async function reviewGeneratedPlan(
       const edited = decision.plan.steps.length > 0 ? decision.plan : current;
       return newPlan(edited.steps);
     }
-    // reject
     const remake = decision.remake !== false;
     if (!remake || rejectRemakes >= 1) return null;
     rejectRemakes++;
     const feedback = decision.feedback ?? 'Plan rejected by reviewer.';
-    current = await makePlan(goal, model, {
+    const remakeGen = makePlanStreamed(goal, model, {
       key: remakeKey,
       tools,
       previousFailures: [feedback],
     });
+    let next = await remakeGen.next();
+    while (!next.done) {
+      yield next.value;
+      next = await remakeGen.next();
+    }
+    current = next.value;
     if (current.steps.length === 0) current = newPlan(['Accomplish the goal']);
   }
 }
 
 // ── Plan-driven execution ───────────────────────────────────────────
 
+/** Batch wrapper — drains {@link runPlannedAgentStreamed}. */
 export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<PlannedAgentResult> {
+  let result: PlannedAgentResult | undefined;
+  for await (const ev of runPlannedAgentStreamed(opts)) {
+    if (ev.type === 'done') result = ev.result;
+  }
+  if (!result) throw new Error('runPlannedAgent: stream ended without done');
+  return result;
+}
+
+/** Streaming plan → execute → optional replan. Token events carry `lane`. */
+export async function* runPlannedAgentStreamed(
+  opts: PlannedAgentOptions,
+): AsyncGenerator<PlannedStreamEvent, PlannedAgentResult, void> {
   const scope = keyScope(opts.keyPrefix);
   const maxReplans = opts.maxReplans ?? 2;
   const replanOnFailure = opts.replanOnFailure ?? true;
   const reviewer = opts.planReviewer ?? autoApprovePlan;
   const reviewReplans = opts.reviewReplans ?? true;
 
-  // Resolve model/tools from explicit override or agent config (backward compat).
   const model = opts.model ?? opts.agent?.model;
   const tools = opts.tools ?? opts.agent?.tools;
   if (!model) throw new Error('runPlannedAgent: a model is required');
   if (!tools) throw new Error('runPlannedAgent: tools are required');
 
-  let plan = await makePlan(opts.goal, model, {
+  const planGen = makePlanStreamed(opts.goal, model, {
     key: opts.planKey ?? scope.plan(),
     tools,
   });
-  const reviewed = await reviewGeneratedPlan(
-    plan, opts.goal, 0, reviewer, model, tools, `${scope.plan()}:review-remake`,
+  let planNext = await planGen.next();
+  while (!planNext.done) {
+    yield planNext.value;
+    planNext = await planGen.next();
+  }
+  let plan = planNext.value;
+
+  const reviewGen = reviewGeneratedPlanStreamed(
+    plan,
+    opts.goal,
+    0,
+    reviewer,
+    model,
+    tools,
+    `${scope.plan()}:review-remake`,
   );
+  let reviewNext = await reviewGen.next();
+  while (!reviewNext.done) {
+    yield reviewNext.value;
+    reviewNext = await reviewGen.next();
+  }
+  const reviewed = reviewNext.value;
   if (!reviewed) {
-    return {
+    const rejected: PlannedAgentResult = {
       answer: 'Stopped: plan rejected by reviewer.',
       finished: false,
       stopReason: 'aborted',
@@ -247,6 +329,8 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
       plan: plan.steps.length === 0 ? newPlan(['Accomplish the goal']) : plan,
       replans: 0,
     };
+    yield { type: 'done', result: rejected };
+    return rejected;
   }
   plan = advancePlan(reviewed, 0);
 
@@ -261,17 +345,25 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
 
   while (plan.currentStep >= 0 && plan.currentStep < plan.steps.length) {
     const stepGoal = buildStepGoal(opts.goal, plan);
-
-    // Resolve the base system prompt — from explicit override, agent config, or default.
     const basePrompt = opts.systemPrompt ?? opts.agent?.instructions ?? DEFAULT_SYSTEM_PROMPT;
 
-    const result = await runAgent({
+    const stepOpts: RunAgentOptions = {
       ...opts,
       goal: stepGoal,
       keyPrefix: scope.planStep(plan.currentStep).toPrefix(),
-      systemPrompt: basePrompt +
+      systemPrompt:
+        basePrompt +
         `\n\nFollow this plan (you are on → step ${plan.currentStep + 1}):\n${formatPlanForPrompt(plan)}`,
-    });
+    };
+
+    let result: AgentRunResult | undefined;
+    for await (const ev of runAgentStreamed(stepOpts)) {
+      if (ev.type === 'model_token' || ev.type === 'thinking_token') {
+        yield { ...ev, lane: ev.lane ?? 'agent' };
+      }
+      if (ev.type === 'done') result = ev.result;
+    }
+    if (!result) throw new Error('runPlannedAgent: step ended without done');
 
     totalTurns += result.turns;
     allMessages.push(...result.messages);
@@ -287,16 +379,33 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
       const failures = plan.steps
         .filter((_, i) => plan.statuses[i] === 'failed')
         .map((s) => `Step "${s}" was not completed.`);
-      let next = await makePlan(opts.goal, model, {
+      const replanGen = makePlanStreamed(opts.goal, model, {
         key: scope.replan(replans),
         tools,
         previousFailures: failures,
       });
+      let replanNext = await replanGen.next();
+      while (!replanNext.done) {
+        yield replanNext.value;
+        replanNext = await replanGen.next();
+      }
+      let next = replanNext.value;
       if (reviewReplans) {
-        const reReviewed = await reviewGeneratedPlan(
-          next, opts.goal, replans + 1, reviewer, model, tools,
+        const reReviewGen = reviewGeneratedPlanStreamed(
+          next,
+          opts.goal,
+          replans + 1,
+          reviewer,
+          model,
+          tools,
           `${scope.replan(replans)}:review-remake`,
         );
+        let reReviewNext = await reReviewGen.next();
+        while (!reReviewNext.done) {
+          yield reReviewNext.value;
+          reReviewNext = await reReviewGen.next();
+        }
+        const reReviewed = reReviewNext.value;
         if (!reReviewed) {
           stopReason = 'aborted';
           finished = false;
@@ -315,7 +424,7 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
     }
   }
 
-  return {
+  const out: PlannedAgentResult = {
     answer: finalAnswer,
     finished,
     stopReason,
@@ -326,6 +435,8 @@ export async function runPlannedAgent(opts: PlannedAgentOptions): Promise<Planne
     plan,
     replans,
   };
+  yield { type: 'done', result: out };
+  return out;
 }
 
 function buildStepGoal(originalGoal: string, plan: PlanState): string {

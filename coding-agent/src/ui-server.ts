@@ -570,9 +570,9 @@ async function driveSse(
       },
       onStreamEvent: (e) => {
         if (e.type === 'model_token') {
-          send('model_token', { turn: e.turn, token: e.token });
+          send('model_token', { turn: e.turn, token: e.token, lane: e.lane ?? 'agent' });
         } else if (e.type === 'thinking_token') {
-          send('thinking_token', { turn: e.turn, token: e.token });
+          send('thinking_token', { turn: e.turn, token: e.token, lane: e.lane ?? 'agent' });
         }
       },
     });

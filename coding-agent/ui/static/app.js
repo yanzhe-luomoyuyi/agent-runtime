@@ -18,9 +18,20 @@ const viewAnswer = document.getElementById('view-answer');
 /** Live error list for the Errors tab (also rebuilt from traces on done/load). */
 let runErrors = [];
 /** Live token buffers for SSE model_token / thinking_token (final markdown on `done`). */
-let streamAnswerBuf = '';
-let streamThinkingBuf = '';
+const STREAM_LANES = ['planner', 'agent', 'reflection'];
+const STREAM_LANE_LABELS = {
+  planner: 'Planner',
+  agent: 'Agent',
+  reflection: 'Reflection',
+};
+let streamLanes = {
+  planner: { thinking: '', answer: '' },
+  agent: { thinking: '', answer: '' },
+  reflection: { thinking: '', answer: '' },
+};
 let streamAnswerActive = false;
+/** Apply /api/status loopMode only once so a finished run does not reset the user's select. */
+let seededLoopModeFromServer = false;
 const sessionSelect = document.getElementById('sessionSelect');
 const sessionHint = document.getElementById('sessionHint');
 const renameSessionBtn = document.getElementById('renameSessionBtn');
@@ -91,9 +102,9 @@ function syncLoopModeUi() {
   feedbackTab.hidden = mode !== 'reflection';
   loopModeHint.textContent =
     mode === 'planner'
-      ? 'Planner: make a plan, then execute step-by-step (batch; no live token stream).'
+      ? 'Planner: make a plan, then execute step-by-step (live tokens tagged Planner vs Agent).'
       : mode === 'reflection'
-        ? 'Reflection: attempt → critique → revise (batch; no live token stream).'
+        ? 'Reflection: attempt → critique → revise (live tokens tagged Agent vs Reflection).'
         : 'Default single loop with live token streaming.';
   // If a hidden tab was active, fall back to Diffs.
   if ((mode !== 'planner' && planTab.classList.contains('active')) ||
@@ -175,8 +186,12 @@ async function refreshStatus() {
   }
   hitlWritesEl.checked = data.autoApproveWrites === false;
   longTermMemoryEl.checked = data.longTermMemory === true;
-  if (data.loopMode === 'agent' || data.loopMode === 'planner' || data.loopMode === 'reflection') {
+  if (
+    !seededLoopModeFromServer &&
+    (data.loopMode === 'agent' || data.loopMode === 'planner' || data.loopMode === 'reflection')
+  ) {
     loopModeEl.value = data.loopMode;
+    seededLoopModeFromServer = true;
   }
   syncLoopModeUi();
   runBtn.disabled = !data.hasApiKey || data.busy || driving;
@@ -259,8 +274,7 @@ async function selectSession(sessionId, { focusTab = 'auto' } = {}) {
 }
 
 function clearResultViews() {
-  streamAnswerBuf = '';
-  streamThinkingBuf = '';
+  resetStreamLanes();
   streamAnswerActive = false;
   runErrors = [];
   viewAnswer.innerHTML = '<p class="empty">The agent’s final answer lands here.</p>';
@@ -275,58 +289,161 @@ function clearResultViews() {
   }
 }
 
+function resetStreamLanes() {
+  streamLanes = {
+    planner: { thinking: '', answer: '' },
+    agent: { thinking: '', answer: '' },
+    reflection: { thinking: '', answer: '' },
+  };
+}
+
+function normalizeLane(lane) {
+  if (lane === 'planner' || lane === 'reflection' || lane === 'agent') return lane;
+  return 'agent';
+}
+
+function laneHasContent(lane) {
+  const buf = streamLanes[lane];
+  return Boolean((buf.thinking && buf.thinking.trim()) || (buf.answer && buf.answer.trim()));
+}
+
 function ensureStreamPanels() {
-  if (streamAnswerActive && document.getElementById('streamAnswer')) return;
   streamAnswerActive = true;
-  if (!streamAnswerBuf) streamAnswerBuf = '';
-  if (!streamThinkingBuf) streamThinkingBuf = '';
-  viewAnswer.innerHTML = `
-    <details class="thinking-block" id="thinkingBlock" open hidden>
+  if (!document.getElementById('streamLanes')) {
+    viewAnswer.innerHTML = '<div class="stream-lanes" id="streamLanes"></div>';
+    const tab = document.querySelector('.tab[data-tab="answer"]');
+    if (tab) tab.click();
+  }
+  for (const lane of STREAM_LANES) {
+    if (!laneHasContent(lane)) continue;
+    ensureLanePanel(lane);
+  }
+}
+
+function ensureLanePanel(lane) {
+  const root = document.getElementById('streamLanes');
+  if (!root) return null;
+  let el = document.getElementById(`streamLane-${lane}`);
+  if (el) return el;
+  const wrap = document.createElement('details');
+  wrap.className = `stream-lane lane-${lane}`;
+  wrap.id = `streamLane-${lane}`;
+  wrap.open = true;
+  wrap.innerHTML = `
+    <summary>${STREAM_LANE_LABELS[lane] || lane}</summary>
+    <details class="thinking-block" id="thinkingBlock-${lane}" hidden>
       <summary>Thinking</summary>
-      <pre class="stream-thinking" id="streamThinking"></pre>
+      <pre class="stream-thinking" id="streamThinking-${lane}"></pre>
     </details>
-    <pre class="stream-answer" id="streamAnswer"></pre>
+    <pre class="stream-answer" id="streamAnswer-${lane}"></pre>
   `;
-  const tab = document.querySelector('.tab[data-tab="answer"]');
-  if (tab) tab.click();
-  syncThinkingVisibility();
+  // Keep stable order: planner → agent → reflection
+  const order = STREAM_LANES.indexOf(lane);
+  let inserted = false;
+  for (const child of [...root.children]) {
+    const childLane = child.id.replace('streamLane-', '');
+    if (STREAM_LANES.indexOf(childLane) > order) {
+      root.insertBefore(wrap, child);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) root.appendChild(wrap);
+  return wrap;
 }
 
-function syncThinkingVisibility() {
-  const block = document.getElementById('thinkingBlock');
+function syncLaneThinkingVisibility(lane) {
+  const block = document.getElementById(`thinkingBlock-${lane}`);
   if (!block) return;
-  block.hidden = !streamThinkingBuf;
+  block.hidden = !streamLanes[lane].thinking;
 }
 
-function appendThinkingToken(token) {
+function appendThinkingToken(token, lane) {
+  const id = normalizeLane(lane);
   ensureStreamPanels();
-  streamThinkingBuf += token;
-  const el = document.getElementById('streamThinking');
-  if (el) el.textContent = streamThinkingBuf;
-  syncThinkingVisibility();
+  streamLanes[id].thinking += token;
+  ensureLanePanel(id);
+  const el = document.getElementById(`streamThinking-${id}`);
+  if (el) el.textContent = streamLanes[id].thinking;
+  syncLaneThinkingVisibility(id);
 }
 
-function appendAnswerToken(token) {
+function appendAnswerToken(token, lane) {
+  const id = normalizeLane(lane);
   ensureStreamPanels();
-  streamAnswerBuf += token;
-  const el = document.getElementById('streamAnswer');
-  if (el) el.textContent = streamAnswerBuf;
+  streamLanes[id].answer += token;
+  ensureLanePanel(id);
+  const el = document.getElementById(`streamAnswer-${id}`);
+  if (el) el.textContent = streamLanes[id].answer;
 }
 
-function renderAnswerPanel(answer, thinking) {
+function renderAnswerPanel(answer, thinking, opts = {}) {
   const parts = [];
-  if (thinking && String(thinking).trim()) {
-    parts.push(`<details class="thinking-block" open>
+  const keepLanes = opts.keepStreamLanes !== false;
+  const hasSideLanes =
+    keepLanes && (laneHasContent('planner') || laneHasContent('reflection'));
+
+  if (!hasSideLanes) {
+    const agentThinking =
+      (thinking && String(thinking).trim()) ||
+      (keepLanes && streamLanes.agent.thinking.trim()) ||
+      '';
+    const agentAnswer = answer || (keepLanes ? streamLanes.agent.answer : '') || '';
+    if (agentThinking) {
+      parts.push(`<details class="thinking-block" open>
+      <summary>Thinking</summary>
+      <pre class="stream-thinking">${escapeHtml(agentThinking)}</pre>
+    </details>`);
+    }
+    if (agentAnswer) {
+      parts.push(answer ? renderMarkdownLite(agentAnswer) : `<pre class="stream-answer">${escapeHtml(agentAnswer)}</pre>`);
+    } else if (!agentThinking) {
+      parts.push('<p class="empty">No final answer.</p>');
+    }
+    viewAnswer.innerHTML = parts.join('');
+    return;
+  }
+
+  if (laneHasContent('planner')) {
+    parts.push(renderLaneDetails('planner', streamLanes.planner, { open: false, markdown: false }));
+  }
+  if (laneHasContent('reflection')) {
+    parts.push(renderLaneDetails('reflection', streamLanes.reflection, { open: false, markdown: false }));
+  }
+
+  const agentThinking =
+    (thinking && String(thinking).trim()) || streamLanes.agent.thinking.trim() || '';
+  const agentAnswer = answer || streamLanes.agent.answer || '';
+  parts.push(
+    renderLaneDetails(
+      'agent',
+      { thinking: agentThinking, answer: agentAnswer },
+      { open: true, markdown: Boolean(answer), label: 'Agent (final)' },
+    ),
+  );
+  viewAnswer.innerHTML = parts.join('');
+}
+
+function renderLaneDetails(lane, buf, { open, markdown, label } = {}) {
+  const title = label || STREAM_LANE_LABELS[lane] || lane;
+  const thinking = buf.thinking && String(buf.thinking).trim();
+  const answer = buf.answer && String(buf.answer);
+  const body = [];
+  if (thinking) {
+    body.push(`<details class="thinking-block" open>
       <summary>Thinking</summary>
       <pre class="stream-thinking">${escapeHtml(thinking)}</pre>
     </details>`);
   }
   if (answer) {
-    parts.push(renderMarkdownLite(answer));
-  } else {
-    parts.push('<p class="empty">No final answer.</p>');
+    body.push(markdown ? renderMarkdownLite(answer) : `<pre class="stream-answer">${escapeHtml(answer)}</pre>`);
+  } else if (!thinking) {
+    body.push('<p class="empty">No content.</p>');
   }
-  viewAnswer.innerHTML = parts.join('');
+  return `<details class="stream-lane lane-${lane}"${open ? ' open' : ''}>
+    <summary>${escapeHtml(title)}</summary>
+    ${body.join('')}
+  </details>`;
 }
 
 function syncSessionActions() {
@@ -1307,8 +1424,7 @@ async function runAgent() {
   resumeDurableBtn.hidden = true;
   runHint.textContent = 'Running…';
   eventLog.innerHTML = '';
-  streamAnswerBuf = '';
-  streamThinkingBuf = '';
+  resetStreamLanes();
   streamAnswerActive = false;
   viewAnswer.innerHTML = '<p class="empty">Streaming…</p>';
   logLine(`workspace ${workspace}`);
@@ -1348,8 +1464,7 @@ async function resumeRun(runId) {
   syncControlLabel();
   runHint.textContent = 'Resuming…';
   eventLog.innerHTML = '';
-  streamAnswerBuf = '';
-  streamThinkingBuf = '';
+  resetStreamLanes();
   streamAnswerActive = false;
   viewAnswer.innerHTML = '<p class="empty">Streaming…</p>';
   logLine(`resume ${runId}`);
@@ -1438,10 +1553,10 @@ function handleEvent(event, data) {
     );
   }
   if (event === 'model_token') {
-    appendAnswerToken(data.token || '');
+    appendAnswerToken(data.token || '', data.lane);
   }
   if (event === 'thinking_token') {
-    appendThinkingToken(data.token || '');
+    appendThinkingToken(data.token || '', data.lane);
   }
   if (event === 'policy') {
     logLine(`policy deny ${data.scope}:${data.target} — ${data.reason}`, 'err');
@@ -1545,10 +1660,9 @@ function handleEvent(event, data) {
     } else if (!data.plan) {
       renderFeedback(null);
     }
-    const thinking = data.thinking || streamThinkingBuf || '';
-    viewAnswer.innerHTML = ''; // clear before renderAnswerPanel
-    if (data.answer || thinking) {
-      renderAnswerPanel(data.answer, thinking);
+    const thinking = data.thinking || streamLanes.agent.thinking || '';
+    if (data.answer || thinking || laneHasContent('planner') || laneHasContent('reflection') || laneHasContent('agent')) {
+      renderAnswerPanel(data.answer, thinking, { keepStreamLanes: true });
     } else {
       viewAnswer.innerHTML = `<p class="empty">${escapeHtml(data.error || 'No final answer.')}</p>`;
     }

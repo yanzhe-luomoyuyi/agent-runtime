@@ -15,10 +15,11 @@
  * and parses the reply back into a structured `ChatResponse` via the harness's
  * tolerant text protocol. A live tool-calling provider skips that text
  * round-trip and returns `toolCalls` directly — nothing else here would change.
- * Token streaming: pass `stream: true` to drive `runAgentStreamed` and forward
- * tokens via `ctx.notifyStream` (not the durable log). `callChatStream` still
- * records one final `ModelCalled` per turn for resume. Default `stream: false`
- * keeps the classic batch `runAgent` path.
+ * Token streaming: pass `stream: true` to drive streamed harness loops
+ * (`runAgentStreamed` / planner / reflection) and forward tokens via
+ * `ctx.notifyStream` (not the durable log). `callChatStream` still records one
+ * final `ModelCalled` per turn for resume. Default `stream: false` keeps the
+ * classic batch path.
  */
 
 import type {
@@ -40,7 +41,9 @@ import {
   runAgent,
   runAgentStreamed,
   runPlannedAgent,
+  runPlannedAgentStreamed,
   runReflectiveAgent,
+  runReflectiveAgentStreamed,
   ScratchpadToolInvoker,
   Scratchpad,
   type AgentConfig,
@@ -291,10 +294,10 @@ export interface HarnessWorkflowOptions {
    */
   scratchpad?: boolean | ScratchpadToolInvokerOptions;
   /**
-   * When true, drive `runAgentStreamed` and forward `model_token` /
+   * When true, drive streamed harness loops and forward `model_token` /
    * `thinking_token` via `ctx.notifyStream`. When false (default), use batch
-   * `runAgent` — same durable semantics, no live token notify.
-   * Ignored for `loopMode: 'planner' | 'reflection'` (those use batch control flow).
+   * `runAgent` / batch planner / reflection wrappers — same durable semantics,
+   * no live token notify. Applies to all `loopMode` values.
    */
   stream?: boolean;
   /**
@@ -404,17 +407,59 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
 
               const loopMode = opts.loopMode ?? 'agent';
               if (loopMode === 'planner') {
-                return runPlannedAgent({
+                const plannedOpts = {
                   ...runOpts,
                   maxReplans: opts.planner?.maxReplans,
                   replanOnFailure: opts.planner?.replanOnFailure,
-                });
+                };
+                if (!opts.stream) {
+                  return runPlannedAgent(plannedOpts);
+                }
+                let planned: Awaited<ReturnType<typeof runPlannedAgent>> | undefined;
+                for await (const ev of runPlannedAgentStreamed(plannedOpts)) {
+                  if (
+                    (ev.type === 'model_token' || ev.type === 'thinking_token') &&
+                    ctx.notifyStream
+                  ) {
+                    const notify: StreamNotifyEvent = {
+                      type: ev.type,
+                      turn: ev.turn,
+                      token: ev.token,
+                      lane: ev.lane ?? 'agent',
+                    };
+                    ctx.notifyStream(notify);
+                  }
+                  if (ev.type === 'done') planned = ev.result;
+                }
+                if (!planned) throw new Error('planner loop ended without a done event');
+                return planned;
               }
               if (loopMode === 'reflection') {
-                return runReflectiveAgent({
+                const reflectiveOpts = {
                   ...runOpts,
                   maxReflections: opts.reflection?.maxReflections,
-                });
+                };
+                if (!opts.stream) {
+                  return runReflectiveAgent(reflectiveOpts);
+                }
+                let reflective: Awaited<ReturnType<typeof runReflectiveAgent>> | undefined;
+                for await (const ev of runReflectiveAgentStreamed(reflectiveOpts)) {
+                  if (
+                    (ev.type === 'model_token' || ev.type === 'thinking_token') &&
+                    ctx.notifyStream
+                  ) {
+                    const notify: StreamNotifyEvent = {
+                      type: ev.type,
+                      turn: ev.turn,
+                      token: ev.token,
+                      lane: ev.lane ?? 'agent',
+                    };
+                    ctx.notifyStream(notify);
+                  }
+                  if (ev.type === 'done') reflective = ev.result;
+                }
+                if (!reflective) throw new Error('reflection loop ended without a done event');
+                return reflective;
               }
 
               if (!opts.stream) {
@@ -433,6 +478,7 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                     type: ev.type,
                     turn: ev.turn,
                     token: ev.token,
+                    lane: ev.lane ?? 'agent',
                   };
                   ctx.notifyStream(notify);
                 }

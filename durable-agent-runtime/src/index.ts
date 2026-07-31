@@ -18,7 +18,7 @@ export {
   chatResponseToStream,
   accumulateChatStream,
 } from './model/chat-provider.js';
-export type { AgentEvent, RunState, RunInput, RunStatus, StreamNotifyEvent } from './types.js';
+export type { AgentEvent, RunState, RunInput, RunStatus, StreamNotifyEvent, StreamLane } from './types.js';
 export { createHarnessWorkflow, RuntimeChatModel, RuntimeToolInvoker } from './app/harness-adapter.js';
 export type { HarnessWorkflowOptions, HarnessAgentOptions, HarnessLoopMode } from './app/harness-adapter.js';
 export { ConflictError, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
