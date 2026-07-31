@@ -1,8 +1,9 @@
 /**
- * D: reflection / self-critique.
+ * D: reflection / self-critique (Q&A-oriented).
  *
  * After the loop produces an answer, a critic model call judges whether it
- * actually satisfies the goal. If not, the loop runs again — up to
+ * actually satisfies the goal in a Q&A sense (correctness, completeness,
+ * answering the referenced items). If not, the loop runs again — up to
  * `maxReflections` times. Each attempt and each critique gets its own key
  * namespace via `keyScope` (`a:{i}` and `reflect:{i}`) so the whole reflective
  * run remains deterministic and replayable on a durable host.
@@ -12,10 +13,15 @@
  * correction strategy, and call out which parts of the prior attempt were
  * already correct (so the next attempt doesn't redo good work). This gives
  * the next attempt a targeted fix instead of a vague "try again".
+ *
+ * Session `conversationHistory` is injected into the critic so multi-turn
+ * goals like "do 1 and 2" resolve against prior turns. This mode is intended
+ * for Q&A review, not code-edit verification via diffs.
  */
 
 import type { ChatModel, Message } from '@agent/contracts';
 import { extractJsonObject, keyScope, systemMessage, userMessage } from '@agent/contracts';
+import { withPriorConversation } from './context-format.js';
 import {
   runAgentStreamed,
   streamTextModelCall,
@@ -42,17 +48,27 @@ export type ReflectiveStreamEvent =
   | Extract<AgentStreamEvent, { type: 'model_token' | 'thinking_token' }>
   | { type: 'done'; result: ReflectiveAgentResult };
 
-function critiqueMessages(goal: string, answer: string): Message[] {
+export type CritiqueOptions = {
+  key?: string;
+  /** Prior session turns so the critic can resolve references in the goal. */
+  conversationHistory?: Message[];
+};
+
+function critiqueMessages(goal: string, answer: string, opts: CritiqueOptions = {}): Message[] {
+  const body = withPriorConversation(`Goal: ${goal}\n\nProposed answer:\n${answer}`, opts.conversationHistory);
   return [
     systemMessage(
-      'You are a strict reviewer. Decide whether the answer fully satisfies the goal. ' +
-        'If it does not, diagnose precisely what is wrong instead of a vague verdict. Reply with ONLY JSON: ' +
+      'You are a strict Q&A reviewer. Use Prior conversation (when present) to resolve ' +
+        'references in the goal (e.g. "1 and 2" from an earlier list). Judge whether the ' +
+        'answer is correct, complete, and on-topic for that goal. Do NOT require code, diffs, ' +
+        'or file edits as pass criteria — this review is for Q&A quality, not code verification. ' +
+        'If the answer falls short, diagnose precisely. Reply with ONLY JSON: ' +
         '{"satisfactory":true|false,"feedback":"one-line summary",' +
         '"rootCause":"why it fell short, omit or empty if satisfactory",' +
         '"correctionStrategy":"concrete steps to fix it next attempt, omit or empty if satisfactory",' +
         '"whatWorked":["parts of the attempt that were already correct and should be kept, if any"]}.',
     ),
-    userMessage(`Goal: ${goal}\n\nProposed answer:\n${answer}`),
+    userMessage(body),
   ];
 }
 
@@ -61,10 +77,10 @@ export async function critique(
   goal: string,
   answer: string,
   model: ChatModel,
-  opts: { key?: string } = {},
+  opts: CritiqueOptions = {},
 ): Promise<Critique> {
   const resp = await model.chat({
-    messages: critiqueMessages(goal, answer),
+    messages: critiqueMessages(goal, answer, opts),
     tools: [],
     key: opts.key ?? keyScope().reflect(0),
   });
@@ -76,12 +92,12 @@ export async function* critiqueStreamed(
   goal: string,
   answer: string,
   model: ChatModel,
-  opts: { key?: string } = {},
+  opts: CritiqueOptions = {},
 ): AsyncGenerator<ReflectiveStreamEvent, Critique, void> {
   const gen = streamTextModelCall(
     model,
     {
-      messages: critiqueMessages(goal, answer),
+      messages: critiqueMessages(goal, answer, opts),
       tools: [],
       key: opts.key ?? keyScope().reflect(0),
     },
@@ -195,7 +211,10 @@ export async function* runReflectiveAgentStreamed(
   if (!result) throw new Error('runReflectiveAgent: attempt ended without done');
 
   for (let i = 0; i < maxReflections; i++) {
-    const critiqueGen = critiqueStreamed(opts.goal, result.answer, model, { key: scope.reflect(i) });
+    const critiqueGen = critiqueStreamed(opts.goal, result.answer, model, {
+      key: scope.reflect(i),
+      conversationHistory: opts.conversationHistory,
+    });
     let cNext = await critiqueGen.next();
     while (!cNext.done) {
       yield cNext.value;

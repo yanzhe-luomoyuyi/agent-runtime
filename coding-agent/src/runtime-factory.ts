@@ -185,9 +185,17 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
       softCap: cfg.run.compaction.softCapTokens,
     });
 
-  const instructions = longTermMemory
-    ? `${cfg.agent.instructions}\n\n${MEMORY_INSTRUCTIONS}`
-    : cfg.agent.instructions;
+  const REFLECTION_QA_INSTRUCTIONS =
+    'Reflection mode is for Q&A quality review in a multi-turn session. Prefer read-only tools; ' +
+    'do not proactively edit the workspace. For code changes, use Agent or Planner mode instead.';
+
+  let instructions = cfg.agent.instructions;
+  if (loopMode === 'reflection') {
+    instructions = `${instructions}\n\n${REFLECTION_QA_INSTRUCTIONS}`;
+  }
+  if (longTermMemory) {
+    instructions = `${instructions}\n\n${MEMORY_INSTRUCTIONS}`;
+  }
 
   const basePolicy = opts.policy ?? defaultCodingPolicy(cfg);
   const policy: Policy = longTermMemory

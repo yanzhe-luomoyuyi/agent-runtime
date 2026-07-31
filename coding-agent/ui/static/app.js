@@ -102,9 +102,9 @@ function syncLoopModeUi() {
   feedbackTab.hidden = mode !== 'reflection';
   loopModeHint.textContent =
     mode === 'planner'
-      ? 'Planner: make a plan, then execute step-by-step (live tokens tagged Planner vs Agent).'
+      ? 'Planner: plan then execute — works for Q&A or code edits (session history is included when planning).'
       : mode === 'reflection'
-        ? 'Reflection: attempt → critique → revise (live tokens tagged Agent vs Reflection).'
+        ? 'Reflection: Q&A critique/revise with session history. Not for verifying code edits — use Agent or Planner for that.'
         : 'Default single loop with live token streaming.';
   // If a hidden tab was active, fall back to Diffs.
   if ((mode !== 'planner' && planTab.classList.contains('active')) ||

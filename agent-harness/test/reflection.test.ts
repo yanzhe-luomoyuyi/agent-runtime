@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildRevisedGoal, parseCritique, runReflectiveAgent, runReflectiveAgentStreamed } from '../src/control/reflection.js';
+import { critique, buildRevisedGoal, parseCritique, runReflectiveAgent, runReflectiveAgentStreamed } from '../src/control/reflection.js';
 import { MockToolInvoker, ScriptedChatModel, finalResponse, makeTool } from '../src/testkit/index.js';
 
 describe('reflection', () => {
@@ -104,5 +104,26 @@ describe('reflection', () => {
     }
     expect(lanes).toContain('agent');
     expect(lanes).toContain('reflection');
+  });
+
+  it('critique prompt includes prior conversation for multi-turn Q&A goals', async () => {
+    const model = new ScriptedChatModel([
+      finalResponse('{"satisfactory":true,"feedback":"covers items 1 and 2"}'),
+    ]);
+    await critique('帮我把1, 2做了', '已说明两项优化方案', model, {
+      conversationHistory: [
+        { role: 'user', content: '有哪些可以优化？' },
+        {
+          role: 'assistant',
+          content: '1. Myers 差分\n2. grep 流式 early-exit\n3. walk withFileTypes',
+        },
+      ],
+    });
+    const userContent = model.requests[0]!.messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userContent).toContain('Prior conversation:');
+    expect(userContent).toContain('Myers 差分');
+    expect(userContent).toContain('grep 流式 early-exit');
+    expect(userContent).toContain('Goal: 帮我把1, 2做了');
+    expect(userContent).toContain('Proposed answer:');
   });
 });

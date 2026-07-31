@@ -29,6 +29,7 @@
 import type { ChatModel, Message, ToolInvoker } from '@agent/contracts';
 import { extractJsonObject, keyScope, systemMessage, userMessage } from '@agent/contracts';
 
+import { withPriorConversation } from './context-format.js';
 import {
   DEFAULT_SYSTEM_PROMPT,
   runAgentStreamed,
@@ -145,10 +146,15 @@ export function validatePlanFeasibility(plan: PlanState, tools: ToolInvoker): st
 
 // ── Plan generation ─────────────────────────────────────────────────
 
-function planMessages(
-  goal: string,
-  opts: { tools?: ToolInvoker; previousFailures?: string[] } = {},
-): Message[] {
+export type MakePlanOptions = {
+  key?: string;
+  tools?: ToolInvoker;
+  previousFailures?: string[];
+  /** Prior session turns so the planner can resolve references in the goal. */
+  conversationHistory?: Message[];
+};
+
+function planMessages(goal: string, opts: MakePlanOptions = {}): Message[] {
   const toolList = opts.tools
     ? opts.tools.list().map((t) => `- ${t.name}: ${t.description}`).join('\n')
     : '(tools become available during execution)';
@@ -157,20 +163,27 @@ function planMessages(
     ? `\n\nPrevious attempts failed. Adjust the plan:\n${opts.previousFailures.map((f) => `- ${f}`).join('\n')}`
     : '';
 
+  const body = withPriorConversation(
+    `Goal: ${goal}\n\nAvailable tools:\n${toolList}${failureCtx}`,
+    opts.conversationHistory,
+  );
+
   return [
     systemMessage(
       'You are a planner. Decompose the goal into a short ordered list of concrete, ' +
-        'actionable steps. Each step should correspond to roughly one or two tool calls. ' +
+        'actionable steps. Use Prior conversation (when present) to resolve references ' +
+        'in the goal (e.g. "1 and 2" from an earlier list). Each step should correspond ' +
+        'to roughly one or two tool calls. ' +
         'Reply with ONLY a JSON object: {"steps":["step 1","step 2"]}.',
     ),
-    userMessage(`Goal: ${goal}\n\nAvailable tools:\n${toolList}${failureCtx}`),
+    userMessage(body),
   ];
 }
 
 export async function makePlan(
   goal: string,
   model: ChatModel,
-  opts: { key?: string; tools?: ToolInvoker; previousFailures?: string[] } = {},
+  opts: MakePlanOptions = {},
 ): Promise<PlanState> {
   const resp = await model.chat({
     messages: planMessages(goal, opts),
@@ -184,7 +197,7 @@ export async function makePlan(
 export async function* makePlanStreamed(
   goal: string,
   model: ChatModel,
-  opts: { key?: string; tools?: ToolInvoker; previousFailures?: string[] } = {},
+  opts: MakePlanOptions = {},
 ): AsyncGenerator<PlannedStreamEvent, PlanState, void> {
   const gen = streamTextModelCall(
     model,
@@ -234,6 +247,7 @@ async function* reviewGeneratedPlanStreamed(
   model: ChatModel,
   tools: ToolInvoker,
   remakeKey: string,
+  conversationHistory?: Message[],
 ): AsyncGenerator<PlannedStreamEvent, PlanState | null, void> {
   let current = plan.steps.length === 0 ? newPlan(['Accomplish the goal']) : plan;
   let rejectRemakes = 0;
@@ -253,6 +267,7 @@ async function* reviewGeneratedPlanStreamed(
       key: remakeKey,
       tools,
       previousFailures: [feedback],
+      conversationHistory,
     });
     let next = await remakeGen.next();
     while (!next.done) {
@@ -294,6 +309,7 @@ export async function* runPlannedAgentStreamed(
   const planGen = makePlanStreamed(opts.goal, model, {
     key: opts.planKey ?? scope.plan(),
     tools,
+    conversationHistory: opts.conversationHistory,
   });
   let planNext = await planGen.next();
   while (!planNext.done) {
@@ -310,6 +326,7 @@ export async function* runPlannedAgentStreamed(
     model,
     tools,
     `${scope.plan()}:review-remake`,
+    opts.conversationHistory,
   );
   let reviewNext = await reviewGen.next();
   while (!reviewNext.done) {
@@ -383,6 +400,7 @@ export async function* runPlannedAgentStreamed(
         key: scope.replan(replans),
         tools,
         previousFailures: failures,
+        conversationHistory: opts.conversationHistory,
       });
       let replanNext = await replanGen.next();
       while (!replanNext.done) {
@@ -399,6 +417,7 @@ export async function* runPlannedAgentStreamed(
           model,
           tools,
           `${scope.replan(replans)}:review-remake`,
+          opts.conversationHistory,
         );
         let reReviewNext = await reReviewGen.next();
         while (!reReviewNext.done) {

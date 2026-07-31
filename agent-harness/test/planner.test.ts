@@ -78,6 +78,20 @@ describe('planner — parse & make', () => {
     const plan = await makePlan('goal', model);
     expect(plan.steps).toEqual(['look', 'fix']);
   });
+
+  it('makePlan prompt includes prior conversation when provided', async () => {
+    const model = new ScriptedChatModel([finalResponse('{"steps":["implement Myers","stream grep"]}')]);
+    await makePlan('帮我把1, 2做了', model, {
+      conversationHistory: [
+        { role: 'user', content: '有哪些可以优化？' },
+        { role: 'assistant', content: '1. Myers 差分\n2. grep 流式 early-exit' },
+      ],
+    });
+    const userContent = model.requests[0]!.messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userContent).toContain('Prior conversation:');
+    expect(userContent).toContain('Myers 差分');
+    expect(userContent).toContain('Goal: 帮我把1, 2做了');
+  });
 });
 
 describe('planner — runPlannedAgent', () => {
