@@ -20,9 +20,15 @@ export {
 } from './model/chat-provider.js';
 export type { AgentEvent, RunState, RunInput, RunStatus, StreamNotifyEvent } from './types.js';
 export { createHarnessWorkflow, RuntimeChatModel, RuntimeToolInvoker } from './app/harness-adapter.js';
-export type { HarnessWorkflowOptions, HarnessAgentOptions } from './app/harness-adapter.js';
+export type { HarnessWorkflowOptions, HarnessAgentOptions, HarnessLoopMode } from './app/harness-adapter.js';
 export { ConflictError, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
-export { extractAnswer, extractThinking, extractHarnessMessages } from './run-state.js';
+export {
+  extractAnswer,
+  extractThinking,
+  extractHarnessMessages,
+  extractPlan,
+  extractCritiques,
+} from './run-state.js';
 export { buildTrace, renderTimeline, type Trace, type TraceTotals } from './trace.js';
 export {
   SessionManager,

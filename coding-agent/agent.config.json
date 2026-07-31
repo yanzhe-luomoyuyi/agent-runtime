@@ -44,6 +44,14 @@
     "memory": {
       "enabled": false,
       "storeDir": ".coding-agent-memory"
+    },
+    "loopMode": "agent",
+    "planner": {
+      "maxReplans": 2,
+      "replanOnFailure": true
+    },
+    "reflection": {
+      "maxReflections": 1
     }
   },
   "pricing": {

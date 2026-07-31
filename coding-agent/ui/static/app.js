@@ -32,6 +32,12 @@ const renameDialog = document.getElementById('renameDialog');
 const renameTitle = document.getElementById('renameTitle');
 const hitlWritesEl = document.getElementById('hitlWrites');
 const longTermMemoryEl = document.getElementById('longTermMemory');
+const loopModeEl = document.getElementById('loopMode');
+const loopModeHint = document.getElementById('loopModeHint');
+const planTab = document.getElementById('planTab');
+const feedbackTab = document.getElementById('feedbackTab');
+const viewPlan = document.getElementById('view-plan');
+const viewFeedback = document.getElementById('view-feedback');
 const crashTurnEl = document.getElementById('crashTurn');
 const controlBar = document.getElementById('controlBar');
 const controlLabel = document.getElementById('controlLabel');
@@ -69,12 +75,32 @@ let renameTargetId = null;
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => {
+    if (tab.hidden) return;
     document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
     document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById(`view-${tab.dataset.tab}`).classList.add('active');
   });
 });
+
+function syncLoopModeUi() {
+  const mode = loopModeEl.value;
+  planTab.hidden = mode !== 'planner';
+  feedbackTab.hidden = mode !== 'reflection';
+  loopModeHint.textContent =
+    mode === 'planner'
+      ? 'Planner: make a plan, then execute step-by-step (batch; no live token stream).'
+      : mode === 'reflection'
+        ? 'Reflection: attempt → critique → revise (batch; no live token stream).'
+        : 'Default single loop with live token streaming.';
+  // If a hidden tab was active, fall back to Diffs.
+  if ((mode !== 'planner' && planTab.classList.contains('active')) ||
+      (mode !== 'reflection' && feedbackTab.classList.contains('active'))) {
+    document.querySelector('.tab[data-tab="diffs"]').click();
+  }
+}
+
+loopModeEl.addEventListener('change', syncLoopModeUi);
 
 function isSandboxPath(path) {
   return Boolean(defaultWorkspace) && path === defaultWorkspace;
@@ -146,6 +172,10 @@ async function refreshStatus() {
   }
   hitlWritesEl.checked = data.autoApproveWrites === false;
   longTermMemoryEl.checked = data.longTermMemory === true;
+  if (data.loopMode === 'agent' || data.loopMode === 'planner' || data.loopMode === 'reflection') {
+    loopModeEl.value = data.loopMode;
+  }
+  syncLoopModeUi();
   runBtn.disabled = !data.hasApiKey || data.busy || driving;
   runHint.textContent = data.busy || driving
     ? 'Run in progress…'
@@ -462,6 +492,7 @@ async function refreshRuns() {
         return;
       }
       await loadRunTrace(runId);
+      await loadRunExtras(runId);
     });
   });
 }
@@ -611,6 +642,76 @@ function renderDiffs(diffs) {
       </div>`;
     })
     .join('');
+}
+
+function renderPlan(plan) {
+  if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) {
+    viewPlan.innerHTML = '<p class="empty">No plan recorded for this run.</p>';
+    return;
+  }
+  const statuses = Array.isArray(plan.statuses) ? plan.statuses : [];
+  const items = plan.steps
+    .map((step, i) => {
+      const s = statuses[i] || 'pending';
+      const mark =
+        s === 'completed' ? '✓' : s === 'failed' ? '✗' : s === 'in_progress' ? '→' : '○';
+      return `<li class="plan-step ${escapeHtml(s)}"><span class="plan-mark">${mark}</span> <span class="plan-text">${escapeHtml(String(step))}</span> <span class="meta">${escapeHtml(s)}</span></li>`;
+    })
+    .join('');
+  viewPlan.innerHTML = `<ol class="plan-list">${items}</ol>`;
+}
+
+function renderFeedback(critiques) {
+  if (!Array.isArray(critiques) || critiques.length === 0) {
+    viewFeedback.innerHTML = '<p class="empty">No reflection feedback for this run.</p>';
+    return;
+  }
+  viewFeedback.innerHTML = critiques
+    .map((c, i) => {
+      const ok = c && c.satisfactory === true;
+      const parts = [
+        `<div class="feedback-card ${ok ? 'ok' : 'fail'}">`,
+        `<h3>Round ${i + 1} · ${ok ? 'satisfactory' : 'needs revision'}</h3>`,
+        `<p>${escapeHtml((c && c.feedback) || '(no summary)')}</p>`,
+      ];
+      if (c?.rootCause) {
+        parts.push(`<p><strong>Root cause</strong> — ${escapeHtml(c.rootCause)}</p>`);
+      }
+      if (c?.correctionStrategy) {
+        parts.push(`<p><strong>Correction</strong> — ${escapeHtml(c.correctionStrategy)}</p>`);
+      }
+      if (Array.isArray(c?.whatWorked) && c.whatWorked.length) {
+        parts.push(
+          `<p><strong>Keep</strong></p><ul>${c.whatWorked.map((w) => `<li>${escapeHtml(String(w))}</li>`).join('')}</ul>`,
+        );
+      }
+      parts.push('</div>');
+      return parts.join('');
+    })
+    .join('');
+}
+
+async function loadRunExtras(runId) {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/status`);
+  if (!res.ok) return;
+  const data = await res.json().catch(() => ({}));
+  if (data.plan) {
+    loopModeEl.value = 'planner';
+    syncLoopModeUi();
+    renderPlan(data.plan);
+  } else {
+    renderPlan(null);
+  }
+  if (Array.isArray(data.critiques) && data.critiques.length) {
+    loopModeEl.value = 'reflection';
+    syncLoopModeUi();
+    renderFeedback(data.critiques);
+  } else if (!data.plan) {
+    renderFeedback(null);
+  }
+  if (data.answer) {
+    renderAnswerPanel(data.answer, data.thinking || '');
+  }
 }
 
 function pushError(entry) {
@@ -1184,6 +1285,7 @@ async function runAgent() {
     workspace,
     hitlWrites: hitlWritesEl.checked,
     longTermMemory: longTermMemoryEl.checked,
+    loopMode: loopModeEl.value,
     newSession: !sessionId,
   };
   if (sessionId) body.sessionId = sessionId;
@@ -1250,6 +1352,7 @@ async function resumeRun(runId) {
     workspace,
     hitlWrites: hitlWritesEl.checked,
     longTermMemory: longTermMemoryEl.checked,
+    loopMode: loopModeEl.value,
   };
   if (crashAfterTurn > 0) body.crashAfterTurn = crashAfterTurn;
 
@@ -1420,6 +1523,20 @@ function handleEvent(event, data) {
       ];
     }
     renderErrors(runErrors);
+    if (data.plan) {
+      loopModeEl.value = 'planner';
+      syncLoopModeUi();
+      renderPlan(data.plan);
+    } else {
+      renderPlan(null);
+    }
+    if (Array.isArray(data.critiques) && data.critiques.length) {
+      loopModeEl.value = 'reflection';
+      syncLoopModeUi();
+      renderFeedback(data.critiques);
+    } else if (!data.plan) {
+      renderFeedback(null);
+    }
     const thinking = data.thinking || streamThinkingBuf || '';
     viewAnswer.innerHTML = ''; // clear before renderAnswerPanel
     if (data.answer || thinking) {
@@ -1427,7 +1544,11 @@ function handleEvent(event, data) {
     } else {
       viewAnswer.innerHTML = `<p class="empty">${escapeHtml(data.error || 'No final answer.')}</p>`;
     }
-    if ((data.diffs || []).length) {
+    if (data.plan) {
+      document.querySelector('.tab[data-tab="plan"]').click();
+    } else if (Array.isArray(data.critiques) && data.critiques.length) {
+      document.querySelector('.tab[data-tab="feedback"]').click();
+    } else if ((data.diffs || []).length) {
       document.querySelector('.tab[data-tab="diffs"]').click();
     } else if (runErrors.length) {
       document.querySelector('.tab[data-tab="errors"]').click();

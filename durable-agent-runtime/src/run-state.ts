@@ -35,6 +35,22 @@ export function extractThinking(state: RunState, stepId = 'agent.1'): string | u
   return undefined;
 }
 
+/** Final plan from a planner-mode harness step (or summary). */
+export function extractPlan(state: RunState, stepId = 'agent.1'): unknown | undefined {
+  const summary = state.summary as { plan?: unknown } | undefined;
+  if (summary?.plan) return summary.plan;
+  const result = state.stepOutputs[stepId] as { plan?: unknown } | undefined;
+  return result?.plan;
+}
+
+/** Critiques from a reflection-mode harness step (or summary). */
+export function extractCritiques(state: RunState, stepId = 'agent.1'): unknown[] | undefined {
+  const summary = state.summary as { critiques?: unknown } | undefined;
+  if (Array.isArray(summary?.critiques)) return summary.critiques;
+  const result = state.stepOutputs[stepId] as { critiques?: unknown } | undefined;
+  return Array.isArray(result?.critiques) ? result.critiques : undefined;
+}
+
 type TranscriptMessage = {
   role: string;
   content?: string | null;

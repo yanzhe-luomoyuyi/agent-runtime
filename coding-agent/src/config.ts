@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
-import type { ModelPricing, Policy } from 'durable-agent-runtime';
+import type { ModelPricing, Policy, HarnessLoopMode } from 'durable-agent-runtime';
 
 import { PACKAGE_ROOT } from './paths.js';
 
@@ -79,6 +79,15 @@ export interface CodingRunSection {
     /** Relative to package root, or absolute. One JSON file per workspace scope. */
     storeDir: string;
   };
+  /** Default harness control-flow mode (`agent` | `planner` | `reflection`). */
+  loopMode: HarnessLoopMode;
+  planner: {
+    maxReplans: number;
+    replanOnFailure: boolean;
+  };
+  reflection: {
+    maxReflections: number;
+  };
 }
 
 export interface CodingConfigFile {
@@ -90,10 +99,12 @@ export interface CodingConfigFile {
   tools?: Partial<Omit<CodingToolsSection, 'runTests'>> & {
     runTests?: Partial<CodingToolsSection['runTests']>;
   };
-  run?: Partial<Omit<CodingRunSection, 'compaction' | 'scratchpad' | 'memory'>> & {
+  run?: Partial<Omit<CodingRunSection, 'compaction' | 'scratchpad' | 'memory' | 'planner' | 'reflection'>> & {
     compaction?: Partial<CodingRunSection['compaction']>;
     scratchpad?: Partial<CodingRunSection['scratchpad']>;
     memory?: Partial<CodingRunSection['memory']>;
+    planner?: Partial<CodingRunSection['planner']>;
+    reflection?: Partial<CodingRunSection['reflection']>;
   };
   policy?: {
     allowedTools?: string[];
@@ -168,6 +179,14 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       enabled: false,
       storeDir: '.coding-agent-memory',
     },
+    loopMode: 'agent',
+    planner: {
+      maxReplans: 2,
+      replanOnFailure: true,
+    },
+    reflection: {
+      maxReflections: 1,
+    },
   },
   policy: {
     allowedTools: [
@@ -209,6 +228,8 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
         neverOffload: overlay.run?.scratchpad?.neverOffload ?? base.run.scratchpad.neverOffload,
       },
       memory: { ...base.run.memory, ...overlay.run?.memory },
+      planner: { ...base.run.planner, ...overlay.run?.planner },
+      reflection: { ...base.run.reflection, ...overlay.run?.reflection },
     },
     policy: {
       allowedTools: overlay.policy?.allowedTools ?? base.policy.allowedTools,
@@ -236,6 +257,12 @@ export function applyEnvOverrides(
         ? false
         : undefined;
 
+  const loopModeRaw = env.AGENT_LOOP_MODE?.trim().toLowerCase();
+  const loopMode =
+    loopModeRaw === 'agent' || loopModeRaw === 'planner' || loopModeRaw === 'reflection'
+      ? loopModeRaw
+      : undefined;
+
   return {
     ...cfg,
     model: {
@@ -252,6 +279,7 @@ export function applyEnvOverrides(
       maxTurns: maxTurns ?? cfg.run.maxTurns,
       runsDir: env.AGENT_RUNS_DIR ?? cfg.run.runsDir,
       autoApproveWrites: autoApprove ?? cfg.run.autoApproveWrites,
+      loopMode: loopMode ?? cfg.run.loopMode,
       compaction: {
         ...cfg.run.compaction,
         softCapTokens: softCap ?? cfg.run.compaction.softCapTokens,

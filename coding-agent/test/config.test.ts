@@ -32,6 +32,9 @@ describe('loadCodingConfig', () => {
     expect(cfg.run.scratchpad.neverOffload).toEqual(['read_file', 'list_dir', 'list_tree', 'grep']);
     expect(cfg.run.memory.enabled).toBe(false);
     expect(cfg.run.memory.storeDir).toBe('.coding-agent-memory');
+    expect(cfg.run.loopMode).toBe('agent');
+    expect(cfg.run.planner.maxReplans).toBe(2);
+    expect(cfg.run.reflection.maxReflections).toBe(1);
     expect(cfg.policy.allowedTools).toContain('list_tree');
   });
 

@@ -1149,3 +1149,58 @@ button.compact.linkish {
     grid-template-columns: 1fr;
   }
 }
+
+.plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.plan-step {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr auto;
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.plan-mark {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.plan-step.completed .plan-mark { color: var(--ok, #1f7a4c); }
+.plan-step.failed .plan-mark { color: var(--danger, #b42318); }
+.plan-step.in_progress .plan-mark { color: var(--accent); }
+
+.feedback-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.75rem;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.feedback-card h3 {
+  margin: 0 0 0.45rem;
+  font-size: 0.95rem;
+}
+
+.feedback-card.ok {
+  border-color: color-mix(in srgb, var(--ok, #1f7a4c) 35%, var(--line));
+}
+
+.feedback-card.fail {
+  border-color: color-mix(in srgb, var(--warn, #b54708) 40%, var(--line));
+}
+
+.feedback-card ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+}

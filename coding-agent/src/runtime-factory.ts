@@ -17,6 +17,7 @@ import {
   Runtime,
   ToolRegistry,
   type ChatModelProvider,
+  type HarnessLoopMode,
   type Policy,
   type ModelPricing,
 } from 'durable-agent-runtime';
@@ -88,6 +89,11 @@ export interface CodingRuntimeOptions {
    * Default: `config.run.memory.enabled` (env `AGENT_LONG_TERM_MEMORY` overlays config).
    */
   longTermMemory?: boolean;
+  /**
+   * Harness control-flow mode. Default: `config.run.loopMode`.
+   * Planner / reflection run batch (no live token stream).
+   */
+  loopMode?: HarnessLoopMode;
   /** Mid-run pause / steer / abort gate (Workbench / hosts). */
   interrupter?: RunInterrupter;
   onEvent?: ConstructorParameters<typeof Runtime>[0]['onEvent'];
@@ -144,6 +150,10 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     registerMemoryTools(tools, store, workspaceMemoryScope(root));
   }
 
+  const loopMode = opts.loopMode ?? cfg.run.loopMode;
+  // Planner / reflection are multi-phase batch wrappers — disable live token stream.
+  const stream = loopMode === 'agent' ? (opts.stream ?? true) : false;
+
   const chatModel =
     opts.chatModel ??
     chatProviderFromEnv(process.env, {
@@ -193,7 +203,15 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     approver,
     interrupter: opts.interrupter,
     trace: opts.harnessTrace,
-    stream: opts.stream ?? true,
+    stream,
+    loopMode,
+    planner: {
+      maxReplans: cfg.run.planner.maxReplans,
+      replanOnFailure: cfg.run.planner.replanOnFailure,
+    },
+    reflection: {
+      maxReflections: cfg.run.reflection.maxReflections,
+    },
     agent: {
       name: cfg.agent.name,
       instructions,

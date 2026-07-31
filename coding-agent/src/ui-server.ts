@@ -19,10 +19,13 @@ import {
 } from '@agent/harness';
 import {
   extractAnswer,
+  extractCritiques,
+  extractPlan,
   extractThinking,
   listRunIds,
   SessionManager,
   type ChatModelProvider,
+  type HarnessLoopMode,
   type Runtime,
 } from 'durable-agent-runtime';
 
@@ -134,6 +137,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       activeRuns: listActiveRuns(),
       autoApproveWrites: cfg.run.autoApproveWrites,
       longTermMemory: cfg.run.memory.enabled,
+      loopMode: cfg.run.loopMode,
       defaultGoal: defaultGoal(workspace),
       modelId,
       maxPromptTokens: resolveCodingMaxPromptTokens({
@@ -187,7 +191,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const rt = openReadonlyRuntime(resolveRunsDir(cfg), cfg);
       const state = rt.status(runId);
       const active = getActiveByRunId(runId);
-      return json(res, 200, { ...state, activePhase: active?.phase });
+      return json(res, 200, {
+        ...state,
+        activePhase: active?.phase,
+        answer: extractAnswer(state),
+        thinking: extractThinking(state),
+        plan: extractPlan(state),
+        critiques: extractCritiques(state),
+      });
     } catch (e) {
       return json(res, 404, { error: e instanceof Error ? e.message : String(e) });
     }
@@ -422,6 +433,8 @@ async function driveSse(
   const longTermMemory =
     typeof body.longTermMemory === 'boolean' ? body.longTermMemory : cfg.run.memory.enabled;
 
+  const loopMode = parseLoopMode(body.loopMode) ?? cfg.run.loopMode;
+
   const newSession = body.newSession === true;
   let sessionId =
     mode.mode === 'continue'
@@ -457,6 +470,7 @@ async function driveSse(
     crashAfterTurn,
     hitlWrites,
     longTermMemory,
+    loopMode,
   });
 
   const harnessTrace = new TraceCollector({
@@ -492,6 +506,7 @@ async function driveSse(
       policy: cfg.policy,
       autoApproveWrites: !hitlWrites,
       longTermMemory,
+      loopMode,
       approver: hitlWrites ? requireApprovalFor([...MUTATING_FS_TOOLS], uiApprover) : autoApprove,
       maxTurns: cfg.run.maxTurns,
       crashAfterTurn,
@@ -623,6 +638,8 @@ function finishDone(
     answer,
     thinking,
     analysis,
+    plan: extractPlan(state),
+    critiques: extractCritiques(state),
     diffs: diffs.map((d) => ({
       path: d.path,
       status: d.status,
@@ -633,6 +650,11 @@ function finishDone(
     runtimeTrace,
     harnessTrace: agentTrace,
   });
+}
+
+function parseLoopMode(raw: unknown): HarnessLoopMode | undefined {
+  if (raw === 'agent' || raw === 'planner' || raw === 'reflection') return raw;
+  return undefined;
 }
 
 function resolveRunsDir(cfg: CodingConfig): string {

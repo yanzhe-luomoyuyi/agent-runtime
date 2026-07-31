@@ -39,9 +39,13 @@ import {
   parseTextToolCall,
   runAgent,
   runAgentStreamed,
+  runPlannedAgent,
+  runReflectiveAgent,
   ScratchpadToolInvoker,
   type AgentConfig,
   type AgentRunResult,
+  type Critique,
+  type PlanState,
   type RunAgentOptions,
   type RunInterrupter,
   type ScratchpadToolInvokerOptions,
@@ -50,6 +54,9 @@ import {
   type TraceCollector,
 } from '@agent/harness';
 import type { Approver } from '@agent/contracts';
+
+/** How the harness step drives the model loop. */
+export type HarnessLoopMode = 'agent' | 'planner' | 'reflection';
 
 import {
   checkDocumentSearchBudget,
@@ -284,8 +291,20 @@ export interface HarnessWorkflowOptions {
    * When true, drive `runAgentStreamed` and forward `model_token` /
    * `thinking_token` via `ctx.notifyStream`. When false (default), use batch
    * `runAgent` — same durable semantics, no live token notify.
+   * Ignored for `loopMode: 'planner' | 'reflection'` (those use batch control flow).
    */
   stream?: boolean;
+  /**
+   * Control-flow wrapper around the core loop.
+   * - `agent` (default): single `runAgent` / `runAgentStreamed`
+   * - `planner`: `runPlannedAgent` (plan → step execute → optional replan)
+   * - `reflection`: `runReflectiveAgent` (attempt → critique → revise)
+   */
+  loopMode?: HarnessLoopMode;
+  /** Planner knobs when `loopMode === 'planner'`. */
+  planner?: { maxReplans?: number; replanOnFailure?: boolean };
+  /** Reflection knobs when `loopMode === 'reflection'`. */
+  reflection?: { maxReflections?: number };
 }
 
 /**
@@ -380,6 +399,21 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                   : undefined,
               };
 
+              const loopMode = opts.loopMode ?? 'agent';
+              if (loopMode === 'planner') {
+                return runPlannedAgent({
+                  ...runOpts,
+                  maxReplans: opts.planner?.maxReplans,
+                  replanOnFailure: opts.planner?.replanOnFailure,
+                });
+              }
+              if (loopMode === 'reflection') {
+                return runReflectiveAgent({
+                  ...runOpts,
+                  maxReflections: opts.reflection?.maxReflections,
+                });
+              }
+
               if (!opts.stream) {
                 return runAgent(runOpts);
               }
@@ -432,9 +466,15 @@ function recordingInterrupter(delegate: RunInterrupter, ctx: StepContext): RunIn
   };
 }
 
+type HarnessStepOutput = AgentRunResult & {
+  plan?: PlanState;
+  critiques?: Critique[];
+  replans?: number;
+};
+
 /** Surface the loop's final answer + files in the run summary (same shape the CLI prints). */
 function summarizeHarnessRun(state: RunState): unknown {
-  const result = state.stepOutputs['agent.1'] as AgentRunResult | undefined;
+  const result = state.stepOutputs['agent.1'] as HarnessStepOutput | undefined;
   if (!result) return { proposal: undefined, files: [] };
   return {
     proposal: result.answer,
@@ -442,6 +482,9 @@ function summarizeHarnessRun(state: RunState): unknown {
     turns: result.turns,
     finished: result.finished,
     toolsUsed: result.toolsUsed,
+    plan: result.plan,
+    critiques: result.critiques,
+    replans: result.replans,
   };
 }
 
