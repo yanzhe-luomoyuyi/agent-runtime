@@ -5,7 +5,7 @@ import { CODING_PROMPT_SOFT_CAP, resolveCodingMaxPromptTokens } from '../src/pro
 describe('resolveCodingMaxPromptTokens', () => {
   it('caps DeepSeek V4 Pro at the product soft cap', () => {
     expect(resolveCodingMaxPromptTokens({ model: 'deepseek-v4-pro', env: {} })).toBe(CODING_PROMPT_SOFT_CAP);
-    expect(CODING_PROMPT_SOFT_CAP).toBe(128_000);
+    expect(CODING_PROMPT_SOFT_CAP).toBe(80_000);
   });
 
   it('uses the smaller model window for deepseek-chat', () => {

@@ -32,7 +32,7 @@
     "runsDir": ".coding-agent-runs",
     "autoApproveWrites": false,
     "compaction": {
-      "softCapTokens": 128000,
+      "softCapTokens": 80000,
       "threshold": 0.85
     },
     "scratchpad": {

@@ -981,6 +981,7 @@ function messageText(m: Message): string {
   const parts: string[] = [m.role, m.content ?? ''];
   if (m.toolCalls && m.toolCalls.length > 0) parts.push(JSON.stringify(m.toolCalls));
   if (m.name) parts.push(m.name);
+  if (m.thinking) parts.push(m.thinking);
   return parts.join(' ');
 }
 

@@ -170,7 +170,7 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     runsDir: '.coding-agent-runs',
     autoApproveWrites: false,
     compaction: {
-      softCapTokens: 128_000,
+      softCapTokens: 80_000,
       threshold: 0.85,
     },
     scratchpad: {

@@ -9,7 +9,7 @@
 import { resolveModelLimit } from '@agent/harness';
 
 /** Product soft cap for coding-agent (even if the model supports 1M). */
-export const CODING_PROMPT_SOFT_CAP = 128_000;
+export const CODING_PROMPT_SOFT_CAP = 80_000;
 
 export function resolveModelIdFromEnv(
   env: NodeJS.ProcessEnv = process.env,

@@ -411,9 +411,9 @@ async function _prepareTurn(st: LoopState, turn: number, trace?: TraceCollector)
 
 async function _callModelBatch(st: LoopState, assembled: Message[], turn: number): Promise<ChatResponse> {
   const key = keyScope(st.prefix).turnModel(turn);
-  // When retryBudget is set, use it as the per-call retry cap so the full
-  // budget is usable before the call fails — not just st.retryOpts.retries.
-  const retries = st.retryBudget > 0 ? st.retryBudget : (st.retryOpts?.retries ?? 2);
+  // When retryBudget is set, use remaining budget as the per-call retry cap
+  // so the total across all calls never exceeds the budget.
+  const retries = st.retryBudget > 0 ? Math.max(0, st.retryBudget - st.retryCount) : (st.retryOpts?.retries ?? 2);
   const opts: RetryOptions | undefined = st.retryBudget > 0
     ? { ...st.retryOpts, retries, onRetry: (_err: unknown, attempt: number, delayMs: number) => { st.retryCount++; st.retryOpts?.onRetry?.(_err, attempt, delayMs); } }
     : st.retryOpts;
