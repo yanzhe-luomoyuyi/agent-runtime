@@ -4,3 +4,6 @@ fixtures/coding-sandbox/ANALYSIS.md
 # Local secrets
 .env
 .env.local
+
+# Cross-session long-term memory store (FileMemoryStore)
+.coding-agent-memory/

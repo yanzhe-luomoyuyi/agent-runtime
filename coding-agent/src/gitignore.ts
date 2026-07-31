@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 import ignore, { type Ignore } from 'ignore';
 
-const ALWAYS = ['.git/', 'node_modules/', '.coding-agent-runs/', 'dist/', '.DS_Store'];
+const ALWAYS = ['.git/', 'node_modules/', '.coding-agent-runs/', '.coding-agent-memory/', 'dist/', '.DS_Store'];
 
 export type PathIgnorer = {
   /** True if this relative path should be skipped (posix-style, no leading ./). */

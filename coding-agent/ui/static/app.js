@@ -31,6 +31,7 @@ const compareSessionsBtn = document.getElementById('compareSessionsBtn');
 const renameDialog = document.getElementById('renameDialog');
 const renameTitle = document.getElementById('renameTitle');
 const hitlWritesEl = document.getElementById('hitlWrites');
+const longTermMemoryEl = document.getElementById('longTermMemory');
 const crashTurnEl = document.getElementById('crashTurn');
 const controlBar = document.getElementById('controlBar');
 const controlLabel = document.getElementById('controlLabel');
@@ -144,6 +145,7 @@ async function refreshStatus() {
     goalEl.value = defaultGoal;
   }
   hitlWritesEl.checked = data.autoApproveWrites === false;
+  longTermMemoryEl.checked = data.longTermMemory === true;
   runBtn.disabled = !data.hasApiKey || data.busy || driving;
   runHint.textContent = data.busy || driving
     ? 'Run in progress…'
@@ -1181,6 +1183,7 @@ async function runAgent() {
     goal,
     workspace,
     hitlWrites: hitlWritesEl.checked,
+    longTermMemory: longTermMemoryEl.checked,
     newSession: !sessionId,
   };
   if (sessionId) body.sessionId = sessionId;
@@ -1246,6 +1249,7 @@ async function resumeRun(runId) {
   const body = {
     workspace,
     hitlWrites: hitlWritesEl.checked,
+    longTermMemory: longTermMemoryEl.checked,
   };
   if (crashAfterTurn > 0) body.crashAfterTurn = crashAfterTurn;
 

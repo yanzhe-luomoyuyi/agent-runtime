@@ -42,3 +42,11 @@ Use when the user asks what something does, where code lives, how it works, or s
    - Then `run_tests`; iterate until tests pass.
 3. **Document** — write workspace-root `ANALYSIS.md` (problem, root cause, change, test result) **unless** the user said not to, or already named a different output file (then write that path instead). Prefer `write_file` for that new doc.
 4. Final answer: short summary of what changed (and point at the doc if you wrote one). No further tool calls.
+
+## Long-term memory (when tools are available)
+
+If `memory_search` / `memory_write` / `memory_read` appear in your tool list:
+
+- `memory_search` early when prior prefs or durable notes may help.
+- `memory_write` for facts that should survive future sessions (conventions, recurring pitfalls, user prefs).
+- Do not store full file contents or secrets.

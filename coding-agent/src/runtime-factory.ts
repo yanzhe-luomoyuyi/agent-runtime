@@ -12,6 +12,8 @@ import {
 } from '@agent/harness';
 import {
   createHarnessWorkflow,
+  FileMemoryStore,
+  registerMemoryTools,
   Runtime,
   ToolRegistry,
   type ChatModelProvider,
@@ -25,6 +27,11 @@ import {
   resolvePackagePath,
   type CodingConfig,
 } from './config.js';
+import {
+  MEMORY_INSTRUCTIONS,
+  withMemoryToolsAllowed,
+  workspaceMemoryScope,
+} from './memory.js';
 import { chatProviderFromEnv } from './model/openai-compatible.js';
 import { PACKAGE_ROOT } from './paths.js';
 import { resolveCodingMaxPromptTokens, resolveModelIdFromEnv } from './prompt-budget.js';
@@ -41,6 +48,12 @@ export {
   type CodingConfig,
   type CodingConfigFile,
 } from './config.js';
+export {
+  MEMORY_TOOL_NAMES,
+  MEMORY_INSTRUCTIONS,
+  withMemoryToolsAllowed,
+  workspaceMemoryScope,
+} from './memory.js';
 
 /** @deprecated Prefer loadCodingConfig(); kept for older call sites. */
 export function loadCodingConfigFile(path?: string): { pricing?: ModelPricing; policy?: Policy } {
@@ -70,6 +83,11 @@ export interface CodingRuntimeOptions {
   /** Default: approve mutating FS tools via stdin unless config/env auto-approve. */
   approver?: Approver;
   autoApproveWrites?: boolean;
+  /**
+   * Register cross-session `memory_*` tools for this Runtime.
+   * Default: `config.run.memory.enabled` (env `AGENT_LONG_TERM_MEMORY` overlays config).
+   */
+  longTermMemory?: boolean;
   /** Mid-run pause / steer / abort gate (Workbench / hosts). */
   interrupter?: RunInterrupter;
   onEvent?: ConstructorParameters<typeof Runtime>[0]['onEvent'];
@@ -120,6 +138,12 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     }),
   );
 
+  const longTermMemory = opts.longTermMemory ?? cfg.run.memory.enabled;
+  if (longTermMemory) {
+    const store = new FileMemoryStore(resolvePackagePath(cfg.run.memory.storeDir));
+    registerMemoryTools(tools, store, workspaceMemoryScope(root));
+  }
+
   const chatModel =
     opts.chatModel ??
     chatProviderFromEnv(process.env, {
@@ -153,6 +177,15 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
       softCap: cfg.run.compaction.softCapTokens,
     });
 
+  const instructions = longTermMemory
+    ? `${cfg.agent.instructions}\n\n${MEMORY_INSTRUCTIONS}`
+    : cfg.agent.instructions;
+
+  const basePolicy = opts.policy ?? defaultCodingPolicy(cfg);
+  const policy: Policy = longTermMemory
+    ? { ...basePolicy, allowedTools: withMemoryToolsAllowed(basePolicy.allowedTools) }
+    : basePolicy;
+
   const workflow = createHarnessWorkflow({
     name: cfg.agent.name,
     maxTurns: opts.maxTurns ?? cfg.run.maxTurns,
@@ -163,7 +196,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     stream: opts.stream ?? true,
     agent: {
       name: cfg.agent.name,
-      instructions: cfg.agent.instructions,
+      instructions,
       skills: [skill],
       skillLoadMode: cfg.agent.skillLoadMode,
     },
@@ -186,7 +219,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     tools,
     workflow,
     pricing: opts.pricing ?? cfg.pricing,
-    policy: opts.policy ?? defaultCodingPolicy(cfg),
+    policy,
     onEvent: opts.onEvent,
     onStreamEvent: opts.onStreamEvent,
   });

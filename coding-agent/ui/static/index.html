@@ -57,6 +57,10 @@
               <input type="checkbox" id="hitlWrites" />
               HITL writes
             </label>
+            <label class="check" title="Enable memory_write / memory_search / memory_read for this run (persists across sessions per workspace)">
+              <input type="checkbox" id="longTermMemory" />
+              Long-term memory
+            </label>
             <label class="check" title="Inject __CRASH__ after this agent turn (log stays resumable)">
               Crash after turn
               <input type="number" id="crashTurn" min="1" max="99" placeholder="—" class="num" title="Turn number to crash after (leave empty to disable)" />

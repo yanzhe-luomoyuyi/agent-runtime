@@ -133,6 +133,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       busy: hasDrivingRun(),
       activeRuns: listActiveRuns(),
       autoApproveWrites: cfg.run.autoApproveWrites,
+      longTermMemory: cfg.run.memory.enabled,
       defaultGoal: defaultGoal(workspace),
       modelId,
       maxPromptTokens: resolveCodingMaxPromptTokens({
@@ -417,6 +418,10 @@ async function driveSse(
   const hitlWrites =
     typeof body.hitlWrites === 'boolean' ? body.hitlWrites : !cfg.run.autoApproveWrites;
 
+  // longTermMemory: per-run override for memory_* tools; omit → config.run.memory.enabled
+  const longTermMemory =
+    typeof body.longTermMemory === 'boolean' ? body.longTermMemory : cfg.run.memory.enabled;
+
   const newSession = body.newSession === true;
   let sessionId =
     mode.mode === 'continue'
@@ -451,6 +456,7 @@ async function driveSse(
     sessionId,
     crashAfterTurn,
     hitlWrites,
+    longTermMemory,
   });
 
   const harnessTrace = new TraceCollector({
@@ -485,6 +491,7 @@ async function driveSse(
       pricing: cfg.pricing,
       policy: cfg.policy,
       autoApproveWrites: !hitlWrites,
+      longTermMemory,
       approver: hitlWrites ? requireApprovalFor([...MUTATING_FS_TOOLS], uiApprover) : autoApprove,
       maxTurns: cfg.run.maxTurns,
       crashAfterTurn,

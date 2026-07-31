@@ -34,3 +34,13 @@ export {
   type HistoryMode,
   type ConversationSummarizer,
 } from './session.js';
+export {
+  FileMemoryStore,
+  InMemoryStore,
+  type MemoryStore,
+  type MemoryRecord,
+  type MemoryKind,
+  type MemoryWriteOptions,
+  type MemoryQueryOptions,
+} from './memory/store.js';
+export { memoryToolDefs, registerMemoryTools } from './memory/tools.js';

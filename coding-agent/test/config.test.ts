@@ -30,6 +30,8 @@ describe('loadCodingConfig', () => {
     expect(cfg.run.scratchpad.enabled).toBe(true);
     expect(cfg.run.scratchpad.offloadThreshold).toBe(24_000);
     expect(cfg.run.scratchpad.neverOffload).toEqual(['read_file', 'list_dir', 'list_tree', 'grep']);
+    expect(cfg.run.memory.enabled).toBe(false);
+    expect(cfg.run.memory.storeDir).toBe('.coding-agent-memory');
     expect(cfg.policy.allowedTools).toContain('list_tree');
   });
 

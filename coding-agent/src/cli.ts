@@ -150,6 +150,8 @@ Env (override config):
   DEEPSEEK_BASE_URL     default from config
   AGENT_WORKSPACE       default workspace root
   AGENT_AUTO_APPROVE=1  skip mutating FS tool approval prompts
+  AGENT_LONG_TERM_MEMORY=1|0  enable/disable memory_* tools (cross-session FileMemoryStore)
+  AGENT_MEMORY_DIR      memory store directory (default .coding-agent-memory)
   AGENT_RUNS_DIR        runs directory
   AGENT_MAX_TURNS / AGENT_MAX_PROMPT_TOKENS / HARNESS_CRASH_TURN
 `);

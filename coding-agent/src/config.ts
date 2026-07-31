@@ -69,6 +69,16 @@ export interface CodingRunSection {
     /** Tool names whose results stay inline even above the threshold. */
     neverOffload: string[];
   };
+  /**
+   * Cross-session FileMemoryStore (`memory_write` / `search` / `read`).
+   * Default off; Workbench toggle / `longTermMemory` / `AGENT_LONG_TERM_MEMORY` override per run.
+   */
+  memory: {
+    /** Default for CLI and UI checkbox when the request omits an override. */
+    enabled: boolean;
+    /** Relative to package root, or absolute. One JSON file per workspace scope. */
+    storeDir: string;
+  };
 }
 
 export interface CodingConfigFile {
@@ -80,9 +90,10 @@ export interface CodingConfigFile {
   tools?: Partial<Omit<CodingToolsSection, 'runTests'>> & {
     runTests?: Partial<CodingToolsSection['runTests']>;
   };
-  run?: Partial<Omit<CodingRunSection, 'compaction' | 'scratchpad'>> & {
+  run?: Partial<Omit<CodingRunSection, 'compaction' | 'scratchpad' | 'memory'>> & {
     compaction?: Partial<CodingRunSection['compaction']>;
     scratchpad?: Partial<CodingRunSection['scratchpad']>;
+    memory?: Partial<CodingRunSection['memory']>;
   };
   policy?: {
     allowedTools?: string[];
@@ -153,6 +164,10 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       previewChars: 300,
       neverOffload: ['read_file', 'list_dir', 'list_tree', 'grep'],
     },
+    memory: {
+      enabled: false,
+      storeDir: '.coding-agent-memory',
+    },
   },
   policy: {
     allowedTools: [
@@ -193,6 +208,7 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
         ...overlay.run?.scratchpad,
         neverOffload: overlay.run?.scratchpad?.neverOffload ?? base.run.scratchpad.neverOffload,
       },
+      memory: { ...base.run.memory, ...overlay.run?.memory },
     },
     policy: {
       allowedTools: overlay.policy?.allowedTools ?? base.policy.allowedTools,
@@ -213,6 +229,12 @@ export function applyEnvOverrides(
   const softCap = numEnv(env, 'AGENT_MAX_PROMPT_TOKENS');
   const autoApprove =
     env.AGENT_AUTO_APPROVE === '1' ? true : env.AGENT_AUTO_APPROVE === '0' ? false : undefined;
+  const longTermMemory =
+    env.AGENT_LONG_TERM_MEMORY === '1'
+      ? true
+      : env.AGENT_LONG_TERM_MEMORY === '0'
+        ? false
+        : undefined;
 
   return {
     ...cfg,
@@ -233,6 +255,11 @@ export function applyEnvOverrides(
       compaction: {
         ...cfg.run.compaction,
         softCapTokens: softCap ?? cfg.run.compaction.softCapTokens,
+      },
+      memory: {
+        ...cfg.run.memory,
+        enabled: longTermMemory ?? cfg.run.memory.enabled,
+        storeDir: env.AGENT_MEMORY_DIR ?? cfg.run.memory.storeDir,
       },
     },
   };

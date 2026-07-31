@@ -20,6 +20,12 @@ export {
   type CodingConfigFile,
 } from './runtime-factory.js';
 export {
+  MEMORY_TOOL_NAMES,
+  MEMORY_INSTRUCTIONS,
+  withMemoryToolsAllowed,
+  workspaceMemoryScope,
+} from './memory.js';
+export {
   CODING_PROMPT_SOFT_CAP,
   resolveCodingMaxPromptTokens,
   resolveModelIdFromEnv,

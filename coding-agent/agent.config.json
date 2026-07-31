@@ -40,6 +40,10 @@
       "offloadThreshold": 24000,
       "previewChars": 300,
       "neverOffload": ["read_file", "list_dir", "list_tree", "grep"]
+    },
+    "memory": {
+      "enabled": false,
+      "storeDir": ".coding-agent-memory"
     }
   },
   "pricing": {
