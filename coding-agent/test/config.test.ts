@@ -35,7 +35,11 @@ describe('loadCodingConfig', () => {
     expect(cfg.run.loopMode).toBe('agent');
     expect(cfg.run.planner.maxReplans).toBe(2);
     expect(cfg.run.reflection.maxReflections).toBe(1);
+    expect(cfg.run.toolConcurrency).toBe(8);
+    expect(cfg.run.toolRetry).toEqual({ retries: 2 });
+    expect(cfg.model.fallbacks).toEqual([]);
     expect(cfg.policy.allowedTools).toContain('list_tree');
+    expect(cfg.policy.allowedTools).toContain('extract_top_comments');
   });
 
   it('merges a partial overlay file', () => {
@@ -45,7 +49,16 @@ describe('loadCodingConfig', () => {
       path,
       JSON.stringify({
         agent: { instructions: 'CUSTOM PERSONA' },
-        run: { maxTurns: 7, compaction: { softCapTokens: 50_000 } },
+        run: { maxTurns: 7, compaction: { softCapTokens: 50_000 }, toolConcurrency: 4 },
+        model: {
+          fallbacks: [
+            {
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-4o-mini',
+              apiKeyEnv: 'OPENAI_API_KEY',
+            },
+          ],
+        },
         policy: { maxCostUsd: 0.25 },
       }),
     );
@@ -56,8 +69,23 @@ describe('loadCodingConfig', () => {
       expect(cfg.run.maxTurns).toBe(7);
       expect(cfg.run.compaction.softCapTokens).toBe(50_000);
       expect(cfg.run.compaction.threshold).toBe(CODING_CONFIG_DEFAULTS.run.compaction.threshold);
+      expect(cfg.run.toolConcurrency).toBe(4);
+      expect(cfg.model.fallbacks).toHaveLength(1);
+      expect(cfg.model.fallbacks[0]?.apiKeyEnv).toBe('OPENAI_API_KEY');
       expect(cfg.policy.maxCostUsd).toBe(0.25);
       expect(cfg.policy.allowedTools).toEqual(CODING_CONFIG_DEFAULTS.policy.allowedTools);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('can disable toolRetry via overlay', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-cfg-retry-'));
+    const path = join(dir, 'agent.config.json');
+    writeFileSync(path, JSON.stringify({ run: { toolRetry: false } }));
+    try {
+      const cfg = loadCodingConfig({ path, skipEnv: true });
+      expect(cfg.run.toolRetry).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

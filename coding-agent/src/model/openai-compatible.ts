@@ -13,7 +13,10 @@ import type {
   ToolSpec,
   Usage,
 } from '@agent/contracts';
+import { HttpError } from '@agent/harness';
 import type { ChatModelProvider, ChatModelRequest } from 'durable-agent-runtime';
+
+import { createResilientChatProvider } from './resilient-provider.js';
 
 export interface OpenAICompatibleOptions {
   apiKey: string;
@@ -36,6 +39,16 @@ export interface ChatProviderEnvOptions {
   baseUrlEnv?: string;
   modelEnv?: string;
   providerName?: string;
+  /**
+   * Extra OpenAI-compatible providers tried after the primary when it fails.
+   * Each entry needs its own `apiKeyEnv` present in the environment.
+   */
+  fallbacks?: Array<{
+    baseUrl: string;
+    model: string;
+    apiKeyEnv: string;
+    name?: string;
+  }>;
 }
 
 export function createOpenAICompatibleChatProvider(opts: OpenAICompatibleOptions): ChatModelProvider {
@@ -62,13 +75,17 @@ export function createOpenAICompatibleChatProvider(opts: OpenAICompatibleOptions
         },
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`LLM HTTP ${res.status}: ${errText.slice(0, 500)}`);
-      }
-      if (!res.body) {
-        throw new Error('LLM stream: response body is null');
-      }
+  if (!res.ok) {
+    const errText = await res.text();
+    const headers: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      headers[k] = v;
+    });
+    throw new HttpError(`LLM HTTP ${res.status}: ${errText.slice(0, 500)}`, res.status, headers);
+  }
+  if (!res.body) {
+    throw new Error('LLM stream: response body is null');
+  }
       yield* parseOpenAIChatStream(res.body);
     },
   };
@@ -78,6 +95,37 @@ export function createOpenAICompatibleChatProvider(opts: OpenAICompatibleOptions
 export function chatProviderFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   defaults: ChatProviderEnvOptions = {},
+): ChatModelProvider | undefined {
+  const primary = resolvePrimaryProvider(env, defaults);
+  if (!primary) return undefined;
+
+  const fallbackTiers: ChatModelProvider[] = [];
+  for (const fb of defaults.fallbacks ?? []) {
+    const key = env[fb.apiKeyEnv];
+    if (!key) continue;
+    fallbackTiers.push(
+      createOpenAICompatibleChatProvider({
+        apiKey: key,
+        baseUrl: fb.baseUrl,
+        model: fb.model,
+        name: fb.name ?? `fallback:${fb.apiKeyEnv}`,
+      }),
+    );
+  }
+
+  if (fallbackTiers.length === 0) return primary;
+
+  return createResilientChatProvider({
+    tiers: [{ provider: primary }, ...fallbackTiers.map((provider) => ({ provider }))],
+    onEscalate: ({ from, to }) => {
+      console.warn(`[coding-agent] model escalate: ${from} → ${to}`);
+    },
+  });
+}
+
+function resolvePrimaryProvider(
+  env: NodeJS.ProcessEnv,
+  defaults: ChatProviderEnvOptions,
 ): ChatModelProvider | undefined {
   const keyEnvs = [defaults.apiKeyEnv ?? 'DEEPSEEK_API_KEY', ...(defaults.apiKeyEnvFallbacks ?? ['LLM_API_KEY'])];
   let apiKey: string | undefined;
@@ -275,7 +323,11 @@ async function postJson(
   });
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`LLM HTTP ${res.status}: ${errText.slice(0, 500)}`);
+    const headers: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      headers[k] = v;
+    });
+    throw new HttpError(`LLM HTTP ${res.status}: ${errText.slice(0, 500)}`, res.status, headers);
   }
   return res.json();
 }

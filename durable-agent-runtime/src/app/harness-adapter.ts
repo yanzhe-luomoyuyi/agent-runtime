@@ -46,10 +46,12 @@ import {
   runReflectiveAgentStreamed,
   ScratchpadToolInvoker,
   Scratchpad,
+  RetryingToolInvoker,
   type AgentConfig,
   type AgentRunResult,
   type Critique,
   type PlanState,
+  type RetryOptions,
   type RunAgentOptions,
   type RunInterrupter,
   type ScratchpadToolInvokerOptions,
@@ -294,6 +296,21 @@ export interface HarnessWorkflowOptions {
    */
   scratchpad?: boolean | ScratchpadToolInvokerOptions;
   /**
+   * Max concurrent tool calls within one turn (`runAgent` `toolConcurrency`).
+   * Default 1 (sequential). Values >1 run independent calls in parallel.
+   */
+  toolConcurrency?: number;
+  /**
+   * Wrap tools with `RetryingToolInvoker` for transient failures.
+   * Omit / `false` to leave tools unwrapped. Pass retry options to enable.
+   */
+  toolRetry?: RetryOptions | false;
+  /**
+   * Model-call retry at the harness loop. When using a resilient multi-tier
+   * provider, pass `{ retries: 0 }` so tier retries are not multiplied.
+   */
+  modelRetry?: RetryOptions;
+  /**
    * When true, drive streamed harness loops and forward `model_token` /
    * `thinking_token` via `ctx.notifyStream`. When false (default), use batch
    * `runAgent` / batch planner / reflection wrappers — same durable semantics,
@@ -343,11 +360,15 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                 hideFromModel: hideRetrievalTools,
                 maxDocumentSearches: opts.retrieval ? retrievalPolicy.maxRetrieves : undefined,
               });
+              const retryingTools: ToolInvoker =
+                opts.toolRetry == null || opts.toolRetry === false
+                  ? durableTools
+                  : new RetryingToolInvoker(durableTools, opts.toolRetry);
               const scratchOpts =
                 opts.scratchpad === true ? {} : opts.scratchpad === false || opts.scratchpad == null ? null : opts.scratchpad;
               const toolInvoker: ToolInvoker = scratchOpts
-                ? new ScratchpadToolInvoker(durableTools, resolveScratchpadOpts(scratchOpts, ctx.runId))
-                : durableTools;
+                ? new ScratchpadToolInvoker(retryingTools, resolveScratchpadOpts(scratchOpts, ctx.runId))
+                : retryingTools;
               const agent: AgentConfig = createAgent({
                 name: opts.agent?.name ?? 'harness-agent',
                 instructions:
@@ -393,6 +414,8 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                   ? recordingInterrupter(opts.interrupter, ctx)
                   : undefined,
                 trace: opts.trace,
+                toolConcurrency: opts.toolConcurrency,
+                retry: opts.modelRetry,
                 retrieval: retrievalHits
                   ? {
                       hits: retrievalHits,

@@ -12,10 +12,11 @@
     "apiKeyEnv": "DEEPSEEK_API_KEY",
     "apiKeyEnvFallbacks": ["LLM_API_KEY"],
     "baseUrlEnv": "DEEPSEEK_BASE_URL",
-    "modelEnv": "DEEPSEEK_MODEL"
+    "modelEnv": "DEEPSEEK_MODEL",
+    "fallbacks": []
   },
   "workspace": {
-    "defaultRoot": "fixtures/coding-sandbox"
+    "defaultRoot": "."
   },
   "tools": {
     "readFileDefaultLimit": 200,
@@ -31,6 +32,8 @@
     "maxTurns": 36,
     "runsDir": ".coding-agent-runs",
     "autoApproveWrites": false,
+    "toolConcurrency": 8,
+    "toolRetry": { "retries": 2 },
     "compaction": {
       "softCapTokens": 80000,
       "threshold": 0.85
@@ -60,7 +63,7 @@
     "completionUsdPerToken": 0.00000028
   },
   "policy": {
-    "allowedTools": ["list_dir", "list_tree", "grep", "read_file", "write_file", "str_replace", "delete_file", "apply_patch", "run_tests"],
+    "allowedTools": ["list_dir", "list_tree", "grep", "read_file", "extract_top_comments", "write_file", "str_replace", "delete_file", "apply_patch", "run_tests"],
     "maxCostUsd": 1.0
   }
 }

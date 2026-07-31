@@ -5,13 +5,18 @@
  * wraps an ORDERED list of model tiers and tries them in order until one
  * succeeds. Each tier owns its own resilience:
  *
- *   tier = withRetry( circuitBreaker( model.chat ) )
+ *   tier = withRetry( circuitBreaker( model.chat | model.chatStream ) )
  *
  * so a tier first retries its own transient blips (backoff+jitter), its breaker
  * fails fast once the provider is clearly unhealthy, and only THEN does control
  * escalate to the next tier. This is the "escalation ladder" (retry → degrade
  * model → …) expressed as a plain `ChatModel`, so it drops straight into
  * `runAgent({ model })` with ZERO loop changes.
+ *
+ * `chatStream` uses the same ladder: a tier's stream is fully buffered before
+ * chunks are yielded, so a mid-stream failure can still escalate without leaking
+ * a partial answer to the caller. Tiers without `chatStream` fall back to batch
+ * `chat()` and a one-shot synthetic stream.
  *
  * The last tier can be anything that implements `ChatModel` — including a
  * human-backed model for a true HITL fallback — but that is the caller's choice,
@@ -31,7 +36,12 @@
  * safety net) to avoid multiplying retries: loop-retry × tier-retry.
  */
 
-import type { ChatModel, ChatRequest, ChatResponse } from '@agent/contracts';
+import type {
+  ChatModel,
+  ChatRequest,
+  ChatResponse,
+  ChatStreamOutput,
+} from '@agent/contracts';
 
 import { CircuitBreaker, type CircuitBreakerOptions } from './circuit-breaker.js';
 import { isTransientError, withRetry, type RetryOptions } from './retry.js';
@@ -73,9 +83,16 @@ export interface ResilientModelOptions {
   name?: string;
 }
 
+interface ResolvedTier {
+  model: ChatModel;
+  retry: RetryOptions | undefined;
+  breaker: CircuitBreaker | undefined;
+}
+
 /**
  * Build a `ChatModel` that tries each tier in order, escalating on failure.
- * Throws the LAST tier's error if every tier fails.
+ * Throws the LAST tier's error if every tier fails. Implements both `chat` and
+ * `chatStream` with the same ladder.
  */
 export function createResilientModel(opts: ResilientModelOptions): ChatModel {
   if (opts.tiers.length === 0) {
@@ -83,7 +100,7 @@ export function createResilientModel(opts: ResilientModelOptions): ChatModel {
   }
 
   // Resolve each tier's breaker once (so shared/omitted breakers keep state).
-  const resolved = opts.tiers.map((tier) => ({
+  const resolved: ResolvedTier[] = opts.tiers.map((tier) => ({
     model: tier.model,
     retry: tier.retry,
     breaker: resolveBreaker(tier.breaker),
@@ -91,33 +108,68 @@ export function createResilientModel(opts: ResilientModelOptions): ChatModel {
 
   const name = opts.name ?? `resilient(${resolved.map((t) => t.model.name).join('→')})`;
 
+  async function runLadder<T>(execute: (tier: ResolvedTier) => Promise<T>): Promise<T> {
+    let lastErr: unknown;
+    for (let i = 0; i < resolved.length; i++) {
+      const tier = resolved[i]!;
+      try {
+        return await execute(tier);
+      } catch (err) {
+        lastErr = err;
+        const isLast = i === resolved.length - 1;
+        if (isLast || opts.isFatal?.(err)) throw err;
+        opts.onEscalate?.({
+          from: tier.model.name,
+          to: resolved[i + 1]!.model.name,
+          index: i,
+          error: err,
+        });
+      }
+    }
+    throw lastErr;
+  }
+
   return {
     name,
     async chat(req: ChatRequest): Promise<ChatResponse> {
-      let lastErr: unknown;
-
-      for (let i = 0; i < resolved.length; i++) {
-        const tier = resolved[i]!;
+      return runLadder((tier) => {
         const run = () => withRetry(() => tier.model.chat(req), tier.retry ?? {});
-
-        try {
-          return tier.breaker ? await tier.breaker.execute(run) : await run();
-        } catch (err) {
-          lastErr = err;
-          const isLast = i === resolved.length - 1;
-          if (isLast || opts.isFatal?.(err)) throw err;
-          opts.onEscalate?.({
-            from: tier.model.name,
-            to: resolved[i + 1]!.model.name,
-            index: i,
-            error: err,
-          });
-        }
-      }
-
-      // Unreachable (the last-tier branch always throws), but satisfies the type.
-      throw lastErr;
+        return tier.breaker ? tier.breaker.execute(run) : run();
+      });
     },
+    async *chatStream(req: ChatRequest): AsyncIterable<ChatStreamOutput> {
+      const chunks = await runLadder(async (tier) => {
+        const buffered: ChatStreamOutput[] = [];
+        const consume = async () => {
+          buffered.length = 0;
+          const stream = tier.model.chatStream
+            ? tier.model.chatStream(req)
+            : chatResponseToStream(await tier.model.chat(req));
+          for await (const chunk of stream) {
+            buffered.push(chunk);
+          }
+        };
+        const run = () => withRetry(consume, tier.retry ?? {});
+        if (tier.breaker) await tier.breaker.execute(run);
+        else await run();
+        return buffered;
+      });
+      for (const chunk of chunks) yield chunk;
+    },
+  };
+}
+
+/** Expand a batch ChatResponse into stream chunks (same shape as durable runtime). */
+export async function* chatResponseToStream(response: ChatResponse): AsyncIterable<ChatStreamOutput> {
+  if (response.thinking) yield { thinking: response.thinking };
+  if (response.message.content) yield { content: response.message.content };
+  for (const tc of response.message.toolCalls ?? []) {
+    yield { toolCall: tc };
+  }
+  yield {
+    stopReason: response.stopReason,
+    usage: response.usage,
+    refusalReason: response.refusalReason,
   };
 }
 

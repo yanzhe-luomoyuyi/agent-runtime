@@ -1,10 +1,7 @@
 const goalEl = document.getElementById('goal');
 const workspaceEl = document.getElementById('workspace');
 const runBtn = document.getElementById('runBtn');
-const resetBtn = document.getElementById('resetBtn');
-const useSandboxBtn = document.getElementById('useSandboxBtn');
 const runHint = document.getElementById('runHint');
-const workspaceHint = document.getElementById('workspaceHint');
 const eventLog = document.getElementById('eventLog');
 const keyPill = document.getElementById('keyPill');
 const modelPill = document.getElementById('modelPill');
@@ -72,7 +69,6 @@ const steerInject = document.getElementById('steerInject');
 const steerGoal = document.getElementById('steerGoal');
 
 let defaultWorkspace = '';
-let defaultGoal = '';
 let currentRunId = null;
 let currentSessionId = null;
 /** Crashed run left in status=running — durable resume target. */
@@ -114,18 +110,6 @@ function syncLoopModeUi() {
 }
 
 loopModeEl.addEventListener('change', syncLoopModeUi);
-
-function isSandboxPath(path) {
-  return Boolean(defaultWorkspace) && path === defaultWorkspace;
-}
-
-function syncResetVisibility() {
-  const onSandbox = isSandboxPath(workspaceEl.value.trim());
-  resetBtn.hidden = !onSandbox;
-  workspaceHint.textContent = onSandbox
-    ? 'Using the built-in buggy fixture (safe to reset).'
-    : 'Using a custom repo — agent can read/write under this path only.';
-}
 
 function setDriving(on) {
   driving = on;
@@ -170,8 +154,7 @@ function clearTerminalBanners() {
 async function refreshStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
-  defaultWorkspace = data.defaultWorkspace;
-  defaultGoal = data.defaultGoal || '';
+  defaultWorkspace = data.defaultWorkspace || data.workspace || '';
   hasApiKey = Boolean(data.hasApiKey);
   if (!workspaceEl.value.trim()) workspaceEl.value = data.workspace || defaultWorkspace;
   keyPill.textContent = data.hasApiKey ? 'API key ready' : 'API key missing';
@@ -181,9 +164,6 @@ async function refreshStatus() {
     data.maxPromptTokens != null
       ? `max prompt ${Number(data.maxPromptTokens).toLocaleString()} tok`
       : 'max prompt —';
-  if (!goalEl.value.trim() && defaultGoal && isSandboxPath(workspaceEl.value.trim())) {
-    goalEl.value = defaultGoal;
-  }
   hitlWritesEl.checked = data.autoApproveWrites === false;
   longTermMemoryEl.checked = data.longTermMemory === true;
   if (
@@ -200,7 +180,6 @@ async function refreshStatus() {
     : data.hasApiKey
       ? ''
       : 'Add DEEPSEEK_API_KEY to coding-agent/.env then restart UI';
-  syncResetVisibility();
 }
 
 async function refreshSessions() {
@@ -1093,6 +1072,16 @@ function formatReasonCounts(reasons) {
   return entries.map(([k, n]) => `${k}×${n}`).join(', ');
 }
 
+/** Max single-turn prompt tokens from harness turns (not the run sum). */
+function peakPromptTokens(harnessTrace) {
+  let peak = 0;
+  for (const turn of harnessTrace?.turns || []) {
+    const n = turn.model?.usage?.promptTokens ?? 0;
+    if (n > peak) peak = n;
+  }
+  return peak;
+}
+
 function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
   if (!runtimeTrace && !harnessTrace) {
     traceContent.innerHTML = '<p class="empty">No trace data for this run.</p>';
@@ -1130,7 +1119,12 @@ function renderTrace(runtimeTrace, harnessTrace, opts = {}) {
         'metric-write-file',
       )}
       ${metricCard('Cost', fmtUsd(t.costUsd ?? h.estimatedCostUsd))}
-      ${metricCard('Prompt tokens', t.promptTokens ?? h.totalPromptTokens ?? 0)}
+      ${metricCard('Prompt tokens', t.promptTokens ?? h.totalPromptTokens ?? 0, 'Sum across all model calls')}
+      ${metricCard(
+        'Peak prompt',
+        peakPromptTokens(h),
+        'Largest single-turn prompt (context size). Compaction triggers off this, not the sum.',
+      )}
       ${metricCard('Completion tokens', t.completionTokens ?? h.totalCompletionTokens ?? 0)}
       ${metricCard('Model calls', t.modelCalls ?? h.totalTurns ?? 0)}
       ${metricCard('Tool calls', `${t.toolCalls ?? h.totalToolCalls ?? 0} (${t.failedToolCalls ?? h.toolFail ?? 0} fail)`)}
@@ -1268,7 +1262,12 @@ function renderSessionTraceBundle(bundle) {
         'metric-write-file',
       )}
       ${metricCard('Cost', fmtUsd(t.costUsd ?? h.estimatedCostUsd))}
-      ${metricCard('Prompt tokens', t.promptTokens ?? h.totalPromptTokens ?? 0)}
+      ${metricCard('Prompt tokens', t.promptTokens ?? h.totalPromptTokens ?? 0, 'Sum across all model calls in the session')}
+      ${metricCard(
+        'Peak prompt',
+        Math.max(0, ...(bundle.runs || []).map((r) => peakPromptTokens(r.harnessTrace))),
+        'Largest single-turn prompt across session runs',
+      )}
       ${metricCard('Completion tokens', t.completionTokens ?? h.totalCompletionTokens ?? 0)}
       ${metricCard('Model calls', t.modelCalls ?? h.totalTurns ?? 0)}
       ${metricCard('Tool calls', `${t.toolCalls ?? h.totalToolCalls ?? 0} (${t.failedToolCalls ?? h.toolFail ?? 0} fail)`)}
@@ -1682,15 +1681,6 @@ function handleEvent(event, data) {
   }
 }
 
-useSandboxBtn.addEventListener('click', () => {
-  workspaceEl.value = defaultWorkspace;
-  if (defaultGoal) goalEl.value = defaultGoal;
-  syncResetVisibility();
-});
-
-workspaceEl.addEventListener('change', syncResetVisibility);
-workspaceEl.addEventListener('input', syncResetVisibility);
-
 document.getElementById('refreshSessionsBtn').addEventListener('click', () => {
   refreshSessions().catch(console.error);
 });
@@ -1727,32 +1717,6 @@ renameDialog.addEventListener('close', () => {
     return;
   }
   renameSession(id, title).catch((e) => logLine(String(e), 'err'));
-});
-
-resetBtn.addEventListener('click', async () => {
-  const res = await fetch('/api/reset', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workspace: workspaceEl.value.trim() }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    logLine(data.error || 'reset failed', 'err');
-    return;
-  }
-  if (data.ok) {
-    logLine('sandbox reset', 'ok');
-    viewDiffs.innerHTML = '<p class="empty">File diffs appear when the agent edits the workspace.</p>';
-    runErrors = [];
-    viewErrors.innerHTML = '<p class="empty">Tool, model, policy, and run errors appear here.</p>';
-    viewContext.innerHTML =
-      '<p class="empty">Assemble / compact before·after transcripts appear after a run (or when you load a harness trace).</p>';
-    traceContent.innerHTML =
-      '<p class="empty">Runtime + harness metrics appear after a run. Load a session via Traces, or open a run from Recent runs.</p>';
-    if (compareContent) {
-      compareContent.innerHTML = '<p class="empty">Pick two sessions and click Compare.</p>';
-    }
-  }
 });
 
 runBtn.addEventListener('click', () => {

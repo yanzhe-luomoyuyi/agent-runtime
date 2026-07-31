@@ -34,9 +34,8 @@
           <label class="field-label" for="workspace">Repository path</label>
           <div class="path-row">
             <input id="workspace" type="text" spellcheck="false" placeholder="/absolute/path/to/repo" />
-            <button type="button" class="ghost" id="useSandboxBtn" title="Use the built-in coding-sandbox fixture workspace">Sandbox</button>
           </div>
-          <p class="fine" id="workspaceHint"></p>
+          <p class="fine" id="workspaceHint">Agent can read/write under this path only.</p>
 
           <label class="field-label" for="sessionSelect">Session</label>
           <div class="path-row">
@@ -77,7 +76,6 @@
 
           <div class="actions">
             <button type="button" class="primary" id="runBtn" title="Start a new run (or continue the selected session)">Run</button>
-            <button type="button" class="ghost" id="resetBtn" hidden title="Restore the built-in coding-sandbox fixture">Reset sandbox</button>
             <span class="hint" id="runHint"></span>
           </div>
 

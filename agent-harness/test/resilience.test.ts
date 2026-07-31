@@ -180,6 +180,54 @@ describe('createResilientModel', () => {
     await m.chat({ messages: [], tools: [], key: 'b' });
     expect(primaryCalls).toBe(1);
   });
+
+  it('chatStream escalates after a primary stream failure', async () => {
+    const primary: ChatModel = {
+      name: 'primary',
+      chat: async () => {
+        throw new Error('batch unused');
+      },
+      async *chatStream() {
+        throw new TransientError('stream 503');
+      },
+    };
+    const backup = model('backup', async () => finalResponse('from backup stream'));
+    const onEscalate = vi.fn();
+    const m = createResilientModel({
+      tiers: [
+        { model: primary, retry: { retries: 0 }, breaker: false },
+        { model: backup, retry: { retries: 0 }, breaker: false },
+      ],
+      onEscalate,
+    });
+
+    const chunks = [];
+    for await (const c of m.chatStream!({ messages: [], tools: [], key: 's1' })) {
+      chunks.push(c);
+    }
+    const content = chunks.map((c) => ('content' in c ? c.content : '')).join('');
+    expect(content).toBe('from backup stream');
+    expect(onEscalate).toHaveBeenCalledWith(
+      expect.objectContaining({ from: 'primary', to: 'backup', index: 0 }),
+    );
+  });
+
+  it('chatStream synthesises chunks when a tier only implements chat()', async () => {
+    const primary = model('primary', async () => Promise.reject(new TransientError('down')));
+    const backup = model('backup', async () => finalResponse('synthetic'));
+    const m = createResilientModel({
+      tiers: [
+        { model: primary, retry: { retries: 0 }, breaker: false },
+        { model: backup, retry: { retries: 0 }, breaker: false },
+      ],
+    });
+    const chunks = [];
+    for await (const c of m.chatStream!({ messages: [], tools: [], key: 's2' })) {
+      chunks.push(c);
+    }
+    expect(chunks.some((c) => 'content' in c && c.content === 'synthetic')).toBe(true);
+    expect(chunks.some((c) => 'stopReason' in c && c.stopReason === 'stop')).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

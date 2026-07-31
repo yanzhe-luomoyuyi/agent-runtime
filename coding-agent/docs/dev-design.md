@@ -46,7 +46,7 @@ flowchart TB
 ```
 
 - **平台职责：** durable 事件日志、policy、`callChat` / `callModel` / `callTool` 漏斗（现位于 `durable-agent-runtime/src/step-context.ts`）、`createHarnessWorkflow`。
-- **本包职责：** workspace 沙箱、读写工具、`run_tests`、DeepSeek provider、skill、CLI、默认 fixture。
+- **本包职责：** workspace 沙箱、读写工具、`run_tests`、DeepSeek provider、skill、CLI、Workbench UI。
 
 ---
 
@@ -83,9 +83,8 @@ Chat 结果以 JSON envelope 存在 `ModelCalled.response`（`kind: 'chat'`）�
 | `src/model/openai-compatible.ts` | DeepSeek 默认的兼容 Chat provider |
 | `src/stdin-approver.ts` | `write_file` HITL |
 | `skills/coding-agent/SKILL.md` | Analyze → Edit(+test) → Document |
-| `fixtures/coding-sandbox/` | 默认试跑仓（故意 null-session bug） |
 | `agent.config.json` | 统一配置：agent / model / workspace / tools / run / policy / pricing |
-| `test/` | workspace 单测 + 脚本化 E2E |
+| `test/` | workspace / config / provider 单测 |
 
 平台相关（不在本包，但接手时要知道）：
 
@@ -106,7 +105,7 @@ Chat 结果以 JSON envelope 存在 `ModelCalled.response`（`kind: 'chat'`）�
 | `write_file` | 整文件写；内容幂等；默认 **stdin HITL** |
 | `run_tests` | 仅白名单 `npm test`，无任意 shell |
 
-- 默认 workspace：`fixtures/coding-sandbox`；覆盖：`--workspace` / UI path / `AGENT_WORKSPACE`
+- 默认 workspace：`agent.config.json` → `workspace.defaultRoot`（可用 `--workspace` / UI path / `AGENT_WORKSPACE` 覆盖）
 - 快照 / `list_dir` / `grep` 遵守根目录 `.gitignore` + 硬默认（`node_modules`、`.git`、`.coding-agent-runs`、`dist`）
 - 自动批准写：`AGENT_AUTO_APPROVE=1`
 - Policy allow-list / 人设 / 预算等：统一见 `agent.config.json`（`src/config.ts`）
@@ -141,13 +140,11 @@ npm test -w @agent/coding-agent
 # Live DeepSeek
 export DEEPSEEK_API_KEY=...
 export AGENT_AUTO_APPROVE=1   # 试跑可先开
-npm run dev -w @agent/coding-agent -- "Fix getUserName null session, run tests, write ANALYSIS.md"
-
-# 任意本地仓库
 npm run dev -w @agent/coding-agent -- --workspace /path/to/repo "Summarize src/"
-```
 
-Fixture 需求见 `fixtures/coding-sandbox/REQUIREMENT.md`。
+# 或依赖 agent.config.json / AGENT_WORKSPACE
+npm run dev -w @agent/coding-agent -- "What does the harness compaction threshold do?"
+```
 
 ---
 
@@ -157,14 +154,14 @@ Fixture 需求见 `fixtures/coding-sandbox/REQUIREMENT.md`。
 
 - [x] Runtime `callChat` + envelope + 库导出
 - [x] `step-context.ts` 从 `makeContext` 拆出漏斗逻辑
-- [x] `@agent/coding-agent` 包、工具、skill、fixture、CLI
+- [x] `@agent/coding-agent` 包、工具、skill、CLI
 - [x] DeepSeek 兼容 provider
 - [x] 脚本化 E2E（修 bug + 写 `ANALYSIS.md`）
 - [x] `write_file` HITL / auto-approve 开关
 
 ### 建议下一步（接手时可选）
 
-- [x] **Workbench UI** — `npm run ui`：goal / 事件流 / ANALYSIS / code diff / reset fixture；**可填任意 repo path**
+- [x] **Workbench UI** — `npm run ui`：goal / 事件流 / ANALYSIS / code diff / Trace；**可填任意 repo path**
 - [x] CLI `--workspace <path>`（与 UI 对齐；短旗 `-W`，避免与 npm `-w` 冲突）
 - [x] `.gitignore` 感知快照 / walk（`list_dir`、`grep`、UI diff）
 - [x] UI **Trace** 页：runtime `buildTrace` + harness `TraceCollector`（cost / duration / cache / retry）

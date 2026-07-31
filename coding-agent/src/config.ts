@@ -25,16 +25,28 @@ export interface CodingAgentSection {
   skillLoadMode: SkillLoadMode;
 }
 
+export interface CodingModelFallback {
+  baseUrl: string;
+  model: string;
+  apiKeyEnv: string;
+  name?: string;
+}
+
 export interface CodingModelSection {
   provider: string;
   baseUrl: string;
   model: string;
   /** Primary env var for the API key. */
   apiKeyEnv: string;
-  /** Extra env vars tried after apiKeyEnv. */
+  /** Extra env vars tried after apiKeyEnv for the *primary* provider key. */
   apiKeyEnvFallbacks: string[];
   baseUrlEnv: string;
   modelEnv: string;
+  /**
+   * Ordered backup providers when the primary is down / rate-limited.
+   * Wired through `createResilientChatProvider` (harness escalation ladder).
+   */
+  fallbacks: CodingModelFallback[];
 }
 
 export interface CodingWorkspaceSection {
@@ -53,11 +65,26 @@ export interface CodingToolsSection {
   };
 }
 
+export interface CodingToolRetrySection {
+  /** Max additional attempts after the first. Default 2. */
+  retries: number;
+}
+
 export interface CodingRunSection {
   maxTurns: number;
   runsDir: string;
   /** When true, skip mutating FS tool HITL (write/str_replace/delete/apply_patch; same as AGENT_AUTO_APPROVE=1). */
   autoApproveWrites: boolean;
+  /**
+   * Max concurrent tool calls within one turn. `1` = sequential; `>1` runs
+   * independent calls in parallel (DeepSeek multi-tool turns).
+   */
+  toolConcurrency: number;
+  /**
+   * Retry transient tool failures (spawn / network blips) via `RetryingToolInvoker`.
+   * Pass `false` to disable.
+   */
+  toolRetry: CodingToolRetrySection | false;
   compaction: {
     softCapTokens: number;
     threshold: number;
@@ -97,19 +124,23 @@ export interface CodingRunSection {
 
 export interface CodingConfigFile {
   agent?: Partial<CodingAgentSection>;
-  model?: Partial<CodingModelSection> & {
+  model?: Partial<Omit<CodingModelSection, 'apiKeyEnvFallbacks' | 'fallbacks'>> & {
     apiKeyEnvFallbacks?: string[];
+    fallbacks?: CodingModelFallback[];
   };
   workspace?: Partial<CodingWorkspaceSection>;
   tools?: Partial<Omit<CodingToolsSection, 'runTests'>> & {
     runTests?: Partial<CodingToolsSection['runTests']>;
   };
-  run?: Partial<Omit<CodingRunSection, 'compaction' | 'scratchpad' | 'memory' | 'planner' | 'reflection'>> & {
+  run?: Partial<
+    Omit<CodingRunSection, 'compaction' | 'scratchpad' | 'memory' | 'planner' | 'reflection' | 'toolRetry'>
+  > & {
     compaction?: Partial<CodingRunSection['compaction']>;
     scratchpad?: Partial<CodingRunSection['scratchpad']>;
     memory?: Partial<CodingRunSection['memory']>;
     planner?: Partial<CodingRunSection['planner']>;
     reflection?: Partial<CodingRunSection['reflection']>;
+    toolRetry?: CodingToolRetrySection | false;
   };
   policy?: {
     allowedTools?: string[];
@@ -151,9 +182,11 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     apiKeyEnvFallbacks: ['LLM_API_KEY'],
     baseUrlEnv: 'DEEPSEEK_BASE_URL',
     modelEnv: 'DEEPSEEK_MODEL',
+    fallbacks: [],
   },
   workspace: {
-    defaultRoot: 'fixtures/coding-sandbox',
+    /** Overridden by agent.config.json / AGENT_WORKSPACE; resolve relative to package root. */
+    defaultRoot: '.',
   },
   tools: {
     readFileDefaultLimit: 200,
@@ -169,6 +202,8 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     maxTurns: 36,
     runsDir: '.coding-agent-runs',
     autoApproveWrites: false,
+    toolConcurrency: 8,
+    toolRetry: { retries: 2 },
     compaction: {
       softCapTokens: 80_000,
       threshold: 0.85,
@@ -199,6 +234,7 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       'list_tree',
       'grep',
       'read_file',
+      'extract_top_comments',
       'write_file',
       'str_replace',
       'delete_file',
@@ -216,6 +252,7 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
       ...base.model,
       ...overlay.model,
       apiKeyEnvFallbacks: overlay.model?.apiKeyEnvFallbacks ?? base.model.apiKeyEnvFallbacks,
+      fallbacks: overlay.model?.fallbacks ?? base.model.fallbacks,
     },
     workspace: { ...base.workspace, ...overlay.workspace },
     tools: {
@@ -226,6 +263,15 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
     run: {
       ...base.run,
       ...overlay.run,
+      toolRetry:
+        overlay.run?.toolRetry === false
+          ? false
+          : overlay.run?.toolRetry
+            ? {
+                ...(base.run.toolRetry === false ? { retries: 2 } : base.run.toolRetry),
+                ...overlay.run.toolRetry,
+              }
+            : base.run.toolRetry,
       compaction: { ...base.run.compaction, ...overlay.run?.compaction },
       scratchpad: {
         ...base.run.scratchpad,

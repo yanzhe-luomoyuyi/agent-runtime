@@ -22,8 +22,7 @@ npm run ui -w @agent/coding-agent
 # 浏览器打开 http://127.0.0.1:8787
 ```
 
-- **Reset fixture**：仅对内置 sandbox 可用；恢复带 bug 的 `session.js`
-- **Repository path**：可填任意本地仓库绝对路径（沙箱内读写）；点 Sandbox 回到内置 fixture
+- **Repository path**：填本地仓库绝对路径（沙箱内读写）
 - UI 内写文件自动批准（无需 stdin）
 - 右上角展示当前 **model** 与 **max prompt tokens**（`min(modelWindow, softCap)`；`DEEPSEEK_MODEL` / `AGENT_MAX_PROMPT_TOKENS`）
 - **Trace** 页：runtime 时间线（token / cost / duration / provider prompt-cache / replay）+ harness 按 turn（retries / provider cached tokens / assemble·compact）

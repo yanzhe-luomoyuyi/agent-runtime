@@ -9,13 +9,25 @@ import { compileGlob, createFsTools } from '../src/tools/fs-tools.js';
 
 describe('Workspace', () => {
   it('resolves relative paths inside root', () => {
-    const ws = new Workspace(join(import.meta.dirname, '../fixtures/coding-sandbox'));
-    expect(ws.resolve('src/session.js')).toContain('session.js');
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-'));
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'a.js'), 'export {}');
+      const ws = new Workspace(dir);
+      expect(ws.resolve('src/a.js')).toContain('a.js');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('rejects escape via ..', () => {
-    const ws = new Workspace(join(import.meta.dirname, '../fixtures/coding-sandbox'));
-    expect(() => ws.resolve('../package.json')).toThrow(WorkspaceEscapeError);
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-'));
+    try {
+      const ws = new Workspace(dir);
+      expect(() => ws.resolve('../package.json')).toThrow(WorkspaceEscapeError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -63,18 +75,18 @@ describe('fs tools', () => {
     }
   });
 
-  it('list_dir / read_file / write_file round-trip in a temp copy path', () => {
-    const fixture = join(import.meta.dirname, '../fixtures/coding-sandbox');
-    const ws = new Workspace(fixture);
-    const tools = Object.fromEntries(createFsTools(ws).map((t) => [t.name, t]));
-    const listed = tools.list_dir!.run({ path: 'src' }) as { entries: Array<{ name: string }> };
-    expect(listed.entries.some((e) => e.name === 'session.js')).toBe(true);
-
+  it('list_dir / read_file / write_file round-trip in a temp workspace', () => {
     const dir = mkdtempSync(join(tmpdir(), 'coding-ws-'));
     try {
-      const tmp = new Workspace(dir);
-      const write = createFsTools(tmp).find((t) => t.name === 'write_file')!;
-      const read = createFsTools(tmp).find((t) => t.name === 'read_file')!;
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'session.js'), 'export {}');
+      const ws = new Workspace(dir);
+      const tools = Object.fromEntries(createFsTools(ws).map((t) => [t.name, t]));
+      const listed = tools.list_dir!.run({ path: 'src' }) as { entries: Array<{ name: string }> };
+      expect(listed.entries.some((e) => e.name === 'session.js')).toBe(true);
+
+      const write = tools.write_file!;
+      const read = tools.read_file!;
       write.run({ path: 'hello.txt', content: 'hi' });
       const got = read.run({ path: 'hello.txt' }) as { content: string; totalLines: number };
       expect(got.content).toContain('hi');

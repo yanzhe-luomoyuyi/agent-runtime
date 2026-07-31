@@ -8,10 +8,14 @@ describe('resolveCodingMaxPromptTokens', () => {
     expect(CODING_PROMPT_SOFT_CAP).toBe(80_000);
   });
 
-  it('uses the smaller model window for deepseek-chat', () => {
-    expect(resolveCodingMaxPromptTokens({ model: 'deepseek-chat', env: {} })).toBe(64_000);
+  it('uses the product soft cap when the model window is larger', () => {
+    // deepseek-chat registry window is 1M; coding soft cap wins.
+    expect(resolveCodingMaxPromptTokens({ model: 'deepseek-chat', env: {} })).toBe(CODING_PROMPT_SOFT_CAP);
   });
 
+  it('honors a softCap below the model window', () => {
+    expect(resolveCodingMaxPromptTokens({ model: 'deepseek-chat', softCap: 64_000, env: {} })).toBe(64_000);
+  });
   it('honors AGENT_MAX_PROMPT_TOKENS soft-cap override', () => {
     expect(
       resolveCodingMaxPromptTokens({

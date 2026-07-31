@@ -29,7 +29,6 @@ import {
 } from 'durable-agent-runtime';
 
 import { loadCodingConfig, type CodingConfig } from './config.js';
-import { resetCodingSandbox } from './fixture-reset.js';
 import { loadEnvFile } from './load-env.js';
 import { resolveCodingMaxPromptTokens, resolveModelIdFromEnv } from './prompt-budget.js';
 import { createCodingRuntime, DEFAULT_WORKSPACE, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
@@ -137,23 +136,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       autoApproveWrites: cfg.run.autoApproveWrites,
       longTermMemory: cfg.run.memory.enabled,
       loopMode: cfg.run.loopMode,
-      defaultGoal: defaultGoal(workspace),
       modelId,
       maxPromptTokens: resolveCodingMaxPromptTokens({
         model: modelId,
         softCap: cfg.run.compaction.softCapTokens,
       }),
     });
-  }
-
-  if (req.method === 'POST' && path === '/api/reset') {
-    const body = await readJson(req);
-    const workspace = pickWorkspace(typeof body.workspace === 'string' ? body.workspace : undefined);
-    if (resolve(workspace) !== resolve(DEFAULT_WORKSPACE)) {
-      return json(res, 400, { error: 'Reset is only allowed for the built-in coding-sandbox fixture' });
-    }
-    resetCodingSandbox(workspace);
-    return json(res, 200, { ok: true, workspace });
   }
 
   // ── Runs: list / status / trace ──────────────────────────────────
@@ -718,21 +706,13 @@ function jsonResult(res: ServerResponse, result: { ok: true } | { ok: false; err
   return json(res, 404, { error: result.error });
 }
 
-/** Resolve and validate a workspace directory (custom path or default sandbox). */
+/** Resolve and validate a workspace directory. */
 function pickWorkspace(override?: string): string {
   const raw = (override?.trim() || resolveWorkspaceRoot()).trim();
   const abs = resolve(raw);
   if (!existsSync(abs)) throw new Error(`Workspace does not exist: ${abs}`);
   if (!statSync(abs).isDirectory()) throw new Error(`Workspace is not a directory: ${abs}`);
   return abs;
-}
-
-function defaultGoal(workspace: string): string {
-  const req = join(workspace, 'REQUIREMENT.md');
-  if (existsSync(req)) {
-    return readFileSync(req, 'utf8').trim();
-  }
-  return 'Fix getUserName null session, run tests, write ANALYSIS.md';
 }
 
 function contentType(file: string): string {

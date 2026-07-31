@@ -6,6 +6,8 @@ export {
   createOpenAICompatibleChatProvider,
   chatProviderFromEnv,
 } from './model/openai-compatible.js';
+export { createResilientChatProvider, providerAsChatModel } from './model/resilient-provider.js';
+export type { ChatProviderTier, ResilientChatProviderOptions } from './model/resilient-provider.js';
 export {
   createCodingRuntime,
   defaultCodingPolicy,

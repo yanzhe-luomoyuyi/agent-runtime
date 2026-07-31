@@ -67,7 +67,7 @@ export function defaultWorkspaceFromConfig(cfg: CodingConfig = loadCodingConfig(
   return resolvePackagePath(cfg.workspace.defaultRoot);
 }
 
-/** Default fixture workspace (resolved from config / built-in default). */
+/** Default workspace root (resolved from config / package-relative default). */
 export const DEFAULT_WORKSPACE = defaultWorkspaceFromConfig();
 
 export interface CodingRuntimeOptions {
@@ -164,6 +164,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
       baseUrlEnv: cfg.model.baseUrlEnv,
       modelEnv: cfg.model.modelEnv,
       providerName: cfg.model.provider,
+      fallbacks: cfg.model.fallbacks,
     });
   if (!chatModel) {
     throw new Error(
@@ -206,6 +207,10 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     ? { ...basePolicy, allowedTools: withMemoryToolsAllowed(basePolicy.allowedTools) }
     : basePolicy;
 
+  const hasFallbackTiers =
+    (cfg.model.fallbacks?.length ?? 0) > 0 &&
+    cfg.model.fallbacks.some((fb) => Boolean(process.env[fb.apiKeyEnv]));
+
   const workflow = createHarnessWorkflow({
     name: cfg.agent.name,
     maxTurns: opts.maxTurns ?? cfg.run.maxTurns,
@@ -215,6 +220,10 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     trace: opts.harnessTrace,
     stream,
     loopMode,
+    toolConcurrency: cfg.run.toolConcurrency,
+    toolRetry: cfg.run.toolRetry === false ? false : cfg.run.toolRetry,
+    // Resilient provider already retries per tier — don't multiply at the loop.
+    modelRetry: hasFallbackTiers ? { retries: 0 } : undefined,
     planner: {
       maxReplans: cfg.run.planner.maxReplans,
       replanOnFailure: cfg.run.planner.replanOnFailure,

@@ -4,6 +4,7 @@
 
 import { spawnSync } from 'node:child_process';
 
+import { TransientError } from '@agent/harness';
 import type { ToolDef } from 'durable-agent-runtime';
 
 import type { Workspace } from '../workspace.js';
@@ -18,6 +19,17 @@ export interface RunTestsOptions {
 const DEFAULT_COMMAND = ['npm', 'test'];
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 40_000;
+
+/** Spawn / network errno codes that should be retried by RetryingToolInvoker. */
+const TRANSIENT_ERRNO = new Set([
+  'ETIMEDOUT',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ENETUNREACH',
+]);
 
 export function createRunTestsTool(
   workspace: Workspace,
@@ -49,15 +61,26 @@ export function createRunTestsTool(
       const stdout = truncate(result.stdout ?? '', maxOutputChars);
       let stderr = truncate(result.stderr ?? '', maxOutputChars);
       if (result.error) {
+        const err = result.error as NodeJS.ErrnoException;
+        if (err.code && TRANSIENT_ERRNO.has(err.code)) {
+          throw new TransientError(
+            `run_tests transient spawn failure (${err.code}): ${err.message}` +
+              (result.signal ? ` (signal=${result.signal})` : ''),
+          );
+        }
         const detail =
           result.error.message +
           (result.signal ? ` (signal=${result.signal})` : '') +
-          ((result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
-            ? ` — timed out after ${timeoutMs}ms`
-            : '');
+          (err.code === 'ETIMEDOUT' ? ` — timed out after ${timeoutMs}ms` : '');
         stderr = stderr ? `${stderr}\n${detail}` : detail;
       }
       const exitCode = result.status;
+      // npm registry / network blips often exit non-zero without result.error.
+      if (exitCode !== 0 && looksLikeNpmNetworkBlip(stdout, stderr)) {
+        throw new TransientError(
+          `run_tests transient npm/network failure (exit=${exitCode}): ${summarizeBlip(stdout, stderr)}`,
+        );
+      }
       return {
         ok: exitCode === 0,
         exitCode,
@@ -66,6 +89,28 @@ export function createRunTestsTool(
       };
     },
   };
+}
+
+function looksLikeNpmNetworkBlip(stdout: string, stderr: string): boolean {
+  const text = `${stdout}\n${stderr}`.toLowerCase();
+  return (
+    /npm err!.*(network|econnreset|econnrefused|etimedout|enotfound|socket hang up|fetch failed|tunneling socket)/i.test(
+      text,
+    ) ||
+    /err_socket|getaddrinfo|connect econnrefused|read econnreset/.test(text)
+  );
+}
+
+function summarizeBlip(stdout: string, stderr: string): string {
+  const line =
+    stderr
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => /npm err|econn|etimedout|enotfound|network/i.test(l)) ??
+    stderr.trim().split('\n')[0] ??
+    stdout.trim().split('\n')[0] ??
+    'network blip';
+  return line.slice(0, 200);
 }
 
 function truncate(s: string, max: number): string {
