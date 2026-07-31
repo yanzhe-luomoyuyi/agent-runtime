@@ -54,15 +54,25 @@ export interface CodingWorkspaceSection {
   defaultRoot: string;
 }
 
+export interface CodingVerifyRecipe {
+  command: string[];
+}
+
+export interface CodingVerifySection {
+  timeoutMs: number;
+  maxOutputChars: number;
+  /**
+   * Named allowlisted commands (cwd = workspace root). Built-in keys:
+   * `test`, `build`, `typecheck`; hosts may add e.g. `lint`.
+   */
+  recipes: Record<string, CodingVerifyRecipe>;
+}
+
 export interface CodingToolsSection {
   readFileDefaultLimit: number;
   readFileMaxChars: number;
   grepDefaultMatches: number;
-  runTests: {
-    command: string[];
-    timeoutMs: number;
-    maxOutputChars: number;
-  };
+  verify: CodingVerifySection;
 }
 
 export interface CodingToolRetrySection {
@@ -129,8 +139,16 @@ export interface CodingConfigFile {
     fallbacks?: CodingModelFallback[];
   };
   workspace?: Partial<CodingWorkspaceSection>;
-  tools?: Partial<Omit<CodingToolsSection, 'runTests'>> & {
-    runTests?: Partial<CodingToolsSection['runTests']>;
+  tools?: Partial<Omit<CodingToolsSection, 'verify'>> & {
+    verify?: Partial<Omit<CodingVerifySection, 'recipes'>> & {
+      recipes?: Record<string, CodingVerifyRecipe | string[]>;
+    };
+    /** Legacy: folds into `verify.recipes.test` (+ timeout / maxOutput). */
+    runTests?: Partial<{
+      command: string[];
+      timeoutMs: number;
+      maxOutputChars: number;
+    }>;
   };
   run?: Partial<
     Omit<CodingRunSection, 'compaction' | 'scratchpad' | 'memory' | 'planner' | 'reflection' | 'toolRetry'>
@@ -169,7 +187,8 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       'Follow the coding-agent skill. ' +
       'For Q&A / explain goals with no code change: use read tools only and put the full answer in the final reply — do not write ANALYSIS.md or other files unless the user explicitly names an output file. ' +
       'Explore with list_tree (shallow) + grep first; read README/index/entrypoints before deep source; prefer read_file offset/limit slices; avoid listing every subdirectory one-by-one. ' +
-      'For fix/implement goals: analyze with targeted grep/read_file slices, edit with apply_patch or str_replace, run_tests, then document as the skill says. ' +
+      'For fix/implement goals: analyze with targeted grep/read_file slices, edit with apply_patch or str_replace, ' +
+      'verify with run_check (typecheck/build) and run_tests (prefer a filter when possible), then document as the skill says. ' +
       'Never invent file paths — only use paths you observed from tools.',
     skillPath: 'skills/coding-agent/SKILL.md',
     skillLoadMode: 'eager',
@@ -192,10 +211,14 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     readFileDefaultLimit: 200,
     readFileMaxChars: 80_000,
     grepDefaultMatches: 40,
-    runTests: {
-      command: ['npm', 'test'],
-      timeoutMs: 60_000,
+    verify: {
+      timeoutMs: 120_000,
       maxOutputChars: 40_000,
+      recipes: {
+        test: { command: ['npm', 'test'] },
+        build: { command: ['npm', 'run', 'build'] },
+        typecheck: { command: ['npm', 'run', 'typecheck'] },
+      },
     },
   },
   run: {
@@ -210,7 +233,7 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     },
     scratchpad: {
       enabled: true,
-      /** Large enough that typical source reads stay inline; still caps huge run_tests dumps. */
+      /** Large enough that typical source reads stay inline; still caps huge verify dumps. */
       offloadThreshold: 24_000,
       previewChars: 300,
       neverOffload: ['read_file', 'list_dir', 'list_tree', 'grep'],
@@ -240,10 +263,50 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       'delete_file',
       'apply_patch',
       'run_tests',
+      'run_check',
     ],
     maxCostUsd: 1.0,
   },
 };
+
+function normalizeRecipe(
+  value: CodingVerifyRecipe | string[] | undefined,
+): CodingVerifyRecipe | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) {
+    return value.length ? { command: value } : undefined;
+  }
+  return value.command?.length ? { command: value.command } : undefined;
+}
+
+function mergeVerifySection(
+  base: CodingVerifySection,
+  overlay?: Partial<Omit<CodingVerifySection, 'recipes'>> & {
+    recipes?: Record<string, CodingVerifyRecipe | string[]>;
+  },
+  legacyRunTests?: Partial<{
+    command: string[];
+    timeoutMs: number;
+    maxOutputChars: number;
+  }>,
+): CodingVerifySection {
+  const recipes: Record<string, CodingVerifyRecipe> = { ...base.recipes };
+  if (overlay?.recipes) {
+    for (const [name, raw] of Object.entries(overlay.recipes)) {
+      const normalized = normalizeRecipe(raw);
+      if (normalized) recipes[name] = normalized;
+    }
+  }
+  if (legacyRunTests?.command?.length) {
+    recipes.test = { command: legacyRunTests.command };
+  }
+  return {
+    timeoutMs: overlay?.timeoutMs ?? legacyRunTests?.timeoutMs ?? base.timeoutMs,
+    maxOutputChars:
+      overlay?.maxOutputChars ?? legacyRunTests?.maxOutputChars ?? base.maxOutputChars,
+    recipes,
+  };
+}
 
 function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingConfig {
   return {
@@ -258,7 +321,7 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
     tools: {
       ...base.tools,
       ...overlay.tools,
-      runTests: { ...base.tools.runTests, ...overlay.tools?.runTests },
+      verify: mergeVerifySection(base.tools.verify, overlay.tools?.verify, overlay.tools?.runTests),
     },
     run: {
       ...base.run,

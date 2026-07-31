@@ -26,7 +26,11 @@ describe('loadCodingConfig', () => {
     expect(cfg.run.maxTurns).toBe(36);
     expect(cfg.policy.allowedTools).toContain('write_file');
     expect(cfg.pricing?.promptUsdPerToken).toBe(0.00000014);
-    expect(cfg.tools.runTests.command).toEqual(['npm', 'test']);
+    expect(cfg.tools.verify.recipes.test?.command).toEqual(['npm', 'test']);
+    expect(cfg.tools.verify.recipes.build?.command).toEqual(['npm', 'run', 'build']);
+    expect(cfg.tools.verify.recipes.typecheck?.command).toEqual(['npm', 'run', 'typecheck']);
+    expect(cfg.policy.allowedTools).toContain('run_check');
+    expect(cfg.tools.verify.timeoutMs).toBe(120_000);
     expect(cfg.run.scratchpad.enabled).toBe(true);
     expect(cfg.run.scratchpad.offloadThreshold).toBe(24_000);
     expect(cfg.run.scratchpad.neverOffload).toEqual(['read_file', 'list_dir', 'list_tree', 'grep']);
@@ -121,6 +125,58 @@ describe('loadCodingConfig', () => {
     try {
       const cfg = loadCodingConfig({ path, skipEnv: true });
       expect(cfg.policy.redactions?.map((r) => r.name)).toEqual(['email', 'secret']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('merges legacy tools.runTests into verify.recipes.test', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-cfg-legacy-test-'));
+    const path = join(dir, 'agent.config.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        tools: {
+          runTests: {
+            command: ['npm', 'test', '--', 'legacy'],
+            timeoutMs: 9_000,
+            maxOutputChars: 1_000,
+          },
+        },
+      }),
+    );
+    try {
+      const cfg = loadCodingConfig({ path, skipEnv: true });
+      expect(cfg.tools.verify.recipes.test?.command).toEqual(['npm', 'test', '--', 'legacy']);
+      expect(cfg.tools.verify.timeoutMs).toBe(9_000);
+      expect(cfg.tools.verify.maxOutputChars).toBe(1_000);
+      expect(cfg.tools.verify.recipes.build?.command).toEqual(['npm', 'run', 'build']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('merges verify.recipes overlay (argv shorthand)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-cfg-verify-'));
+    const path = join(dir, 'agent.config.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        tools: {
+          verify: {
+            recipes: {
+              lint: ['npm', 'run', 'lint'],
+              test: ['pnpm', 'test'],
+            },
+          },
+        },
+      }),
+    );
+    try {
+      const cfg = loadCodingConfig({ path, skipEnv: true });
+      expect(cfg.tools.verify.recipes.lint?.command).toEqual(['npm', 'run', 'lint']);
+      expect(cfg.tools.verify.recipes.test?.command).toEqual(['pnpm', 'test']);
+      expect(cfg.tools.verify.recipes.typecheck?.command).toEqual(['npm', 'run', 'typecheck']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

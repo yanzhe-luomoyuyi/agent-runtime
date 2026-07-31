@@ -38,8 +38,8 @@ import { PACKAGE_ROOT } from './paths.js';
 import { resolveCodingMaxPromptTokens, resolveModelIdFromEnv } from './prompt-budget.js';
 import { createStdinApprover } from './stdin-approver.js';
 import { createFsTools, MUTATING_FS_TOOLS } from './tools/fs-tools.js';
-import { createRunTestsTool } from './tools/run-tests.js';
 import { createExtractTopCommentsTool } from './tools/extract-top-comments.js';
+import { createRunCheckTool, createRunTestsTool } from './tools/verify.js';
 import { Workspace } from './workspace.js';
 
 export { PACKAGE_ROOT } from './paths.js';
@@ -136,13 +136,13 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
   })) {
     tools.register(t);
   }
-  tools.register(
-    createRunTestsTool(workspace, {
-      command: cfg.tools.runTests.command,
-      timeoutMs: cfg.tools.runTests.timeoutMs,
-      maxOutputChars: cfg.tools.runTests.maxOutputChars,
-    }),
-  );
+  const verifyOpts = {
+    recipes: cfg.tools.verify.recipes,
+    timeoutMs: cfg.tools.verify.timeoutMs,
+    maxOutputChars: cfg.tools.verify.maxOutputChars,
+  };
+  tools.register(createRunTestsTool(workspace, verifyOpts));
+  tools.register(createRunCheckTool(workspace, verifyOpts));
   tools.register(createExtractTopCommentsTool(workspace));
 
   const longTermMemory = opts.longTermMemory ?? cfg.run.memory.enabled;

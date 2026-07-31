@@ -39,7 +39,10 @@ Use when the user asks what something does, where code lives, how it works, or s
    - Prefer `str_replace` for a single exact swap in one file (`replace_all` only when intentional).
    - Use `write_file` only for new files or intentional full rewrites; `delete_file` to remove a single file (or Delete File in a patch).
    - If `apply_patch` / `str_replace` fails: `read_file` the failure region first, then retry — never retry from memory.
-   - Then `run_tests`; iterate until tests pass.
+   - **Verify** (iterate until green):
+     - Prefer `run_check` with `typecheck` (fast) and `build` when the change can break compile.
+     - Then `run_tests`; pass `filter` (file path or `-t` pattern) when you know the relevant suite — full suite only when needed.
+     - On failure: read the cited file:line from stderr/stdout, fix, re-verify.
 3. **Document** — write workspace-root `ANALYSIS.md` (problem, root cause, change, test result) **unless** the user said not to, or already named a different output file (then write that path instead). Prefer `write_file` for that new doc.
 4. Final answer: short summary of what changed (and point at the doc if you wrote one). No further tool calls.
 
