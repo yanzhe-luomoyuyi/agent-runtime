@@ -47,7 +47,16 @@ export function createRunTestsTool(
         env: { ...process.env, FORCE_COLOR: '0' },
       });
       const stdout = truncate(result.stdout ?? '', maxOutputChars);
-      const stderr = truncate(result.stderr ?? '', maxOutputChars);
+      let stderr = truncate(result.stderr ?? '', maxOutputChars);
+      if (result.error) {
+        const detail =
+          result.error.message +
+          (result.signal ? ` (signal=${result.signal})` : '') +
+          ((result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
+            ? ` — timed out after ${timeoutMs}ms`
+            : '');
+        stderr = stderr ? `${stderr}\n${detail}` : detail;
+      }
       const exitCode = result.status;
       return {
         ok: exitCode === 0,

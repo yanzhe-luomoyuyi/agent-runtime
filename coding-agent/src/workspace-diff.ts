@@ -20,6 +20,8 @@ export interface FileDiff {
 }
 
 const MAX_SNAPSHOT_BYTES = 512_000;
+/** Skip full LCS when either side exceeds this many lines (O(n×m) cost). */
+const MAX_DIFF_LINES = 4_000;
 
 export function snapshotWorkspace(rootDir: string): FileSnapshot {
   const out: FileSnapshot = {};
@@ -83,6 +85,16 @@ export function unifiedDiff(path: string, before: string, after: string): string
   // Drop trailing empty from final newline
   if (a.length && a[a.length - 1] === '') a.pop();
   if (b.length && b[b.length - 1] === '') b.pop();
+
+  if (a.length > MAX_DIFF_LINES || b.length > MAX_DIFF_LINES) {
+    return [
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      `@@ file too large for line diff (${a.length} → ${b.length} lines; cap ${MAX_DIFF_LINES}) @@`,
+      `-${a.length} lines`,
+      `+${b.length} lines`,
+    ].join('\n');
+  }
 
   const edits = lineEdits(a, b);
   const lines: string[] = [`--- a/${path}`, `+++ b/${path}`];

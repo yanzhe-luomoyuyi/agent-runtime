@@ -45,51 +45,92 @@ export function applyPatchToWorkspace(workspace: Workspace, patchText: string): 
   if (ops.length === 0) throw new Error('apply_patch: patch contains no file operations');
 
   const actions: PatchAction[] = [];
+  /** Undo stack so a mid-patch failure restores the workspace. */
+  const undo: Array<() => void> = [];
 
-  for (const op of ops) {
-    if (op.kind === 'add') {
-      const abs = workspace.resolve(op.path);
-      if (existsSync(abs)) throw new Error(`apply_patch: Add File target already exists: ${op.path}`);
-      mkdirSync(dirname(abs), { recursive: true });
-      const content = op.lines.join('\n');
-      writeFileSync(abs, content, 'utf8');
-      actions.push({ type: 'add', path: workspace.relative(abs) });
-      continue;
+  const rollback = (): void => {
+    for (let i = undo.length - 1; i >= 0; i--) {
+      try {
+        undo[i]!();
+      } catch {
+        /* best-effort restore */
+      }
     }
+  };
 
-    if (op.kind === 'delete') {
+  try {
+    for (const op of ops) {
+      if (op.kind === 'add') {
+        const abs = workspace.resolve(op.path);
+        if (existsSync(abs)) throw new Error(`apply_patch: Add File target already exists: ${op.path}`);
+        mkdirSync(dirname(abs), { recursive: true });
+        const content = op.lines.join('\n');
+        writeFileSync(abs, content, 'utf8');
+        undo.push(() => {
+          if (existsSync(abs)) unlinkSync(abs);
+        });
+        actions.push({ type: 'add', path: workspace.relative(abs) });
+        continue;
+      }
+
+      if (op.kind === 'delete') {
+        const abs = workspace.resolve(op.path);
+        const st = statSync(abs);
+        if (!st.isFile()) throw new Error(`apply_patch: Delete File is not a file: ${op.path}`);
+        const prev = readFileSync(abs, 'utf8');
+        unlinkSync(abs);
+        undo.push(() => {
+          mkdirSync(dirname(abs), { recursive: true });
+          writeFileSync(abs, prev, 'utf8');
+        });
+        actions.push({ type: 'delete', path: workspace.relative(abs) });
+        continue;
+      }
+
+      // update (+ optional move)
       const abs = workspace.resolve(op.path);
       const st = statSync(abs);
-      if (!st.isFile()) throw new Error(`apply_patch: Delete File is not a file: ${op.path}`);
-      unlinkSync(abs);
-      actions.push({ type: 'delete', path: workspace.relative(abs) });
-      continue;
-    }
+      if (!st.isFile()) throw new Error(`apply_patch: Update File is not a file: ${op.path}`);
+      const before = readFileSync(abs, 'utf8');
+      const after = op.diffLines.length === 0 ? before : applyDiff(before, op.diffLines);
 
-    // update (+ optional move)
-    const abs = workspace.resolve(op.path);
-    const st = statSync(abs);
-    if (!st.isFile()) throw new Error(`apply_patch: Update File is not a file: ${op.path}`);
-    const before = readFileSync(abs, 'utf8');
-    const after = op.diffLines.length === 0 ? before : applyDiff(before, op.diffLines);
-
-    if (op.moveTo) {
-      const dest = workspace.resolve(op.moveTo);
-      if (existsSync(dest) && dest !== abs) {
-        throw new Error(`apply_patch: Move to target already exists: ${op.moveTo}`);
+      if (op.moveTo) {
+        const dest = workspace.resolve(op.moveTo);
+        if (existsSync(dest) && dest !== abs) {
+          throw new Error(`apply_patch: Move to target already exists: ${op.moveTo}`);
+        }
+        const destExisted = existsSync(dest);
+        const destPrev = destExisted ? readFileSync(dest, 'utf8') : null;
+        mkdirSync(dirname(dest), { recursive: true });
+        writeFileSync(dest, after, 'utf8');
+        if (dest !== abs) unlinkSync(abs);
+        undo.push(() => {
+          if (dest !== abs) {
+            mkdirSync(dirname(abs), { recursive: true });
+            writeFileSync(abs, before, 'utf8');
+            if (destPrev === null) {
+              if (existsSync(dest)) unlinkSync(dest);
+            } else {
+              writeFileSync(dest, destPrev, 'utf8');
+            }
+          } else {
+            writeFileSync(abs, before, 'utf8');
+          }
+        });
+        actions.push({
+          type: 'move',
+          path: workspace.relative(abs),
+          to: workspace.relative(dest),
+        });
+      } else {
+        writeFileSync(abs, after, 'utf8');
+        undo.push(() => writeFileSync(abs, before, 'utf8'));
+        actions.push({ type: 'update', path: workspace.relative(abs) });
       }
-      mkdirSync(dirname(dest), { recursive: true });
-      writeFileSync(dest, after, 'utf8');
-      if (dest !== abs) unlinkSync(abs);
-      actions.push({
-        type: 'move',
-        path: workspace.relative(abs),
-        to: workspace.relative(dest),
-      });
-    } else {
-      writeFileSync(abs, after, 'utf8');
-      actions.push({ type: 'update', path: workspace.relative(abs) });
     }
+  } catch (e) {
+    rollback();
+    throw e;
   }
 
   return { actions };

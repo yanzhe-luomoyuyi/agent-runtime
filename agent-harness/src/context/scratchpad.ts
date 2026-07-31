@@ -25,6 +25,9 @@
  * so durable replay stays safe.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+
 import type { CallOptions, ChatModel, ToolInvoker, ToolSpec } from '@agent/contracts';
 import { keyScope } from '@agent/contracts';
 
@@ -55,17 +58,24 @@ export type ContentSummarizer = (
 ) => Promise<string>;
 
 /**
- * A simple keyed content store. In-memory by default; swap the backing map for
- * a disk/KV implementation by subclassing or wrapping. Deterministic.
+ * A simple keyed content store. In-memory by default; pass `persistPath` to
+ * load/save a JSON sidecar so durable resume can re-read offloaded entries.
  */
 export class Scratchpad {
   private readonly store = new Map<string, ScratchpadEntry>();
+  private readonly persistPath?: string;
+
+  constructor(opts?: { persistPath?: string }) {
+    this.persistPath = opts?.persistPath;
+    if (this.persistPath) this.loadFromDisk();
+  }
 
   write(id: string, content: string, source?: string, summary?: string): ScratchpadEntry {
     const entry: ScratchpadEntry = { id, content, length: content.length };
     if (source !== undefined) entry.source = source;
     if (summary !== undefined) entry.summary = summary;
     this.store.set(id, entry);
+    this.flush();
     return entry;
   }
 
@@ -88,12 +98,51 @@ export class Scratchpad {
 
   clear(): void {
     this.store.clear();
+    this.flush();
+  }
+
+  private loadFromDisk(): void {
+    if (!this.persistPath) return;
+    try {
+      if (!existsSync(this.persistPath)) return;
+      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as ScratchpadEntry[];
+      if (!Array.isArray(raw)) return;
+      for (const entry of raw) {
+        if (entry && typeof entry.id === 'string' && typeof entry.content === 'string') {
+          this.store.set(entry.id, {
+            id: entry.id,
+            content: entry.content,
+            length: typeof entry.length === 'number' ? entry.length : entry.content.length,
+            source: entry.source,
+            summary: entry.summary,
+          });
+        }
+      }
+    } catch {
+      /* corrupt sidecar — start empty */
+    }
+  }
+
+  private flush(): void {
+    if (!this.persistPath) return;
+    try {
+      mkdirSync(dirname(this.persistPath), { recursive: true });
+      writeFileSync(this.persistPath, JSON.stringify([...this.store.values()], null, 2));
+    } catch {
+      /* best-effort persistence */
+    }
   }
 }
 
 export interface ScratchpadToolInvokerOptions {
   /** The store to offload into. Defaults to a fresh in-memory `Scratchpad`. */
   store?: Scratchpad;
+  /**
+   * When set (and `store` omitted), persist offloads under
+   * `<persistBaseDir>/<runId>/scratchpad.json` so crash/resume can re-read them.
+   * Resolved by the durable harness adapter using `ctx.runId`.
+   */
+  persistBaseDir?: string;
   /**
    * Results whose serialized length exceeds this are offloaded and replaced by a
    * pointer. Applies to strings and JSON-serializable objects. Default 4000 characters.

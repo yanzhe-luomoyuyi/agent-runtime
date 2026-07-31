@@ -49,7 +49,16 @@ export function createFsTools(workspace: Workspace, opts: FsToolsOptions = {}): 
     run: ({ path }) => {
       const abs = workspace.resolve(path ?? '.');
       const baseRel = workspace.relative(abs);
-      const entries = readdirSync(abs, { withFileTypes: true })
+      let dirents;
+      try {
+        dirents = readdirSync(abs, { withFileTypes: true });
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') throw new Error(`list_dir: path not found: ${baseRel}`);
+        if (code === 'ENOTDIR') throw new Error(`list_dir: not a directory: ${baseRel}`);
+        throw e;
+      }
+      const entries = dirents
         .map((d) => ({
           name: d.name,
           type: d.isDirectory() ? ('dir' as const) : ('file' as const),
@@ -231,6 +240,13 @@ export function createFsTools(workspace: Workspace, opts: FsToolsOptions = {}): 
         const rel = workspace.relative(fileAbs);
         if (!acceptRel(rel)) return true;
 
+        try {
+          const fileSt = statSync(fileAbs);
+          if (fileSt.size > grepMaxFileBytes) return true;
+        } catch {
+          return true;
+        }
+
         let text: string;
         try {
           text = readFileSync(fileAbs, 'utf8');
@@ -337,8 +353,16 @@ export function createFsTools(workspace: Workspace, opts: FsToolsOptions = {}): 
     },
     run: ({ path, offset, limit }) => {
       const abs = workspace.resolve(path);
-      const st = statSync(abs);
-      if (!st.isFile()) throw new Error(`not a file: ${path}`);
+      let st;
+      try {
+        st = statSync(abs);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new Error(`read_file: path not found: ${path}`);
+        }
+        throw e;
+      }
+      if (!st.isFile()) throw new Error(`read_file: not a file: ${path}`);
       const lines = readFileSync(abs, 'utf8').split(/\r?\n/);
       const totalLines = lines.length;
       const maxLines = Math.min(Math.max(1, limit ?? readLimit), 2000);

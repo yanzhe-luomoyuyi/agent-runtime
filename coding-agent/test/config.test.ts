@@ -85,4 +85,16 @@ describe('loadCodingConfig', () => {
     );
     expect(resolvePackagePath('/abs/skill.md')).toBe('/abs/skill.md');
   });
+
+  it('wires policy.redactions from config names', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-cfg-redact-'));
+    const path = join(dir, 'agent.config.json');
+    writeFileSync(path, JSON.stringify({ policy: { redactions: ['email', 'secret'] } }));
+    try {
+      const cfg = loadCodingConfig({ path, skipEnv: true });
+      expect(cfg.policy.redactions?.map((r) => r.name)).toEqual(['email', 'secret']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

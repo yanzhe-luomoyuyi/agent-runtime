@@ -66,6 +66,16 @@ export function hasDrivingRun(): boolean {
   );
 }
 
+/** Atomically reserve a driving slot, or return null if one is already active. */
+export function tryBeginActiveRun(opts: {
+  workspace: string;
+  sessionId?: string;
+  knownRunId?: string;
+}): { key: string; run: ActiveWorkbenchRun } | null {
+  if (hasDrivingRun()) return null;
+  return beginActiveRun(opts);
+}
+
 export function getActiveByRunId(runId: string): ActiveWorkbenchRun | undefined {
   for (const r of active.values()) {
     if (r.runId === runId) return r;
@@ -94,9 +104,12 @@ export function beginActiveRun(opts: {
 }
 
 /** Re-key the registry entry once RunStarted provides the durable runId. */
-export function bindRunId(key: string, runId: string): ActiveWorkbenchRun {
+export function bindRunId(key: string, runId: string): ActiveWorkbenchRun | undefined {
   const run = active.get(key);
-  if (!run) throw new Error(`Active run not found: ${key}`);
+  if (!run) {
+    console.warn(`[workbench] bindRunId: active run not found for key=${key}`);
+    return undefined;
+  }
   run.runId = runId;
   if (key !== runId) {
     active.delete(key);

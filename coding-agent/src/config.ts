@@ -6,7 +6,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
-import type { ModelPricing, Policy, HarnessLoopMode } from 'durable-agent-runtime';
+import {
+  resolveRedactions,
+  type ModelPricing,
+  type Policy,
+  type HarnessLoopMode,
+} from 'durable-agent-runtime';
 
 import { PACKAGE_ROOT } from './paths.js';
 
@@ -234,6 +239,10 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
     policy: {
       allowedTools: overlay.policy?.allowedTools ?? base.policy.allowedTools,
       maxCostUsd: overlay.policy?.maxCostUsd ?? base.policy.maxCostUsd,
+      redactions:
+        overlay.policy?.redactions !== undefined
+          ? resolveRedactions(overlay.policy.redactions)
+          : base.policy.redactions,
     },
     pricing: overlay.pricing
       ? ({ ...(base.pricing ?? {}), ...overlay.pricing } as ModelPricing)
@@ -306,7 +315,9 @@ export function readCodingConfigFile(
   if (!existsSync(path)) return {};
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as CodingConfigFile;
-  } catch {
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[coding-agent] Ignoring invalid config at ${path}: ${msg}`);
     return {};
   }
 }
@@ -335,5 +346,6 @@ export function configToPolicy(cfg: CodingConfig): Policy {
   return {
     allowedTools: cfg.policy.allowedTools,
     maxCostUsd: cfg.policy.maxCostUsd,
+    redactions: cfg.policy.redactions,
   };
 }

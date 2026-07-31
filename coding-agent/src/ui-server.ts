@@ -9,7 +9,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { extname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   autoApprove,
@@ -43,7 +42,6 @@ import {
 } from './session-trace.js';
 import { createUiApprover } from './ui-approver.js';
 import {
-  beginActiveRun,
   bindRunId,
   clearApproval,
   controlAbort,
@@ -58,6 +56,7 @@ import {
   resolveApproval,
   setPhase,
   sseInterrupter,
+  tryBeginActiveRun,
   type SseSend,
 } from './workbench-runs.js';
 import {
@@ -397,12 +396,28 @@ async function driveSse(
   res: ServerResponse,
   mode: DriveMode,
 ): Promise<void> {
-  if (hasDrivingRun()) return json(res, 409, { error: 'A run is already in progress' });
+  // Reserve the driving slot synchronously before any await (TOCTOU guard).
+  const reserved = tryBeginActiveRun({
+    workspace: 'pending',
+    knownRunId: mode.mode === 'resume' ? mode.runId : undefined,
+    sessionId: mode.mode === 'continue' ? mode.sessionId : undefined,
+  });
+  if (!reserved) return json(res, 409, { error: 'A run is already in progress' });
+  const { key, run: active } = reserved;
 
-  const body = await readJson(req);
+  let body: Record<string, unknown>;
+  try {
+    body = await readJson(req);
+  } catch (e) {
+    endActiveRun(key);
+    const msg = e instanceof Error ? e.message : String(e);
+    return json(res, msg.includes('too large') ? 413 : 400, { error: msg });
+  }
+
   const cfg = loadCodingConfig();
   const keyEnvs = [cfg.model.apiKeyEnv, ...cfg.model.apiKeyEnvFallbacks];
   if (!keyEnvs.some((k) => Boolean(process.env[k]))) {
+    endActiveRun(key);
     return json(res, 400, {
       error: `Set ${cfg.model.apiKeyEnv} in coding-agent/.env (or the environment)`,
     });
@@ -412,11 +427,13 @@ async function driveSse(
   try {
     workspace = pickWorkspace(typeof body.workspace === 'string' ? body.workspace : undefined);
   } catch (e) {
+    endActiveRun(key);
     return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
   }
 
   const goal = typeof body.goal === 'string' ? body.goal.trim() : '';
   if (mode.mode !== 'resume' && !goal) {
+    endActiveRun(key);
     return json(res, 400, { error: 'goal is required' });
   }
 
@@ -443,6 +460,9 @@ async function driveSse(
         ? body.sessionId.trim()
         : undefined;
 
+  active.workspace = workspace;
+  active.sessionId = sessionId;
+
   const runsDir = resolveRunsDir(cfg);
   const before = snapshotWorkspace(workspace);
 
@@ -455,12 +475,6 @@ async function driveSse(
   const send: SseSend = (event, data) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-
-  const { key, run: active } = beginActiveRun({
-    workspace,
-    sessionId,
-    knownRunId: mode.mode === 'resume' ? mode.runId : undefined,
-  });
 
   send('status', {
     phase: 'starting',
@@ -519,8 +533,10 @@ async function driveSse(
           if (active.sessionId && liveSessions) {
             try {
               liveSessions.attachRun(active.sessionId, e.runId);
-            } catch {
-              /* session attach is best-effort until create() finishes */
+            } catch (err) {
+              console.warn(
+                `[ui] session attach deferred: ${err instanceof Error ? err.message : String(err)}`,
+              );
             }
           }
         }
@@ -564,6 +580,11 @@ async function driveSse(
     liveSessions = new SessionManager(rt, runsDir);
 
     if (mode.mode === 'resume') {
+      const linked = liveSessions.list().find((m) => m.runIds.includes(mode.runId));
+      if (linked) {
+        active.sessionId = linked.sessionId;
+        send('session', { sessionId: linked.sessionId, title: linked.title });
+      }
       const state = await rt.resume(mode.runId);
       return finishDone(send, rt, state, workspace, before, harnessTrace, runStartedAt, runsDir, active.sessionId);
     }
@@ -588,7 +609,13 @@ async function driveSse(
     }
 
     const state = await rt.run(goal, history ? { conversationHistory: history } : undefined);
-    if (sessionId && active.runId) liveSessions.attachRun(sessionId, active.runId);
+    if (sessionId && active.runId) {
+      try {
+        liveSessions.attachRun(sessionId, active.runId);
+      } catch (err) {
+        console.warn(`[ui] session attach failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     return finishDone(send, rt, state, workspace, before, harnessTrace, runStartedAt, runsDir, sessionId);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -731,10 +758,19 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+function readJson(req: IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
   return new Promise((resolvePromise, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c) => chunks.push(c));
+    let total = 0;
+    req.on('data', (c: Buffer) => {
+      total += c.length;
+      if (total > maxBytes) {
+        reject(new Error(`request body too large (max ${maxBytes} bytes)`));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => {
       try {
         const raw = Buffer.concat(chunks).toString('utf8');
@@ -747,5 +783,4 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
-void fileURLToPath;
 main();

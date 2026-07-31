@@ -119,4 +119,32 @@ describe('applyPatchToWorkspace', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('rolls back earlier ops when a later op fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'apply-patch-tx-'));
+    try {
+      writeFileSync(join(dir, 'ok.txt'), 'keep\n', 'utf8');
+      const ws = new Workspace(dir);
+      expect(() =>
+        applyPatchToWorkspace(
+          ws,
+          [
+            '*** Begin Patch',
+            '*** Add File: new.txt',
+            '+created',
+            '*** Update File: ok.txt',
+            '@@',
+            '-keep',
+            '+changed',
+            '*** Delete File: missing.txt',
+            '*** End Patch',
+          ].join('\n'),
+        ),
+      ).toThrow(/missing\.txt|ENOENT|not a file/);
+      expect(existsSync(join(dir, 'new.txt'))).toBe(false);
+      expect(readFileSync(join(dir, 'ok.txt'), 'utf8')).toBe('keep\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

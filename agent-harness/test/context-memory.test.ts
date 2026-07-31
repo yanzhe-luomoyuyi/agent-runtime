@@ -1,4 +1,7 @@
 import type { ChatModel, ChatRequest, ChatResponse, Message } from '@agent/contracts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { ContextManager, createModelSummarizer } from '../src/context/manager.js';
@@ -327,6 +330,20 @@ describe('Scratchpad', () => {
     expect(sp.has('a')).toBe(true);
     expect(sp.list()).toEqual([{ id: 'a', length: 5, source: 'toolX' }]);
     expect(sp.size).toBe(1);
+  });
+
+  it('persists entries to disk and reloads them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'scratchpad-'));
+    const path = join(dir, 'scratchpad.json');
+    try {
+      const sp = new Scratchpad({ persistPath: path });
+      sp.write('sp-1', 'payload', 'bigRead');
+      const reloaded = new Scratchpad({ persistPath: path });
+      expect(reloaded.read('sp-1')?.content).toBe('payload');
+      expect(reloaded.read('sp-1')?.source).toBe('bigRead');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

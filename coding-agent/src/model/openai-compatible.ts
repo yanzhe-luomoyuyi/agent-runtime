@@ -114,6 +114,7 @@ export async function* parseOpenAIChatStream(
     try {
       data = JSON.parse(line) as ApiStreamChunk;
     } catch {
+      console.warn(`[openai-compatible] skipping malformed SSE JSON chunk: ${line.slice(0, 200)}`);
       continue;
     }
 
@@ -163,7 +164,14 @@ export async function* parseOpenAIChatStream(
     try {
       args = JSON.parse(acc.arguments || '{}');
     } catch {
-      args = { _raw: acc.arguments };
+      console.warn(
+        `[openai-compatible] tool "${acc.name}" arguments are not valid JSON; passing parse error marker`,
+      );
+      args = {
+        __tool_arguments_parse_error: true,
+        message: 'model returned non-JSON tool arguments',
+        raw: acc.arguments,
+      };
     }
     yield { toolCall: { id: acc.id, name: acc.name, arguments: args } };
   }
@@ -369,7 +377,14 @@ function fromApiCompletion(data: ApiChatCompletion): ChatResponse {
       try {
         args = JSON.parse(raw);
       } catch {
-        args = { _raw: raw };
+        console.warn(
+          `[openai-compatible] tool "${toolName}" arguments are not valid JSON; passing parse error marker`,
+        );
+        args = {
+          __tool_arguments_parse_error: true,
+          message: 'model returned non-JSON tool arguments',
+          raw,
+        };
       }
       return { id: tc.id, name: toolName, arguments: args };
     })

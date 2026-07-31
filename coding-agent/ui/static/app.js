@@ -67,6 +67,8 @@ let currentSessionId = null;
 /** Crashed run left in status=running — durable resume target. */
 let resumableRunId = null;
 let pendingApproval = null;
+/** Queue when multiple needs_input events arrive before the user decides. */
+let pendingApprovalQueue = [];
 let driving = false;
 let hasApiKey = false;
 /** Cached session manifests for rename / compare dropdowns. */
@@ -126,6 +128,7 @@ function setDriving(on) {
     pauseBanner.hidden = true;
     approvalPanel.hidden = true;
     pendingApproval = null;
+    pendingApprovalQueue = [];
   }
   syncResumeUi();
 }
@@ -1264,7 +1267,12 @@ async function readSse(res) {
         if (line.startsWith('data:')) data += line.slice(5).trim();
       }
       if (!data) continue;
-      handleEvent(event, JSON.parse(data));
+      try {
+        handleEvent(event, JSON.parse(data));
+      } catch (e) {
+        console.warn('SSE event parse failed', event, e);
+        logLine(`SSE parse error (${event}): ${e instanceof Error ? e.message : String(e)}`, 'err');
+      }
     }
   }
 }
@@ -1458,10 +1466,8 @@ function handleEvent(event, data) {
     }
   }
   if (event === 'needs_input' && data.kind === 'approval') {
-    pendingApproval = data;
-    approvalPanel.hidden = false;
-    approvalBody.textContent = `${data.tool} (callId=${data.callId})\n${JSON.stringify(data.args, null, 2).slice(0, 2000)}`;
-    logLine(`needs approval: ${data.tool}`, 'warn');
+    pendingApprovalQueue.push(data);
+    showNextApproval();
   }
   if (event === 'crashed') {
     currentRunId = data.runId || currentRunId;
@@ -1485,6 +1491,8 @@ function handleEvent(event, data) {
     streamAnswerActive = false;
     pauseBanner.hidden = true;
     approvalPanel.hidden = true;
+    pendingApproval = null;
+    pendingApprovalQueue = [];
     crashBanner.hidden = true;
     resumeDurableBtn.hidden = true;
     resumableRunId = null;
@@ -1668,6 +1676,20 @@ async function decideApproval(approved) {
   pendingApproval = null;
   await postControl('/approve', { callId, approved });
   logLine(approved ? `approved ${callId}` : `denied ${callId}`, approved ? 'ok' : 'err');
+  showNextApproval();
+}
+
+function showNextApproval() {
+  if (pendingApproval) return;
+  const next = pendingApprovalQueue.shift();
+  if (!next) {
+    approvalPanel.hidden = true;
+    return;
+  }
+  pendingApproval = next;
+  approvalPanel.hidden = false;
+  approvalBody.textContent = `${next.tool} (callId=${next.callId})\n${JSON.stringify(next.args, null, 2).slice(0, 2000)}`;
+  logLine(`needs approval: ${next.tool}`, 'warn');
 }
 
 approveYesBtn.addEventListener('click', () => decideApproval(true));

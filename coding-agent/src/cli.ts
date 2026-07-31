@@ -14,7 +14,7 @@ import { join } from 'node:path';
 
 import { parseArgs } from './cli-args.js';
 import { loadEnvFile } from './load-env.js';
-import { loadCodingConfig } from './config.js';
+import { loadCodingConfig, resolvePackagePath } from './config.js';
 import { createCodingRuntime, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
 
 loadEnvFile(join(PACKAGE_ROOT, '.env'));
@@ -89,13 +89,13 @@ function buildRuntime(
   },
 ) {
   return createCodingRuntime({
-    baseDir: cfg.run.runsDir,
+    baseDir: resolvePackagePath(cfg.run.runsDir),
     workspaceRoot,
     config: cfg,
     pricing: cfg.pricing,
     policy: cfg.policy,
     maxTurns: cfg.run.maxTurns,
-    crashAfterTurn: numFromEnv('HARNESS_CRASH_TURN'),
+    crashAfterTurn: positiveIntFromEnv('HARNESS_CRASH_TURN'),
     onEvent: (e) => {
       if (e.type === 'RunStarted') process.stderr.write(`▶ run ${e.runId}\n`);
       if (e.type === 'ToolCallSucceeded') process.stderr.write(`  ✓ ${e.tool}\n`);
@@ -123,9 +123,11 @@ function printResult(state: RunState, opts?: { skipAnswer?: boolean }): void {
   else if (state.summary) console.log(JSON.stringify(state.summary, null, 2));
 }
 
-function numFromEnv(name: string): number | undefined {
+function positiveIntFromEnv(name: string): number | undefined {
   const v = process.env[name];
-  return v ? Number(v) : undefined;
+  if (!v) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
 }
 
 function printHelp(): void {

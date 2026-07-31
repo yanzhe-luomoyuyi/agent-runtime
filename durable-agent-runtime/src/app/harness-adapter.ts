@@ -42,6 +42,7 @@ import {
   runPlannedAgent,
   runReflectiveAgent,
   ScratchpadToolInvoker,
+  Scratchpad,
   type AgentConfig,
   type AgentRunResult,
   type Critique,
@@ -57,6 +58,8 @@ import type { Approver } from '@agent/contracts';
 
 /** How the harness step drives the model loop. */
 export type HarnessLoopMode = 'agent' | 'planner' | 'reflection';
+
+import { join } from 'node:path';
 
 import {
   checkDocumentSearchBudget,
@@ -340,7 +343,7 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
               const scratchOpts =
                 opts.scratchpad === true ? {} : opts.scratchpad === false || opts.scratchpad == null ? null : opts.scratchpad;
               const toolInvoker: ToolInvoker = scratchOpts
-                ? new ScratchpadToolInvoker(durableTools, scratchOpts)
+                ? new ScratchpadToolInvoker(durableTools, resolveScratchpadOpts(scratchOpts, ctx.runId))
                 : durableTools;
               const agent: AgentConfig = createAgent({
                 name: opts.agent?.name ?? 'harness-agent',
@@ -597,4 +600,17 @@ function collectFiles(messages: Message[]): string[] {
 function usage(prompt: string, text: string): { promptTokens: number; completionTokens: number } {
   const est = (s: string) => Math.max(1, Math.ceil(s.length / 4));
   return { promptTokens: est(prompt), completionTokens: est(text) };
+}
+
+/** Resolve persistBaseDir → per-run Scratchpad file so resume can re-read offloads. */
+function resolveScratchpadOpts(
+  opts: ScratchpadToolInvokerOptions,
+  runId: string,
+): ScratchpadToolInvokerOptions {
+  if (opts.store || !opts.persistBaseDir) return opts;
+  const { persistBaseDir, ...rest } = opts;
+  return {
+    ...rest,
+    store: new Scratchpad({ persistPath: join(persistBaseDir, runId, 'scratchpad.json') }),
+  };
 }

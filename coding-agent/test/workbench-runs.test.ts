@@ -12,6 +12,7 @@ import {
   hasDrivingRun,
   resolveApproval,
   sseInterrupter,
+  tryBeginActiveRun,
 } from '../src/workbench-runs.js';
 
 describe('workbench-runs', () => {
@@ -27,6 +28,16 @@ describe('workbench-runs', () => {
 
     endActiveRun('run-abc');
     expect(hasDrivingRun()).toBe(false);
+  });
+
+  it('tryBeginActiveRun refuses a second concurrent driver', () => {
+    const first = tryBeginActiveRun({ workspace: '/tmp/a' });
+    expect(first).not.toBeNull();
+    expect(tryBeginActiveRun({ workspace: '/tmp/b' })).toBeNull();
+    endActiveRun(first!.key);
+    const second = tryBeginActiveRun({ workspace: '/tmp/c' });
+    expect(second).not.toBeNull();
+    endActiveRun(second!.key);
   });
 
   it('pause blocks interrupter until continue', async () => {
