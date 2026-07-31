@@ -40,7 +40,7 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   'deepseek-v4-pro': 1_000_000,
   'deepseek-v4-flash': 1_000_000,
   'deepseek-v4': 1_000_000,
-  'deepseek-chat': 64_000,
+  'deepseek-chat': 1_000_000,
   'deepseek-reasoner': 64_000,
   'mistral-large': 128_000,
   'llama-3.1': 128_000,

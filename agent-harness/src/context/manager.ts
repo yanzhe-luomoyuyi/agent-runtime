@@ -43,7 +43,7 @@ import type { ChatModel, Message } from '@agent/contracts';
 import { isGoalMessage, keyScope } from '@agent/contracts';
 
 import { resolveModelLimit } from './model-limits.js';
-import { cjkAwareTokenizer, type Tokenizer } from './tokenizer.js';
+import { tiktokenTokenizer, type Tokenizer } from './tokenizer.js';
 
 // ── Importance classes (identity) + scores (magnitude) ─────────────
 //
@@ -207,9 +207,10 @@ export interface ContextManagerOptions {
   // ── New options ────────────────────────────────────
 
   /**
-   * Pluggable tokenizer. Default `cjkAwareTokenizer` (CJK ≈ 1 token/char, other
-   * text ≈ 4 chars/token). Swap for `fromCounter(tiktokenEncoding.encode)` for
-   * exact counts.
+   * Pluggable tokenizer. Default `tiktokenTokenizer` (backed by OpenAI's
+   * `tiktoken` cl100k_base encoding — a close approximation of DeepSeek's
+   * BPE tokenizer).  Swap for `cjkAwareTokenizer` for a zero-dependency
+   * heuristic, or `fromCounter(…)` for other backends.
    */
   tokenizer?: Tokenizer;
 
@@ -391,7 +392,7 @@ export class ContextManager {
     // New options with sensible defaults.
     this.tokenizer = opts.tokenizer ?? (opts.estimateTokens
       ? { count: opts.estimateTokens, countMessage: (m) => opts.estimateTokens!(messageText(m)), countMessages: (ms) => ms.reduce((s, m) => s + opts.estimateTokens!(messageText(m)), 0) }
-      : cjkAwareTokenizer);
+      : tiktokenTokenizer);
     this.outputReserve = opts.outputReserveTokens ?? 1024;
     this.toolDefReserve = opts.toolDefReserveTokens ?? 0;
     this.goalProtected = opts.goalProtected ?? true;

@@ -39,6 +39,7 @@ import { resolveCodingMaxPromptTokens, resolveModelIdFromEnv } from './prompt-bu
 import { createStdinApprover } from './stdin-approver.js';
 import { createFsTools, MUTATING_FS_TOOLS } from './tools/fs-tools.js';
 import { createRunTestsTool } from './tools/run-tests.js';
+import { createExtractTopCommentsTool } from './tools/extract-top-comments.js';
 import { Workspace } from './workspace.js';
 
 export { PACKAGE_ROOT } from './paths.js';
@@ -142,6 +143,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
       maxOutputChars: cfg.tools.runTests.maxOutputChars,
     }),
   );
+  tools.register(createExtractTopCommentsTool(workspace));
 
   const longTermMemory = opts.longTermMemory ?? cfg.run.memory.enabled;
   if (longTermMemory) {
@@ -171,6 +173,8 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
 
   const skillPath = resolvePackagePath(cfg.agent.skillPath);
   const skill = loadSkillFile(skillPath);
+  const fileScoutSkillPath = resolvePackagePath('skills/file-scout/SKILL.md');
+  const fileScoutSkill = loadSkillFile(fileScoutSkillPath);
 
   const auto = opts.autoApproveWrites ?? cfg.run.autoApproveWrites;
   const approver =
@@ -221,7 +225,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     agent: {
       name: cfg.agent.name,
       instructions,
-      skills: [skill],
+      skills: [skill, fileScoutSkill],
       skillLoadMode: cfg.agent.skillLoadMode,
     },
     modelCompaction: {

@@ -98,7 +98,7 @@ ProtocolDecision =
 | 预算 + 硬顶装配 | `maxPromptTokens` − output/tool 预留；system 在前（cache 友好）；`kind: 'goal'` 保护；`ImportanceClass` 分数折扣扩窗 + 硬顶裁剪（`retrieval` ≪ `user_instruction`） |
 | 原子 tool-call 单元 | `assistant(toolCalls)` 与匹配的 `tool` 结果整组计分/淘汰/保护，不拆 call/response（API 合法 transcript） |
 | 近期窗口钉住 | `keepRecentMessages` 对齐 unit 后 **pin**：hard-cap 只裁扩出来的 grown 段，最新 user 指令不会输给更老的高分 tool error |
-| CJK-aware tokenizer | CJK ≈ 1 token/字、其余 ≈ 4 字/token；`fromCounter` 可接 tiktoken |
+| 真实 tokenizer（默认） | `tiktokenTokenizer`（`cl100k_base`）；可换 `cjkAwareTokenizer` / `heuristicTokenizer` / `fromCounter` |
 | 按模型窗口 | `ContextManager.forModel(name)`，128K/200K/1M 注册表 |
 | 主动压缩 | `compactIfNeeded`：keyed LLM 摘要，有状态（压一次固化），durable replay 安全；`protectVerbatimClasses`（默认 tool_error / user_instruction / tool_write）名单内 older **unit** 可 verbatim 保护（预算封顶 25%）；`describeImportancePolicy()` 可 dump |
 | Untrusted 隔离 | 工具输出与 query-time RAG（`kind: 'retrieval'`）围栏成"data only"，绝不并入 system（prompt-injection 防御） |

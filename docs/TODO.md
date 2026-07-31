@@ -15,7 +15,7 @@
 | 维度 | 候选策略 | 关心的指标 |
 | --- | --- | --- |
 | 上下文淘汰 / pin | pure-recency vs importance+pin vs 更激进压缩 | 任务成功率、turns、token、是否丢关键指令 |
-| Tokenizer / 预算 | 默认 CJK-aware vs 固定 counter | 装配稳定性、截断行为 |
+| Tokenizer / 预算 | 默认 tiktoken vs CJK-aware vs 固定 counter | 装配稳定性、截断行为、与 provider usage 偏差 |
 | 主动压缩 | 关 / 开 / 不同频率与 verbatim 保护 | 摘要质量、重放安全、成本 |
 | Retrieval | `once` / `once_rewrite` / `capped_agentic` | 命中相关性、额外模型调用、护栏是否仍成立 |
 | Approver | auto vs pattern gate vs counting | 介入率、误拦、任务是否完成 |

@@ -30,7 +30,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@agent/contracts": "*"
+    "@agent/contracts": "*",
+    "tiktoken": "^1.0.22"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

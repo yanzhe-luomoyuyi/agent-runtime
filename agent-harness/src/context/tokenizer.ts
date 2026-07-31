@@ -14,6 +14,7 @@
 
 import type { Message } from '@agent/contracts';
 import { isCjkCodepoint } from '@agent/contracts';
+import { get_encoding } from 'tiktoken';
 
 // ── Interface ──────────────────────────────────────────────────────
 
@@ -68,8 +69,9 @@ export const heuristicTokenizer: Tokenizer = {
  * tokenizer via `fromCounter` is always more accurate), but it removes the worst
  * failure mode — silently under-counting non-Latin text and blowing the window.
  *
- * This is the default tokenizer for `ContextManager`. The plain `heuristicTokenizer`
- * remains available for callers who want the legacy length/4 behaviour.
+ * Zero-dependency alternative to `tiktokenTokenizer` (the `ContextManager` default).
+ * Prefer this when you want to avoid the WASM dependency; use `heuristicTokenizer`
+ * for the legacy length/4 behaviour.
  */
 export const cjkAwareTokenizer: Tokenizer = {
   count(text: string): number {
@@ -124,3 +126,25 @@ export function fromCounter(counter: (text: string) => number): Tokenizer {
     },
   };
 }
+
+// ── Real tokenizer (tiktoken) ───────────────────────────────────────
+
+/**
+ * A tokenizer backed by OpenAI's `tiktoken` library using the `cl100k_base`
+ * encoding (GPT-4 / GPT-4o family).  This is a close approximation of DeepSeek's
+ * BPE tokenizer and is dramatically more accurate than any heuristic on code,
+ * JSON, and mixed-language content.
+ *
+ * Encoding is created lazily on first count; the `tiktoken` module itself is
+ * imported eagerly so Node can resolve the WASM binding at load time.
+ */
+let _tiktokenEnc: ReturnType<typeof get_encoding> | null = null;
+
+function tiktokenEncode(text: string): number {
+  if (!_tiktokenEnc) {
+    _tiktokenEnc = get_encoding('cl100k_base');
+  }
+  return _tiktokenEnc.encode(text).length;
+}
+
+export const tiktokenTokenizer: Tokenizer = fromCounter(tiktokenEncode);

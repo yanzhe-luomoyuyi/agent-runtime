@@ -44,7 +44,7 @@ describe('resolveModelLimit', () => {
     expect(resolveModelLimit('gemini-1.5-pro')).toBe(2_000_000);
     expect(resolveModelLimit('deepseek-v4-pro')).toBe(1_000_000);
     expect(resolveModelLimit('deepseek-v4-flash')).toBe(1_000_000);
-    expect(resolveModelLimit('deepseek-chat')).toBe(64_000);
+    expect(resolveModelLimit('deepseek-chat')).toBe(1_000_000);
   });
 
   it('prefers the longer prefix (gpt-4o over gpt-4)', () => {

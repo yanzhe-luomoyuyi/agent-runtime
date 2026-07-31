@@ -37,7 +37,7 @@
 |------|--------|
 | `context/manager.ts` | Token 预算硬顶；atomic tool-call 单元淘汰；近期 pin + `ImportanceClass` 折扣扩窗；`protectVerbatimClasses` 显式保护名单；untrusted 隔离；keyed LLM 主动压缩 |
 | `context/retrieval.ts` | Query-time RAG 注入：gate（minScore / maxChunks / char 预算）→ `kind: 'retrieval'` + untrusted 消息；分数低于真人指令；不持有索引 |
-| `context/tokenizer.ts` | CJK ≈ 1 token/字估算；`fromCounter` 可接 tiktoken |
+| `context/tokenizer.ts` | 默认 `tiktokenTokenizer`（cl100k_base）；可换 CJK-aware / heuristic / `fromCounter` |
 | `context/scratchpad.ts` | 超大工具输出卸载到外部存储，窗口留指针 |
 
 ### D — 控制流
