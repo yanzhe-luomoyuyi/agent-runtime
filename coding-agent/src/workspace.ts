@@ -1,12 +1,14 @@
 /**
  * Path sandbox for a coding workspace.
  *
- * Tools never see absolute user paths that escape `rootDir`.
- * Injected via CLI `--workspace`, UI path, or `AGENT_WORKSPACE`.
+ * Tools never see absolute user paths that escape `rootDir` — not even through
+ * symlinks. Injected via CLI `--workspace`, UI path, or `AGENT_WORKSPACE`.
  */
 
-import { existsSync } from 'node:fs';
-import { isAbsolute, normalize, relative, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, readlinkSync, realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, normalize, relative, resolve } from 'node:path';
+
+const MAX_SYMLINK_DEPTH = 64;
 
 export class WorkspaceEscapeError extends Error {
   constructor(message: string) {
@@ -17,6 +19,8 @@ export class WorkspaceEscapeError extends Error {
 
 export class Workspace {
   readonly rootDir: string;
+  /** Canonical (symlink-resolved) workspace root — the containment baseline. */
+  private readonly rootReal: string;
 
   constructor(rootDir: string) {
     const abs = resolve(rootDir);
@@ -24,9 +28,14 @@ export class Workspace {
       throw new Error(`Workspace root does not exist: ${abs}`);
     }
     this.rootDir = abs;
+    this.rootReal = realpathSync(abs);
   }
 
-  /** Resolve a user-supplied path to an absolute path inside the workspace. */
+  /**
+   * Resolve a user-supplied path to an absolute path inside the workspace.
+   * Throws `WorkspaceEscapeError` on lexical escapes (`..`, absolute, NUL) and
+   * on any symlink chain that would land outside the workspace.
+   */
   resolve(userPath = '.'): string {
     const raw = userPath.trim() === '' ? '.' : userPath;
     if (raw.includes('\0')) {
@@ -37,11 +46,63 @@ export class Workspace {
     if (rel.startsWith('..') || isAbsolute(rel)) {
       throw new WorkspaceEscapeError(`path escapes workspace: ${userPath}`);
     }
-    // Windows drive-letter absolute check already covered by isAbsolute(rel)
-    if (rel.split(sep).includes('..')) {
-      throw new WorkspaceEscapeError(`path escapes workspace: ${userPath}`);
-    }
+    this.assertNoSymlinkEscape(candidate, userPath, new Set());
     return candidate;
+  }
+
+  /**
+   * Walk `candidate` from its deepest existing component upward, rejecting if
+   * following a symlink would escape the workspace. A symlink component's
+   * *target* is checked recursively; a `seen` set breaks symlink cycles
+   * (`link -> link`).
+   */
+  private assertNoSymlinkEscape(candidate: string, userPath: string, seen: Set<string>): void {
+    if (seen.size > MAX_SYMLINK_DEPTH) {
+      throw new WorkspaceEscapeError(`path escapes workspace (symlink depth): ${userPath}`);
+    }
+    if (seen.has(candidate)) {
+      throw new WorkspaceEscapeError(`path escapes workspace (symlink cycle): ${userPath}`);
+    }
+    seen.add(candidate);
+
+    const missing: string[] = [];
+    let cur = candidate;
+    for (;;) {
+      let st;
+      try {
+        st = lstatSync(cur);
+      } catch {
+        st = undefined; // component does not exist (yet) — cannot be a symlink
+      }
+      if (st?.isSymbolicLink()) {
+        // Existing (possibly dangling) symlink: verify its resolved target
+        // stays inside the workspace, then re-check the path below it.
+        const target = readlinkSync(cur);
+        const resolvedTarget = isAbsolute(target)
+          ? normalize(target)
+          : resolve(dirname(cur), target);
+        const through = missing.length > 0 ? resolve(resolvedTarget, ...missing) : resolvedTarget;
+        this.assertNoSymlinkEscape(through, userPath, seen);
+        return;
+      }
+      if (st) {
+        // Existing non-symlink component: its real path must stay inside the
+        // canonical workspace root. `missing` segments below it cannot be
+        // symlinks (they did not exist), so the tail is safe once this holds.
+        const real = realpathSync(cur);
+        const rel = relative(this.rootReal, real);
+        if (rel.startsWith('..') || isAbsolute(rel)) {
+          throw new WorkspaceEscapeError(`path escapes workspace via symlink: ${userPath}`);
+        }
+        return;
+      }
+      const parent = dirname(cur);
+      if (parent === cur) {
+        throw new WorkspaceEscapeError(`cannot resolve path: ${userPath}`);
+      }
+      missing.unshift(basename(cur));
+      cur = parent;
+    }
   }
 
   relative(absPath: string): string {

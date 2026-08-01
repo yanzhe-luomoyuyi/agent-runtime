@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,6 +27,77 @@ describe('Workspace', () => {
       expect(() => ws.resolve('../package.json')).toThrow(WorkspaceEscapeError);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects paths through a symlink pointing outside the workspace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-link-'));
+    const outside = mkdtempSync(join(tmpdir(), 'coding-ws-outside-'));
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'secret');
+      symlinkSync(outside, join(dir, 'link'));
+      const ws = new Workspace(dir);
+      expect(() => ws.resolve('link/secret.txt')).toThrow(WorkspaceEscapeError);
+      expect(() => ws.resolve('link/new.txt')).toThrow(WorkspaceEscapeError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('allows a symlink whose target stays inside the workspace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-link-'));
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'real.txt'), 'hi');
+      symlinkSync('src', join(dir, 'alias'));
+      const ws = new Workspace(dir);
+      expect(() => ws.resolve('alias/real.txt')).not.toThrow();
+      // and the fs tools can actually read through it
+      const tools = Object.fromEntries(createFsTools(ws).map((t) => [t.name, t]));
+      const got = tools.read_file!.run({ path: 'alias/real.txt' }) as { content: string };
+      expect(got.content).toContain('hi');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a dangling symlink that points outside the workspace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-link-'));
+    try {
+      symlinkSync('/nonexistent-target', join(dir, 'dangling'));
+      const ws = new Workspace(dir);
+      expect(() => ws.resolve('dangling/x.txt')).toThrow(WorkspaceEscapeError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a self-referential symlink cycle without hanging', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-link-'));
+    try {
+      symlinkSync('loop', join(dir, 'loop'));
+      const ws = new Workspace(dir);
+      expect(() => ws.resolve('loop/x')).toThrow(WorkspaceEscapeError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('write_file cannot write through an external symlink', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-link-'));
+    const outside = mkdtempSync(join(tmpdir(), 'coding-ws-outside-'));
+    try {
+      symlinkSync(outside, join(dir, 'link'));
+      const ws = new Workspace(dir);
+      const tools = Object.fromEntries(createFsTools(ws).map((t) => [t.name, t]));
+      expect(() => tools.write_file!.run({ path: 'link/evil.txt', content: 'x' })).toThrow(
+        WorkspaceEscapeError,
+      );
+      expect(existsSync(join(outside, 'evil.txt'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 });

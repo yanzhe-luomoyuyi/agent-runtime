@@ -460,7 +460,17 @@ async function driveSse(
     'Connection': 'keep-alive',
   });
 
+  // A client refresh / tab-close destroys the socket mid-stream. Without these
+  // handlers the next res.write() emits an uncaught 'error' event that takes
+  // down the whole UI server; with them, sends after disconnect are no-ops.
+  // (res 'close' = underlying connection terminated, incl. premature — the
+  // reliable disconnect signal; req 'close' can fire when the body finishes.)
+  let clientGone = false;
+  res.on('error', () => { clientGone = true; });
+  res.on('close', () => { clientGone = true; });
+
   const send: SseSend = (event, data) => {
+    if (clientGone) return;
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 

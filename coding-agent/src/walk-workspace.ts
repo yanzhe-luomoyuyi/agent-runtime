@@ -2,7 +2,7 @@
  * Shared workspace file walk with optional gitignore filter.
  */
 
-import { readdirSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 import { createWorkspaceIgnorer, type PathIgnorer } from './gitignore.js';
@@ -17,7 +17,14 @@ export interface WalkOptions {
   startDir?: string;
 }
 
-/** Depth-first walk; visit return false to stop entirely. */
+/**
+ * Depth-first walk; visit return false to stop entirely.
+ *
+ * Symlinks are NOT followed (lstat) — a symlinked dir could point outside the
+ * workspace (exfiltrating secrets via grep/snapshot) or form a cycle
+ * (`a -> b -> a`) that would recurse forever. Matches list_dir/list_tree,
+ * which also treat symlinks as leaves.
+ */
 export function walkWorkspace(rootDir: string, visit: WalkVisit, opts: WalkOptions = {}): void {
   const ignorer = opts.ignorer ?? createWorkspaceIgnorer(rootDir);
   walkDir(rootDir, opts.startDir ?? rootDir, visit, ignorer, opts.maxFileBytes);
@@ -41,10 +48,11 @@ function walkDir(
     const rel = relative(root, abs).split('\\').join('/');
     let st;
     try {
-      st = statSync(abs);
+      st = lstatSync(abs);
     } catch {
       continue;
     }
+    if (st.isSymbolicLink()) continue; // never follow links out of the sandbox
     if (st.isDirectory()) {
       if (ignorer.ignores(rel) || ignorer.ignores(`${rel}/`)) continue;
       if (!walkDir(root, abs, visit, ignorer, maxFileBytes)) return false;

@@ -2,10 +2,11 @@
  * Whitelisted verify recipes — argv append + run_check / run_tests behavior.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { TransientError } from '@agent/harness';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -104,6 +105,66 @@ describe('createRunCheckTool / createRunTestsTool', () => {
       );
       expect(result.ok).toBe(true);
       expect(JSON.parse(result.stdout.trim())).toEqual(['suite.test.ts', '-t', 'only']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a >1MB verbose but green run as ok (no spawnSync maxBuffer kill)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'run-verbose-'));
+    try {
+      const script = join(dir, 'verbose.mjs');
+      writeFileSync(
+        script,
+        `for (let i = 0; i < 20000; i++) console.log('line ' + i + ' '.repeat(80));`,
+      );
+      const tool = createRunTestsTool(new Workspace(dir), {
+        command: [process.execPath, script],
+        timeoutMs: 15_000,
+        maxOutputChars: 10_000,
+      });
+      const result = await Promise.resolve(tool.run({}));
+      // ~1.8MB of output would have tripped spawnSync's 1MB default maxBuffer
+      // (killing the child and reporting a false failure).
+      expect(result.ok).toBe(true);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.length).toBeLessThanOrEqual(10_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('kills the whole process tree on timeout (grandchild does not survive)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'run-timeout-'));
+    try {
+      // Grandchild writes a marker only if it gets reparented (ppid === 1),
+      // i.e. its parent died but IT survived the group kill — the orphan leak.
+      const marker = join(dir, 'orphan-alive.txt');
+      const grandchild = join(dir, 'grandchild.mjs');
+      writeFileSync(
+        grandchild,
+        `import { writeFileSync } from 'node:fs';\n` +
+          `setInterval(() => {\n` +
+          `  if (process.ppid === 1) {\n` +
+          `    try { writeFileSync(${JSON.stringify(marker)}, 'orphan'); } catch {}\n` +
+          `  }\n` +
+          `}, 50);\n`,
+      );
+      const parent = join(dir, 'parent.mjs');
+      writeFileSync(
+        parent,
+        `import { spawn } from 'node:child_process';\n` +
+          `spawn(process.execPath, [${JSON.stringify(grandchild)}], { stdio: 'ignore' });\n` +
+          `setInterval(() => {}, 1000);\n`,
+      );
+      const tool = createRunTestsTool(new Workspace(dir), {
+        command: [process.execPath, parent],
+        timeoutMs: 300,
+      });
+      await expect(Promise.resolve(tool.run({}))).rejects.toBeInstanceOf(TransientError);
+      // Give the SIGTERM -> SIGKILL escalation time, then confirm no orphan.
+      await new Promise((r) => setTimeout(r, 2_500));
+      expect(existsSync(marker)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

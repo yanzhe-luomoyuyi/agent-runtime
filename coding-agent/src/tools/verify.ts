@@ -2,7 +2,7 @@
  * Whitelisted verify recipes (test / build / typecheck / …) — no arbitrary shell.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 import { TransientError } from '@agent/harness';
 import type { ToolDef } from 'durable-agent-runtime';
@@ -64,55 +64,119 @@ export function appendVerifyArgs(
   return [...command, ...extras];
 }
 
-export function runVerifyCommand(
+export async function runVerifyCommand(
   workspace: Workspace,
   recipe: string,
   command: string[],
   opts: { timeoutMs?: number; maxOutputChars?: number; toolLabel?: string } = {},
-): VerifyResult {
+): Promise<VerifyResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxOutputChars = opts.maxOutputChars ?? MAX_OUTPUT_CHARS;
   const label = opts.toolLabel ?? `verify:${recipe}`;
   const [bin, ...args] = command;
   if (!bin) throw new Error(`${label}: command must be a non-empty argv array`);
 
-  const result = spawnSync(bin, args, {
-    cwd: workspace.rootDir,
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    shell: process.platform === 'win32',
-    env: { ...process.env, FORCE_COLOR: '0' },
+  return new Promise<VerifyResult>((resolve, reject) => {
+    const child = spawn(bin, args, {
+      cwd: workspace.rootDir,
+      env: { ...process.env, FORCE_COLOR: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Own process group on POSIX so a timeout can kill npm AND its
+      // vitest/jest/tsc grandchildren, not just the direct child. On win32,
+      // cmd.exe handles the shell and terminateProcessTree falls back to
+      // child.kill().
+      detached: process.platform !== 'win32',
+      shell: process.platform === 'win32',
+      windowsHide: true,
+    });
+
+    // Cap output WHILE it streams (unlike spawnSync's post-hoc truncation,
+    // which lets the 1 MB default maxBuffer kill a verbose-but-green suite).
+    let stdout = '';
+    let stderr = '';
+    const appendCapped = (chunk: Buffer, sink: string): string => {
+      if (sink.length >= maxOutputChars) return sink;
+      const text = chunk.toString('utf8');
+      return sink + text.slice(0, maxOutputChars - sink.length);
+    };
+    child.stdout?.on('data', (d: Buffer) => { stdout = appendCapped(d, stdout); });
+    child.stderr?.on('data', (d: Buffer) => { stderr = appendCapped(d, stderr); });
+
+    let timedOut = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminateProcessTree(child);
+    }, timeoutMs);
+
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code && TRANSIENT_ERRNO.has(code)) {
+        reject(new TransientError(`${label} transient spawn failure (${code}): ${err.message}`));
+        return;
+      }
+      // Non-transient spawn failure (e.g. missing binary): report as a failed run.
+      resolve({
+        ok: false,
+        recipe,
+        command,
+        exitCode: null,
+        stdout: truncate(stdout, maxOutputChars),
+        stderr: truncate(`${stderr}\n${err.message}`.trim(), maxOutputChars),
+      });
+    });
+
+    child.on('close', (code, _signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new TransientError(`${label} timed out after ${timeoutMs}ms (process tree killed)`));
+        return;
+      }
+      if (code !== 0 && looksLikeNpmNetworkBlip(stdout, stderr)) {
+        reject(new TransientError(
+          `${label} transient npm/network failure (exit=${code}): ${summarizeBlip(stdout, stderr)}`,
+        ));
+        return;
+      }
+      resolve({
+        ok: code === 0,
+        recipe,
+        command,
+        exitCode: code,
+        stdout: truncate(stdout, maxOutputChars),
+        stderr: truncate(stderr, maxOutputChars),
+      });
+    });
   });
-  const stdout = truncate(result.stdout ?? '', maxOutputChars);
-  let stderr = truncate(result.stderr ?? '', maxOutputChars);
-  if (result.error) {
-    const err = result.error as NodeJS.ErrnoException;
-    if (err.code && TRANSIENT_ERRNO.has(err.code)) {
-      throw new TransientError(
-        `${label} transient spawn failure (${err.code}): ${err.message}` +
-          (result.signal ? ` (signal=${result.signal})` : ''),
-      );
+}
+
+/**
+ * Kill the child and its whole process group (POSIX), so a timed-out `npm test`
+ * does not leave vitest/jest workers running as orphans. Escalates to SIGKILL
+ * after a short grace period for grandchildren that ignore SIGTERM.
+ */
+function terminateProcessTree(child: ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  const killGroup = (sig: NodeJS.Signals): void => {
+    if (process.platform === 'win32') {
+      child.kill(sig);
+      return;
     }
-    const detail =
-      result.error.message +
-      (result.signal ? ` (signal=${result.signal})` : '') +
-      (err.code === 'ETIMEDOUT' ? ` — timed out after ${timeoutMs}ms` : '');
-    stderr = stderr ? `${stderr}\n${detail}` : detail;
-  }
-  const exitCode = result.status;
-  if (exitCode !== 0 && looksLikeNpmNetworkBlip(stdout, stderr)) {
-    throw new TransientError(
-      `${label} transient npm/network failure (exit=${exitCode}): ${summarizeBlip(stdout, stderr)}`,
-    );
-  }
-  return {
-    ok: exitCode === 0,
-    recipe,
-    command,
-    exitCode,
-    stdout,
-    stderr,
+    try {
+      process.kill(-pid, sig);
+    } catch {
+      child.kill(sig);
+    }
   };
+  killGroup('SIGTERM');
+  const escalate = setTimeout(() => killGroup('SIGKILL'), 2_000);
+  escalate.unref();
 }
 
 export function createRunTestsTool(
