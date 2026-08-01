@@ -17,7 +17,7 @@ import { parseArgs } from './cli-args.js';
 import { loadEnvFile } from './load-env.js';
 import { loadCodingConfig, resolvePackagePath } from './config.js';
 import { createCodingRuntime, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
-import { codingScenarios } from './eval/scenarios.js';
+import { codingScenarios, liveCodingScenarios } from './eval/scenarios.js';
 import { makeEvalRuntimeBuilder } from './eval/runtime.js';
 
 loadEnvFile(join(PACKAGE_ROOT, '.env'));
@@ -34,9 +34,10 @@ async function main(): Promise<void> {
   const cfg = loadCodingConfig();
 
   if (cmd === 'eval') {
+    const live = process.env.AGENT_EVAL_LIVE === '1';
     const report = await runEval(
-      codingScenarios,
-      makeEvalRuntimeBuilder({ regressed: process.env.AGENT_EVAL_REGRESS === '1' }),
+      live ? liveCodingScenarios : codingScenarios,
+      makeEvalRuntimeBuilder({ regressed: process.env.AGENT_EVAL_REGRESS === '1', live }),
     );
     console.log(renderReport(report));
     process.exitCode = report.allPassed ? 0 : 1;
@@ -173,6 +174,8 @@ Env (override config):
   AGENT_RUNS_DIR        runs directory
   AGENT_MAX_TURNS / AGENT_MAX_PROMPT_TOKENS / HARNESS_CRASH_TURN
   AGENT_EVAL_REGRESS=1  use the regressed scripted model for \`eval\` (demo a caught regression)
+  AGENT_EVAL_LIVE=1     use the real configured model for \`eval\` instead of the scripted one
+                        (needs DEEPSEEK_API_KEY, network, costs money, non-deterministic)
 `);
 }
 

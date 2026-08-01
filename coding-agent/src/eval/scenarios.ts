@@ -67,7 +67,7 @@ export const testsPass = (): Scorer => (ctx: ScoreContext) => {
 
 export const GUARDRAIL_SCENARIO_NAME = 'cost-budget guardrail halts a runaway agent';
 
-function scenarioForBug(bug: BugCase): Scenario {
+function scenarioForBug(bug: BugCase, opts: { turnsMax?: number; costMaxUsd?: number } = {}): Scenario {
   return {
     name: bug.name,
     issue: bug.goal,
@@ -77,15 +77,15 @@ function scenarioForBug(bug: BugCase): Scenario {
       testsPass(),
       noToolFailures(),
       toolSuccessRate(1),
-      costUnderUsd(0.01),
+      costUnderUsd(opts.costMaxUsd ?? 0.01),
       noPolicyViolations(),
-      turnsUnder(6),
+      turnsUnder(opts.turnsMax ?? 6),
     ],
   };
 }
 
 export const codingScenarios: Scenario[] = [
-  ...bugCases.map(scenarioForBug),
+  ...bugCases.map((b) => scenarioForBug(b)),
   {
     // Guardrail regression: a deliberately tiny budget must stop the agent
     // mid-run — proves the declarative policy layer *enforces* the budget,
@@ -96,6 +96,16 @@ export const codingScenarios: Scenario[] = [
     checks: [runFailedWith('budget'), policyDenied()],
   },
 ];
+
+/**
+ * Same objective bug fixtures, no guardrail scenario, looser turn/cost budgets
+ * — a real model explores more and costs more than a hand-scripted transcript.
+ * Opt-in only (`AGENT_EVAL_LIVE=1`): needs network + a configured model API key,
+ * and is non-deterministic, so it's never run as part of the default test suite.
+ */
+export const liveCodingScenarios: Scenario[] = bugCases.map((b) =>
+  scenarioForBug(b, { turnsMax: 15, costMaxUsd: 0.05 }),
+);
 
 const bugByScenarioName = new Map(bugCases.map((b) => [b.name, b]));
 

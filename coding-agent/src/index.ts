@@ -39,6 +39,7 @@ export {
 } from './prompt-budget.js';
 export {
   codingScenarios,
+  liveCodingScenarios,
   editedFile,
   testsPass,
   chatModelForEval,

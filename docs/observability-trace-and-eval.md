@@ -290,11 +290,13 @@ Ablation 级对比（pure-recency vs importance+pin）目前在 harness 单测 `
 - **`touchedFile()` 对 coding-agent 不适用**：该 scorer 读 `state.summary.files`，这个字段只有本包 demo 工作流的假工具会填（返回 `{ files: [...] }`）。coding-agent 真实的 `write_file`/`str_replace` 返回的是 `{ path }`，不是 `{ files }`，所以 `touchedFile` 对它会静默永远不匹配。coding-agent 另写了 `editedFile(path)`，直接读工具**调用参数**里的 `path`（`state.stepOutputs['agent.1'].messages[].toolCalls[].arguments.path`），而不是工具返回结果。
 - **新增 `testsPass()` 打分器（客观标准，不在平台内置库里）**：读 transcript 里最后一次 `run_tests` 工具结果，解析其 `{ ok, exitCode }`，只有真的 `ok === true` 才算过——防止模型嘴上说"修好了"但代码没真改对，比字符串匹配最终答案（`proposalContains`）硬得多。
 - **场景库是真实、零依赖的 bug fixture**，不是假数据：`BugCase`（`srcPath`/`buggySrc`/`fix.{oldString,newString}`/`testPath`/`testSrc`）在临时目录写一个真实会跑的 Node 脚本（`node:assert/strict`，无需 `node_modules`），改之前 `npm test` 必挂、改之后必过——这正是 SWE-bench 那套"repo 快照 + 任务 + 可执行验证器"范式的缩微零依赖版。
-- **CI 用脚本化模型**（`ScriptedChatProvider`），不接真实模型——这套 eval 防的是"框架接线/config 改坏了"（Runtime/Policy/Scratchpad 组装回归），不是"模型到底会不会修 bug"；后者需要接真实模型（见 `AGENT_EVAL_REGRESS=1` 之外，另立一个"live 能力回归"档位，本仓库目前尚未做，是有意识地延后）。
+- **CI 用脚本化模型**（`ScriptedChatProvider`），不接真实模型——这套 eval 防的是"框架接线/config 改坏了"（Runtime/Policy/Scratchpad 组装回归），不是"模型到底会不会修 bug"；后者靠下面的 live 模式。
+- **`AGENT_EVAL_LIVE=1`：真实模型能力回归**（`makeEvalRuntimeBuilder({ live: true })`）——把脚本化模型换成 `chatProviderFromEnv` 真实 DeepSeek provider，跑同一批客观 `BugCase` fixture（`liveCodingScenarios`：回合上限 15、成本上限 $0.05，比脚本化场景宽松，因为真实模型会多探索几步）。打分器完全复用（`testsPass()`/`editedFile()` 本就与模型来源无关），验的是**提示词/skill 真的能不能让模型独立读文件、定位并修对 bug**，而不只是接线没断。需要网络 + 真实 API key + 花钱，结果非确定性，因此从不进默认测试套件/CI，只作为手动、偶尔跑的能力回归检查。
 
 ```bash
 npm run dev -w @agent/coding-agent -- eval                      # 脚本化模型，全过
 AGENT_EVAL_REGRESS=1 npm run dev -w @agent/coding-agent -- eval # 演示回归被抓住
+AGENT_EVAL_LIVE=1 npm run dev -w @agent/coding-agent -- eval    # 真实 DeepSeek，测真实能力
 ```
 
 ### 4.5 典型用法骨架
