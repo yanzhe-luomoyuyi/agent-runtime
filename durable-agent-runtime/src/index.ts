@@ -51,3 +51,29 @@ export {
 } from './memory/store.js';
 export { memoryToolDefs, registerMemoryTools } from './memory/tools.js';
 export { FileDeadLetterQueue } from './dead-letter-store.js';
+export {
+  runEval,
+  renderReport,
+  runCompleted,
+  proposalContains,
+  touchedFile,
+  costUnderUsd,
+  noToolFailures,
+  toolSuccessRate,
+  turnsUnder,
+  humanInterventionsUnder,
+  humanInterventionRequested,
+  noPolicyViolations,
+  policyDenied,
+  runFailedWith,
+  llmJudge,
+  heuristicJudge,
+  trajectoryJudge,
+  heuristicTrajectoryJudge,
+  type Scenario,
+  type ScenarioResult,
+  type EvalReport,
+  type Scorer,
+  type ScoreContext,
+  type CheckResult,
+} from './eval.js';

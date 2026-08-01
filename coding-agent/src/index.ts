@@ -37,3 +37,19 @@ export {
   resolveCodingMaxPromptTokens,
   resolveModelIdFromEnv,
 } from './prompt-budget.js';
+export {
+  codingScenarios,
+  editedFile,
+  testsPass,
+  chatModelForEval,
+  GUARDRAIL_SCENARIO_NAME,
+} from './eval/scenarios.js';
+export { makeEvalRuntimeBuilder, type EvalRuntimeOptions } from './eval/runtime.js';
+export {
+  createFixtureWorkspace,
+  bugCases,
+  GREETER_BUG,
+  SUM_BUG,
+  type BugCase,
+} from './eval/fixtures.js';
+

@@ -6,16 +6,19 @@
  *   coding-agent resume <runId>
  *   coding-agent status <runId>
  *   coding-agent trace <runId>
+ *   coding-agent eval
  */
 
 import type { RunState } from 'durable-agent-runtime';
-import { extractAnswer, renderTimeline } from 'durable-agent-runtime';
+import { extractAnswer, renderReport, renderTimeline, runEval } from 'durable-agent-runtime';
 import { join } from 'node:path';
 
 import { parseArgs } from './cli-args.js';
 import { loadEnvFile } from './load-env.js';
 import { loadCodingConfig, resolvePackagePath } from './config.js';
 import { createCodingRuntime, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
+import { codingScenarios } from './eval/scenarios.js';
+import { makeEvalRuntimeBuilder } from './eval/runtime.js';
 
 loadEnvFile(join(PACKAGE_ROOT, '.env'));
 loadEnvFile(join(PACKAGE_ROOT, '.env.local'));
@@ -29,6 +32,17 @@ async function main(): Promise<void> {
   }
 
   const cfg = loadCodingConfig();
+
+  if (cmd === 'eval') {
+    const report = await runEval(
+      codingScenarios,
+      makeEvalRuntimeBuilder({ regressed: process.env.AGENT_EVAL_REGRESS === '1' }),
+    );
+    console.log(renderReport(report));
+    process.exitCode = report.allPassed ? 0 : 1;
+    return;
+  }
+
   const workspaceRoot = resolveWorkspaceRoot(workspaceFlag, process.env, cfg);
 
   if (cmd === 'resume' || cmd === 'status' || cmd === 'trace') {
@@ -138,6 +152,7 @@ function printHelp(): void {
   coding-agent resume <runId>
   coding-agent status <runId>
   coding-agent trace <runId>
+  coding-agent eval
 
 Flags:
   --workspace <path> / -W <path>   override workspace (else AGENT_WORKSPACE / config)
@@ -157,6 +172,7 @@ Env (override config):
   AGENT_LOOP_MODE       agent | planner | reflection (default agent)
   AGENT_RUNS_DIR        runs directory
   AGENT_MAX_TURNS / AGENT_MAX_PROMPT_TOKENS / HARNESS_CRASH_TURN
+  AGENT_EVAL_REGRESS=1  use the regressed scripted model for \`eval\` (demo a caught regression)
 `);
 }
 
