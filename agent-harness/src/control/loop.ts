@@ -35,7 +35,7 @@
  * self-correct (up to `outputRetries` times).
  */
 
-import type { ChatModel, ChatResponse, ChatStreamOutput, JSONSchema, Message, StopReason, ToolCall, ToolInvoker, ToolSpec, Usage } from '@agent/contracts';
+import type { ChatModel, ChatResponse, JSONSchema, Message, StopReason, ToolCall, ToolInvoker, ToolSpec, Usage } from '@agent/contracts';
 import { goalMessage, isGoalMessage, keyScope, systemMessage, toolResultMessage, userMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
@@ -47,7 +47,7 @@ import {
 } from '../context/retrieval.js';
 import { interpretResponse, type PreparedCall } from '../protocol/tool-calling.js';
 import { callSignature, LoopDetector, type LoopDetectorOptions } from '../recovery/loop-detector.js';
-import { withRetry, type RetryOptions } from '../recovery/retry.js';
+import { isTransientError, withRetry, type RetryOptions } from '../recovery/retry.js';
 import { validate, formatErrors, type ValidationError } from '../schema/validate.js';
 import { type TraceCollector } from '../tracing/collector.js';
 import { autoApprove, type Approver } from './human.js';
@@ -214,6 +214,14 @@ export interface AgentRunResult {
 const DEFAULT_MAX_TURNS = 12;
 const DEFAULT_OUTPUT_RETRIES = 3;
 
+// Node runtime globals — not in the ES2022 lib (see recovery/retry.ts).
+declare function setTimeout(fn: () => void, ms: number): unknown;
+
+/** Default sleep seam for the inline stream-retry backoff. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export const DEFAULT_SYSTEM_PROMPT =
   'You are a durable, tool-using agent. Achieve the user goal by calling tools one at a time ' +
   '(or several at once when they are independent). When finished, reply with a final answer and NO tool calls. ' +
@@ -299,6 +307,8 @@ interface LoopState {
   retryCount: number;
   retryBudget: number;
   retryOpts: RetryOptions | undefined;
+  /** Structured-output validation retries remaining this run (decremented per failed final answer). */
+  outputRetriesLeft: number;
   concurrency: number;
   startTime: number;
 }
@@ -338,6 +348,7 @@ function initLoopState(opts: RunAgentOptions): LoopState {
     retryOpts: opts.trace
       ? { ...opts.retry, onRetry: (err: unknown, attempt: number, delayMs: number) => { opts.retry?.onRetry?.(err, attempt, delayMs); opts.trace!.recordRetry(err as Error, attempt); } }
       : opts.retry,
+    outputRetriesLeft: opts.outputRetries ?? DEFAULT_OUTPUT_RETRIES,
     concurrency: opts.toolConcurrency ?? 1,
     startTime: Date.now(),
   };
@@ -425,7 +436,7 @@ async function _callModelBatch(st: LoopState, assembled: Message[], turn: number
 
 async function _handleResponse(
   st: LoopState, resp: ChatResponse, turn: number,
-  opts: RunAgentOptions, outputRetries: number,
+  opts: RunAgentOptions,
 ): Promise<{ done: true; result: AgentRunResult } | { done: false; calls: PreparedCall[] }> {
   st.convo.push(resp.message);
   opts.hooks?.onModelResponse?.(turn, resp.message);
@@ -439,6 +450,18 @@ async function _handleResponse(
     return { done: true, result };
   }
 
+  // A completion cut off by the token limit ('length') is not a valid final
+  // answer — reporting a half-finished answer as success would be a silent
+  // failure. Ask the model to continue (bounded by maxTurns, like any retry).
+  if (resp.stopReason !== 'stop' && resp.stopReason !== 'tool_calls') {
+    st.convo.push({
+      role: 'user',
+      content:
+        'Your previous response was cut off before it finished. Continue exactly from where you stopped; do not repeat earlier content.',
+    });
+    return { done: false, calls: [] };
+  }
+
   const decision = interpretResponse(resp, st.specs);
 
   if (decision.kind === 'final') {
@@ -448,7 +471,8 @@ async function _handleResponse(
     const errors = validateStructuredAnswer(cleaned, opts.outputSchema);
     if (errors.length === 0) return { done: true, result: makeResult(st, cleaned, true, 'finished', turn) };
 
-    if (outputRetries > 0) {
+    if (st.outputRetriesLeft > 0) {
+      st.outputRetriesLeft--;
       st.convo.push({ role: 'user', content: `Answer format incorrect. Errors: ${formatErrors(errors)}. Reply with ONLY the corrected answer.` });
       opts.hooks?.onValidationRetry?.(turn, formatErrors(errors));
       return { done: false, calls: [] };
@@ -549,7 +573,6 @@ async function _execOne(prepared: PreparedCall, st: LoopState, turn: number, opt
 /** Run the agent loop and return the final result (batch mode). */
 export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
   const st = initLoopState(opts);
-  const outputRetries = opts.outputRetries ?? DEFAULT_OUTPUT_RETRIES;
   const noop = () => {};
 
   opts.hooks?.onAgentStart?.(opts.goal);
@@ -581,7 +604,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentRunResult> {
       throw e;
     }
 
-    const outcome = await _handleResponse(st, resp, turn, opts, outputRetries);
+    const outcome = await _handleResponse(st, resp, turn, opts);
     if (outcome.done) { opts.hooks?.onAgentEnd?.(outcome.result); return outcome.result; }
 
     const execResult = await _executeTools(st, outcome.calls, turn, opts, noop);
@@ -611,7 +634,6 @@ export async function* runAgentStreamed(
   opts: RunAgentOptions,
 ): AsyncGenerator<AgentStreamEvent, AgentRunResult, void> {
   const st = initLoopState(opts);
-  const outputRetries = opts.outputRetries ?? DEFAULT_OUTPUT_RETRIES;
   const pending: AgentStreamEvent[] = [];
   const emit = (ev: AgentStreamEvent) => { pending.push(ev); };
   function* flush(): Generator<AgentStreamEvent> { while (pending.length) yield pending.shift()!; }
@@ -635,17 +657,76 @@ export async function* runAgentStreamed(
     let resp: ChatResponse;
 
     if (st.model.chatStream) {
-      // Retry the initial stream creation (catches 429 / 5xx on connect).
-      let stream: AsyncIterable<ChatStreamOutput>;
-      try {
-        stream = await withRetry(
-          async () => st.model.chatStream!({ messages: assembled, tools: st.specs, key: keyScope(st.prefix).turnModel(turn) }),
-          st.retryBudget > 0
-            ? { ...st.retryOpts, retries: st.retryBudget, onRetry: (_err: unknown, attempt: number, delayMs: number) => { st.retryCount++; st.retryOpts?.onRetry?.(_err, attempt, delayMs); } }
-            : st.retryOpts,
-        );
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
+      // Retry the whole stream (create + consume) on transient failure — a
+      // mid-stream socket drop is as transient as a 429 on connect, and the
+      // batch path retries its whole call via withRetry. A generator cannot
+      // yield inside withRetry, so this mirrors its budget/backoff inline.
+      // A retry discards the partial content; tokens already streamed to the
+      // client cannot be unsent, but a fresh attempt beats failing the run.
+      const streamRetries =
+        st.retryBudget > 0
+          ? Math.max(0, st.retryBudget - st.retryCount)
+          : (st.retryOpts?.retries ?? 2);
+      let streamResp: ChatResponse | undefined;
+      let streamError: unknown;
+      for (let attempt = 0; attempt <= streamRetries; attempt++) {
+        try {
+          const stream = await st.model.chatStream!({
+            messages: assembled,
+            tools: st.specs,
+            key: keyScope(st.prefix).turnModel(turn),
+          });
+          let content = '';
+          let thinking = '';
+          const streamToolCalls: ToolCall[] = [];
+          let stopReason: StopReason = 'stop';
+          let usage: Usage = { promptTokens: 0, completionTokens: 0 };
+          let refusalReason: string | undefined;
+
+          for await (const chunk of stream) {
+            if ('stopReason' in chunk) {
+              stopReason = chunk.stopReason; usage = chunk.usage; refusalReason = chunk.refusalReason;
+            } else {
+              if (chunk.thinking) {
+                thinking += chunk.thinking;
+                yield { type: 'thinking_token', turn, token: chunk.thinking, lane: 'agent' };
+              }
+              if (chunk.content) {
+                content += chunk.content;
+                yield { type: 'model_token', turn, token: chunk.content, lane: 'agent' };
+              }
+              if (chunk.toolCall) {
+                streamToolCalls.push(chunk.toolCall);
+                yield { type: 'tool_call_detected', turn, callId: chunk.toolCall.id, name: chunk.toolCall.name, arguments: chunk.toolCall.arguments };
+              }
+            }
+          }
+          streamResp = {
+            message: {
+              role: 'assistant',
+              content: content || undefined,
+              toolCalls: streamToolCalls.length > 0 ? streamToolCalls : undefined,
+              thinking: thinking || undefined,
+            },
+            stopReason,
+            usage,
+            refusalReason,
+            thinking: thinking || undefined,
+          };
+          break;
+        } catch (e) {
+          streamError = e;
+          if (attempt >= streamRetries || !isTransientError(e)) break;
+          st.retryCount++;
+          const delayMs =
+            st.retryOpts?.delayMs?.(attempt + 1) ??
+            Math.min(30_000, 100 * 2 ** attempt) * Math.random();
+          st.retryOpts?.onRetry?.(e, attempt + 1, delayMs);
+          await (st.retryOpts?.sleep ?? sleep)(delayMs);
+        }
+      }
+      if (!streamResp) {
+        const errMsg = streamError instanceof Error ? streamError.message : String(streamError);
         opts.trace?.endModelCallError(errMsg);
         opts.hooks?.onModelError?.(turn, errMsg);
         if (st.retryBudget > 0 && st.retryCount >= st.retryBudget) {
@@ -653,47 +734,11 @@ export async function* runAgentStreamed(
           opts.hooks?.onAgentEnd?.(result);
           yield { type: 'done', result }; return result;
         }
-        throw e;
+        throw streamError;
       }
-      let content = '';
-      let thinking = '';
-      const streamToolCalls: ToolCall[] = [];
-      let stopReason: StopReason = 'stop';
-      let usage: Usage = { promptTokens: 0, completionTokens: 0 };
-      let refusalReason: string | undefined;
-
-      for await (const chunk of stream) {
-        if ('stopReason' in chunk) {
-          stopReason = chunk.stopReason; usage = chunk.usage; refusalReason = chunk.refusalReason;
-        } else {
-          if (chunk.thinking) {
-            thinking += chunk.thinking;
-            yield { type: 'thinking_token', turn, token: chunk.thinking, lane: 'agent' };
-          }
-          if (chunk.content) {
-            content += chunk.content;
-            yield { type: 'model_token', turn, token: chunk.content, lane: 'agent' };
-          }
-          if (chunk.toolCall) {
-            streamToolCalls.push(chunk.toolCall);
-            yield { type: 'tool_call_detected', turn, callId: chunk.toolCall.id, name: chunk.toolCall.name, arguments: chunk.toolCall.arguments };
-          }
-        }
-      }
-      resp = {
-        message: {
-          role: 'assistant',
-          content: content || undefined,
-          toolCalls: streamToolCalls.length > 0 ? streamToolCalls : undefined,
-          thinking: thinking || undefined,
-        },
-        stopReason,
-        usage,
-        refusalReason,
-        thinking: thinking || undefined,
-      };
-      opts.trace?.endModelCall(usage);
-      opts.hooks?.onModelEnd?.(turn, usage);
+      resp = streamResp;
+      opts.trace?.endModelCall(resp.usage);
+      opts.hooks?.onModelEnd?.(turn, resp.usage);
     } else {
       try {
         resp = await _callModelBatch(st, assembled, turn);
@@ -720,7 +765,7 @@ export async function* runAgentStreamed(
       }
     }
 
-    const outcome = await _handleResponse(st, resp, turn, opts, outputRetries);
+    const outcome = await _handleResponse(st, resp, turn, opts);
     if (outcome.done) {
       if (outcome.result.stopReason === 'finished') yield* flush();
       opts.hooks?.onAgentEnd?.(outcome.result);

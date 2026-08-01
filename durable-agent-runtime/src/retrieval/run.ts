@@ -10,7 +10,7 @@
  */
 
 import type { CorpusScoped } from '@agent/contracts';
-import { keyScope } from '@agent/contracts';
+import { keyScope, runtimeToolCallId } from '@agent/contracts';
 
 import { collectSkillCorpora, resolveRunCorpusId } from './corpus.js';
 import {
@@ -128,6 +128,21 @@ export async function systemRetrieveForStep(
 
   const hasTool = seam.listToolNames().includes(searchTool);
   if (hasTool) {
+    const callId = runtimeToolCallId(
+      seam.state.currentPhase!,
+      seam.state.currentStep!,
+      searchTool,
+      keyScope().retrieveOnce(),
+    );
+    // Resume: a keyed retrieve that already completed is replayed from the
+    // event log into state.toolResults. Return those cached hits instead of
+    // letting the budget check short-circuit to undefined — dropping the RAG
+    // context would make the resumed transcript diverge from the live run.
+    // (Mirrors the isReplay guard on RuntimeToolInvoker; the budget below only
+    // gates NEW searches.)
+    if (callId in seam.state.toolResults) {
+      return normalizeSearchHits(seam.state.toolResults[callId]);
+    }
     if (countDocumentSearchesInState(seam.state, searchTool) >= policy.maxRetrieves) {
       return undefined;
     }

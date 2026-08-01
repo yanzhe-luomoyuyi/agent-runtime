@@ -124,6 +124,55 @@ export function eventDurability(type: AgentEvent['type']): EventDurability {
   }
 }
 
+/**
+ * Validate the shape of a parsed event. The loader can't rely on
+ * `JSON.parse` alone to detect a torn write: a crash mid-`writeFileSync` can
+ * leave a VALID-JSON prefix of the event (e.g. a `ToolCallSucceeded` truncated
+ * at a field boundary, missing its trailing `ts`). That would otherwise be
+ * replayed as a corrupt event (wrong idempotency cache → duplicate side
+ * effect on resume). Every recorder appends `ts` LAST, so requiring `type` +
+ * `ts` plus per-type identity fields catches every realistic truncation point
+ * without false-positiving on legitimately-`undefined` value fields (`result`,
+ * `output`, `summary`, ...) that JSON round-trip drops.
+ */
+export function isValidEventShape(e: unknown): e is AgentEvent {
+  if (!e || typeof e !== 'object') return false;
+  const o = e as Record<string, unknown>;
+  if (typeof o.type !== 'string' || o.type.length === 0 || typeof o.ts !== 'string') return false;
+  const id = (...keys: string[]): boolean => keys.every((k) => typeof o[k] === 'string');
+  switch (o.type) {
+    case 'RunStarted':
+      return id('runId', 'workflow');
+    case 'PhaseStarted':
+      return id('phase');
+    case 'StepStarted':
+      return id('phase', 'stepId') && typeof o.step === 'number';
+    case 'ToolCallRequested':
+    case 'ToolCallSucceeded':
+      return id('callId', 'tool');
+    case 'ToolCallFailed':
+      return id('callId', 'tool', 'error');
+    case 'PolicyDenied':
+      return id('scope', 'target', 'code', 'reason');
+    case 'HumanIntervention':
+      return id('action') && typeof o.turn === 'number';
+    case 'ModelCalled':
+      return id('callId', 'phase') && typeof o.step === 'number';
+    case 'StepCompleted':
+      return id('phase', 'stepId') && typeof o.step === 'number';
+    case 'PhaseCompleted':
+      return id('phase');
+    case 'PhaseSkipped':
+      return id('phase', 'reason');
+    case 'RunCompleted':
+      return true; // summary may be any value
+    case 'RunFailed':
+      return id('error');
+    default:
+      return false; // unknown event type is not one of ours
+  }
+}
+
 export interface EventLogOptions {
   /**
    * Flush buffered relaxed-tier events once this many have accumulated, even
@@ -197,7 +246,12 @@ export class EventLog {
       try {
         const raw = JSON.parse(readFileSync(singlePath, 'utf8')) as unknown;
         if (Array.isArray(raw)) {
-          for (const e of raw as AgentEvent[]) this.events.push(e);
+          for (const e of raw) {
+            // A torn rewrite can be valid JSON with an incomplete event — keep
+            // the valid prefix instead of replaying (or discarding) the tail.
+            if (!isValidEventShape(e)) break;
+            this.events.push(e);
+          }
         }
       } catch {
         // torn/corrupt rewrite — treat as empty; caller can fall back to full replay failure
@@ -213,18 +267,24 @@ export class EventLog {
       .filter((f) => seqRe.test(f))
       .sort();
     for (const file of files) {
+      let raw: unknown;
       try {
-        const raw = JSON.parse(readFileSync(join(_dir, file), 'utf8')) as unknown;
-        // A file holds either one event (the common case) or a batch (a JSON
-        // array) written by writeBatch() when a critical event was combined
-        // with whatever relaxed events were pending at the time.
-        if (Array.isArray(raw)) {
-          for (const e of raw as AgentEvent[]) this.events.push(e);
-        } else {
-          this.events.push(raw as AgentEvent);
-        }
+        raw = JSON.parse(readFileSync(join(_dir, file), 'utf8'));
       } catch {
-        break; // torn trailing write — stop at the last valid event (valid prefix)
+        break; // torn trailing write — invalid JSON; stop at the last valid event
+      }
+      // A torn write can also be VALID JSON (an object truncated at a field
+      // boundary, e.g. missing its trailing `ts`). Validate the event shape so
+      // an incomplete event is treated as torn too, not replayed as corrupt.
+      // A file holds either one event (the common case) or a batch (a JSON
+      // array) written by writeBatch() when a critical event was combined
+      // with whatever relaxed events were pending at the time.
+      if (Array.isArray(raw)) {
+        if (!raw.every(isValidEventShape)) break;
+        for (const e of raw as AgentEvent[]) this.events.push(e);
+      } else {
+        if (!isValidEventShape(raw)) break;
+        this.events.push(raw as AgentEvent);
       }
     }
     this.writtenCount = this.events.length; // everything loaded from disk is already durable

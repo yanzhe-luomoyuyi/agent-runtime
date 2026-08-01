@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ChatModel } from '@agent/contracts';
 import { ContextManager } from '../src/context/manager.js';
-import { runAgent } from '../src/control/loop.js';
+import { runAgent, runAgentStreamed, type AgentRunResult } from '../src/control/loop.js';
+import { TransientError } from '../src/recovery/retry.js';
 import {
   MockToolInvoker,
   RuleChatModel,
@@ -171,5 +173,113 @@ describe('agent loop', () => {
     });
     expect(res.stopReason).toBe('loop_detected');
     expect(res.turns).toBe(2);
+  });
+});
+
+describe('loop termination & error handling', () => {
+  const outputSchema = {
+    type: 'object',
+    properties: { answer: { type: 'string' } },
+    required: ['answer'],
+  } as const;
+
+  it('bounds structured-output validation retries by outputRetries, not maxTurns', async () => {
+    const tools = new MockToolInvoker([]);
+    const model = new RuleChatModel(() => finalResponse('not valid json'));
+    const res = await runAgent({
+      goal: 'x', model, tools,
+      outputSchema,
+      outputRetries: 1,
+      maxTurns: 10,
+    });
+    // 1 initial + 1 retry; the next invalid answer hits the (now reachable)
+    // invalid_output terminal instead of retrying until maxTurns.
+    expect(res.stopReason).toBe('invalid_output');
+    expect(res.finished).toBe(false);
+    expect(model.calls).toBe(2);
+  });
+
+  it('default outputRetries also terminate at invalid_output, not max_turns', async () => {
+    const tools = new MockToolInvoker([]);
+    const model = new RuleChatModel(() => finalResponse('not valid json'));
+    const res = await runAgent({
+      goal: 'x', model, tools,
+      outputSchema: { type: 'object', properties: {}, required: [] },
+      maxTurns: 20,
+    });
+    expect(res.stopReason).toBe('invalid_output');
+    expect(model.calls).toBe(4); // 1 + DEFAULT_OUTPUT_RETRIES (3)
+  });
+
+  it('treats a token-truncated answer (stopReason length) as not-final and continues', async () => {
+    const tools = new MockToolInvoker([]);
+    let calls = 0;
+    const model = new RuleChatModel(() => {
+      calls++;
+      if (calls === 1) {
+        return {
+          message: { role: 'assistant', content: 'The answer is' },
+          stopReason: 'length' as const,
+          usage: { promptTokens: 1, completionTokens: 1 },
+        };
+      }
+      return finalResponse('The answer is 42');
+    });
+    const res = await runAgent({ goal: 'x', model, tools, maxTurns: 5 });
+    expect(res.finished).toBe(true);
+    expect(res.answer).toBe('The answer is 42');
+    expect(calls).toBe(2);
+    expect(res.messages.some((m) => m.role === 'user' && m.content?.includes('cut off'))).toBe(true);
+  });
+
+  it('streaming: retries a transient mid-stream failure and completes', async () => {
+    const tools = new MockToolInvoker([]);
+    let attempts = 0;
+    const model: ChatModel = {
+      name: 'flaky-stream',
+      chat: async () => { throw new Error('unused'); },
+      async *chatStream() {
+        attempts++;
+        if (attempts === 1) throw new TransientError('socket drop');
+        yield { content: 'recovered answer' };
+        yield { stopReason: 'stop', usage: { promptTokens: 1, completionTokens: 1 } };
+      },
+    };
+    let result!: AgentRunResult;
+    for await (const ev of runAgentStreamed({
+      goal: 'x', model, tools,
+      retry: { retries: 2, sleep: async () => {}, delayMs: () => 0 },
+    })) {
+      if (ev.type === 'done') result = ev.result;
+    }
+    expect(result.finished).toBe(true);
+    expect(result.answer).toBe('recovered answer');
+    expect(attempts).toBe(2);
+  });
+
+  it('streaming: a truncated stream (stopReason length) is not reported finished', async () => {
+    const tools = new MockToolInvoker([]);
+    let streamCalls = 0;
+    const model: ChatModel = {
+      name: 'truncating-stream',
+      chat: async () => { throw new Error('unused'); },
+      async *chatStream() {
+        streamCalls++;
+        if (streamCalls === 1) {
+          yield { content: 'The answer is' };
+          yield { stopReason: 'length', usage: { promptTokens: 1, completionTokens: 1 } };
+        } else {
+          yield { content: 'The answer is 42' };
+          yield { stopReason: 'stop', usage: { promptTokens: 1, completionTokens: 1 } };
+        }
+      },
+    };
+    let result!: AgentRunResult;
+    for await (const ev of runAgentStreamed({ goal: 'x', model, tools, maxTurns: 5 })) {
+      if (ev.type === 'done') result = ev.result;
+    }
+    expect(result.finished).toBe(true);
+    expect(result.answer).toBe('The answer is 42');
+    expect(streamCalls).toBe(2);
   });
 });

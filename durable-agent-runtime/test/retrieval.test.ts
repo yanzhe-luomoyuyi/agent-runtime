@@ -19,7 +19,9 @@ import {
   resolveRetrievalPolicy,
   resolveRunCorpusId,
   StoreRetriever,
+  systemRetrieveForStep,
   systemRetrieveOnce,
+  type SystemRetrieveSeam,
 } from '../src/retrieval/index.js';
 import { Runtime } from '../src/runtime.js';
 import { ToolRegistry, type ToolDef } from '../src/tools/registry.js';
@@ -268,6 +270,49 @@ describe('countDocumentSearchesInState', () => {
       modelResults: {},
     };
     expect(countDocumentSearchesInState(state)).toBe(2);
+  });
+});
+
+describe('systemRetrieveForStep resume replay', () => {
+  it('returns cached hits on resume instead of dropping RAG context when the budget is exhausted', async () => {
+    const cachedHits = [
+      { id: 'login-doc', text: 'The login page crashes when session is null.', score: 0.9 },
+    ];
+    const seam: SystemRetrieveSeam = {
+      state: {
+        runId: 'r',
+        status: 'running',
+        currentPhase: 'agent',
+        currentStep: 1,
+        phases: {},
+        stepOutputs: {},
+        // The keyed system retrieve already completed in the live run and was
+        // replayed into toolResults on resume.
+        toolResults: {
+          'agent.1:retrieve:once:document_search': cachedHits,
+        },
+        modelResults: {},
+      },
+      listToolNames: () => ['document_search'],
+      callTool: async () => {
+        throw new Error('system retrieve must not re-execute on resume');
+      },
+      callModel: async () => {
+        throw new Error('query rewrite must not run on resume');
+      },
+    };
+    const hits = await systemRetrieveForStep({
+      seam,
+      goal: 'Login page crashes with a null session',
+      retrieval: { corpusId: 'kb' },
+      // once mode → maxRetrieves=1, and the replayed call already counts as
+      // used — the pre-fix code short-circuited on the budget check here and
+      // returned undefined, dropping the RAG context from the resumed
+      // transcript (non-deterministic replay).
+      policy: resolveRetrievalPolicy({ mode: 'once' }),
+      skills: [],
+    });
+    expect(hits).toEqual(cachedHits);
   });
 });
 

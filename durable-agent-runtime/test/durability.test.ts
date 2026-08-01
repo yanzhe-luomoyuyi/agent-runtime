@@ -4,14 +4,14 @@
  * buffered relaxed tier, and a replay-cost benchmark that quantifies why
  * snapshots matter for long-running workflows.
  */
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { issueWorkflow } from '../src/app/issue-workflow.js';
-import { EventLog, eventDurability, runDir } from '../src/eventlog.js';
+import { EventLog, eventDurability, isValidEventShape, runDir } from '../src/eventlog.js';
 import { MockModelProvider } from '../src/model/provider.js';
 import { reduce } from '../src/reducer.js';
 import { Runtime } from '../src/runtime.js';
@@ -338,5 +338,93 @@ describe('benchmark: replay cost, full log vs. snapshot-assisted resume', () => 
 
     // Correctness is never traded away for the write-count win.
     expect(state).toEqual(reduce(log.all(), runId));
+  });
+});
+
+describe('torn-write shape validation', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agent-torn-shape-'));
+  });
+
+  it('isValidEventShape accepts well-formed events of every type', () => {
+    const events: AgentEvent[] = [
+      { type: 'RunStarted', runId: 'r', input: { issue: 'x' }, workflow: 'w', ts: now() },
+      { type: 'PhaseStarted', phase: 'p', ts: now() },
+      { type: 'StepStarted', phase: 'p', step: 1, stepId: 's', ts: now() },
+      { type: 'ToolCallRequested', callId: 'c', tool: 't', args: {}, ts: now() },
+      { type: 'ToolCallSucceeded', callId: 'c', tool: 't', result: { ok: true }, ts: now() },
+      { type: 'ToolCallFailed', callId: 'c', tool: 't', error: 'boom', ts: now() },
+      { type: 'PolicyDenied', scope: 'tool', target: 't', code: 'denied', reason: 'no', ts: now() },
+      { type: 'HumanIntervention', action: 'steer', turn: 1, ts: now() },
+      {
+        type: 'ModelCalled',
+        callId: 'm',
+        phase: 'p',
+        step: 1,
+        prompt: 'p',
+        response: 'r',
+        promptTokens: 1,
+        completionTokens: 1,
+        costUsd: 0,
+        latencyMs: 1,
+        ts: now(),
+      },
+      { type: 'StepCompleted', phase: 'p', step: 1, stepId: 's', output: { ok: true }, ts: now() },
+      { type: 'PhaseCompleted', phase: 'p', ts: now() },
+      { type: 'PhaseSkipped', phase: 'p', reason: 'r', ts: now() },
+      { type: 'RunCompleted', summary: { ok: true }, ts: now() },
+      { type: 'RunFailed', error: 'boom', ts: now() },
+    ];
+    for (const e of events) expect(isValidEventShape(e)).toBe(true);
+  });
+
+  it('rejects a valid-JSON prefix truncated at a field boundary (the torn-write hole)', () => {
+    // A crash mid-writeFileSync can leave a valid JSON OBJECT that is missing
+    // its trailing fields — JSON.parse alone can't see the tear.
+    expect(isValidEventShape(JSON.parse('{"type":"ToolCallSucceeded","callId":"c1","tool":"x"}')))
+      .toBe(false); // missing ts
+    expect(isValidEventShape(JSON.parse('{"type":"ToolCallSucceeded","callId":"c1"}')))
+      .toBe(false); // missing tool + ts
+    expect(
+      isValidEventShape(JSON.parse('{"type":"ModelCalled","callId":"m1","phase":"agent","step":1}')),
+    ).toBe(false); // missing ts
+    expect(isValidEventShape(JSON.parse('{"type":"TotallyUnknown","ts":"2026-01-01T00:00:00Z"}')))
+      .toBe(false); // unknown type
+    expect(isValidEventShape(null)).toBe(false);
+    expect(isValidEventShape('nope')).toBe(false);
+  });
+
+  it('seq loader stops at a torn-but-valid-JSON event file (valid prefix)', () => {
+    const runId = 'run-torn-shape';
+    const run = runDir(dir, runId);
+    mkdirSync(run, { recursive: true });
+    writeFileSync(
+      join(run, '000000000000.json'),
+      JSON.stringify({ type: 'RunStarted', runId, input: { issue: 'x' }, workflow: 'w', ts: now() }),
+    );
+    // Torn write that is still valid JSON — truncated before `ts`.
+    writeFileSync(
+      join(run, '000000000001.json'),
+      JSON.stringify({ type: 'ToolCallSucceeded', callId: 'c1', tool: 'searchCode' }),
+    );
+    const log = new EventLog(run);
+    expect(log.all().map((e) => e.type)).toEqual(['RunStarted']);
+    expect(log.length).toBe(1);
+  });
+
+  it('single-file loader keeps the valid prefix when a trailing event is shape-corrupt', () => {
+    const runId = 'run-single-shape';
+    const run = runDir(dir, runId);
+    mkdirSync(run, { recursive: true });
+    writeFileSync(
+      join(run, 'events.json'),
+      JSON.stringify([
+        { type: 'RunStarted', runId, input: { issue: 'x' }, workflow: 'w', ts: now() },
+        { type: 'ToolCallSucceeded', callId: 'c1', tool: 'searchCode' }, // missing ts
+      ]),
+    );
+    const log = new EventLog(run, { optimisticConcurrency: false });
+    expect(log.all().map((e) => e.type)).toEqual(['RunStarted']);
   });
 });
