@@ -8,6 +8,7 @@ dist/
 .agent-runs/
 .coding-agent-runs/
 .coding-agent-memory/
+.coding-agent-dead-letters/
 .agent-cache.json
 *.log
 

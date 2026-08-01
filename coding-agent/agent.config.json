@@ -35,7 +35,7 @@
   "run": {
     "maxTurns": 36,
     "runsDir": ".coding-agent-runs",
-    "autoApproveWrites": false,
+    "autoApproveWrites": true,
     "toolConcurrency": 8,
     "toolRetry": { "retries": 2 },
     "compaction": {
@@ -51,6 +51,10 @@
     "memory": {
       "enabled": false,
       "storeDir": ".coding-agent-memory"
+    },
+    "deadLetter": {
+      "enabled": true,
+      "storeDir": ".coding-agent-dead-letters"
     },
     "loopMode": "agent",
     "planner": {

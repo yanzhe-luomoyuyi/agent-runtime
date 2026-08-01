@@ -50,3 +50,4 @@ export {
   type MemoryQueryOptions,
 } from './memory/store.js';
 export { memoryToolDefs, registerMemoryTools } from './memory/tools.js';
+export { FileDeadLetterQueue } from './dead-letter-store.js';

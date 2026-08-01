@@ -11,6 +11,7 @@ import {
   type ModelPricing,
   type Policy,
   type HarnessLoopMode,
+  type RateLimitRule,
 } from 'durable-agent-runtime';
 
 import { PACKAGE_ROOT } from './paths.js';
@@ -80,6 +81,13 @@ export interface CodingToolRetrySection {
   retries: number;
 }
 
+export interface CodingDeadLetterSection {
+  /** Record tool calls that exhaust every retry to a durable queue for human triage. */
+  enabled: boolean;
+  /** Relative to package root, or absolute. */
+  storeDir: string;
+}
+
 export interface CodingRunSection {
   maxTurns: number;
   runsDir: string;
@@ -121,6 +129,8 @@ export interface CodingRunSection {
     /** Relative to package root, or absolute. One JSON file per workspace scope. */
     storeDir: string;
   };
+  /** `FileDeadLetterQueue` wiring — see `RuntimeOptions.deadLetterQueue`. */
+  deadLetter: CodingDeadLetterSection;
   /** Default harness control-flow mode (`agent` | `planner` | `reflection`). */
   loopMode: HarnessLoopMode;
   planner: {
@@ -151,7 +161,10 @@ export interface CodingConfigFile {
     }>;
   };
   run?: Partial<
-    Omit<CodingRunSection, 'compaction' | 'scratchpad' | 'memory' | 'planner' | 'reflection' | 'toolRetry'>
+    Omit<
+      CodingRunSection,
+      'compaction' | 'scratchpad' | 'memory' | 'planner' | 'reflection' | 'toolRetry' | 'deadLetter'
+    >
   > & {
     compaction?: Partial<CodingRunSection['compaction']>;
     scratchpad?: Partial<CodingRunSection['scratchpad']>;
@@ -159,11 +172,13 @@ export interface CodingConfigFile {
     planner?: Partial<CodingRunSection['planner']>;
     reflection?: Partial<CodingRunSection['reflection']>;
     toolRetry?: CodingToolRetrySection | false;
+    deadLetter?: Partial<CodingDeadLetterSection>;
   };
   policy?: {
     allowedTools?: string[];
     maxCostUsd?: number;
     redactions?: string[];
+    rateLimits?: Record<string, RateLimitRule>;
   };
   pricing?: Partial<ModelPricing>;
 }
@@ -224,7 +239,7 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
   run: {
     maxTurns: 36,
     runsDir: '.coding-agent-runs',
-    autoApproveWrites: false,
+    autoApproveWrites: true,
     toolConcurrency: 8,
     toolRetry: { retries: 2 },
     compaction: {
@@ -241,6 +256,10 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     memory: {
       enabled: false,
       storeDir: '.coding-agent-memory',
+    },
+    deadLetter: {
+      enabled: true,
+      storeDir: '.coding-agent-dead-letters',
     },
     loopMode: 'agent',
     planner: {
@@ -344,6 +363,7 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
       memory: { ...base.run.memory, ...overlay.run?.memory },
       planner: { ...base.run.planner, ...overlay.run?.planner },
       reflection: { ...base.run.reflection, ...overlay.run?.reflection },
+      deadLetter: { ...base.run.deadLetter, ...overlay.run?.deadLetter },
     },
     policy: {
       allowedTools: overlay.policy?.allowedTools ?? base.policy.allowedTools,
@@ -352,6 +372,7 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
         overlay.policy?.redactions !== undefined
           ? resolveRedactions(overlay.policy.redactions)
           : base.policy.redactions,
+      rateLimits: overlay.policy?.rateLimits ?? base.policy.rateLimits,
     },
     pricing: overlay.pricing
       ? ({ ...(base.pricing ?? {}), ...overlay.pricing } as ModelPricing)
@@ -456,5 +477,6 @@ export function configToPolicy(cfg: CodingConfig): Policy {
     allowedTools: cfg.policy.allowedTools,
     maxCostUsd: cfg.policy.maxCostUsd,
     redactions: cfg.policy.redactions,
+    rateLimits: cfg.policy.rateLimits,
   };
 }

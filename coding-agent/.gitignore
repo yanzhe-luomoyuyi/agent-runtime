@@ -4,3 +4,6 @@
 
 # Cross-session long-term memory store (FileMemoryStore)
 .coding-agent-memory/
+
+# Dead-letter queue (FileDeadLetterQueue)
+.coding-agent-dead-letters/

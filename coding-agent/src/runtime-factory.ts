@@ -2,6 +2,8 @@
  * Assemble a durable coding Runtime: workspace tools + harness + optional DeepSeek chat.
  */
 
+import { join } from 'node:path';
+
 import type { Approver } from '@agent/contracts';
 import {
   loadSkillFile,
@@ -12,6 +14,7 @@ import {
 } from '@agent/harness';
 import {
   createHarnessWorkflow,
+  FileDeadLetterQueue,
   FileMemoryStore,
   registerMemoryTools,
   Runtime,
@@ -91,6 +94,11 @@ export interface CodingRuntimeOptions {
    */
   longTermMemory?: boolean;
   /**
+   * Record tool calls that exhaust every retry to a durable dead-letter queue.
+   * Default: `config.run.deadLetter.enabled`.
+   */
+  deadLetter?: boolean;
+  /**
    * Harness control-flow mode. Default: `config.run.loopMode`.
    */
   loopMode?: HarnessLoopMode;
@@ -150,6 +158,11 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     const store = new FileMemoryStore(resolvePackagePath(cfg.run.memory.storeDir));
     registerMemoryTools(tools, store, workspaceMemoryScope(root));
   }
+
+  const deadLetterEnabled = opts.deadLetter ?? cfg.run.deadLetter.enabled;
+  const deadLetterQueue = deadLetterEnabled
+    ? new FileDeadLetterQueue(join(resolvePackagePath(cfg.run.deadLetter.storeDir), 'queue.json'))
+    : undefined;
 
   const loopMode = opts.loopMode ?? cfg.run.loopMode;
   const stream = opts.stream ?? true;
@@ -258,6 +271,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     workflow,
     pricing: opts.pricing ?? cfg.pricing,
     policy,
+    deadLetterQueue,
     onEvent: opts.onEvent,
     onStreamEvent: opts.onStreamEvent,
   });
