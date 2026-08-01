@@ -41,6 +41,9 @@ npm run ui -w @agent/coding-agent
 
 可调默认值集中在包根 [`agent.config.json`](./agent.config.json)（加载器：`src/config.ts`）：人设 / skill、模型、workspace、工具限额、`maxTurns`、compaction、policy、pricing。环境变量（`DEEPSEEK_*` / `AGENT_*`）覆盖文件；调用方参数再覆盖。可用 `AGENT_CONFIG` 指向另一份 JSON。
 
+- **死信队列**（`run.deadLetter`，默认 `enabled: true`）——工具调用耗尽重试后仍失败，内容寻址记录到 `run.deadLetter.storeDir`（默认 `.coding-agent-dead-letters/queue.json`），供人工复盘/`retryDeadLetter()` 重放；只记录不阻断，`CodingRuntimeOptions.deadLetter` 可按次覆盖。
+- **按工具限流**（`policy.rateLimits`，默认空/不限）——token-bucket，格式同 `durable-agent-runtime` 的 `RateLimitRule`（`{ capacity, refillPerSec }`），按需在 `agent.config.json` 里显式加。
+
 ## CLI
 
 ```bash
@@ -48,3 +51,12 @@ npm test -w @agent/coding-agent
 DEEPSEEK_API_KEY=... AGENT_AUTO_APPROVE=1 npm run dev -w @agent/coding-agent -- "<goal>"
 npm run dev -w @agent/coding-agent -- --workspace /path/to/repo "<goal>"
 ```
+
+## Eval
+
+```bash
+npm run dev -w @agent/coding-agent -- eval                      # 脚本化模型，无网络，全过
+AGENT_EVAL_REGRESS=1 npm run dev -w @agent/coding-agent -- eval # 演示回归被抓住，退出码 1
+```
+
+两个真实、零依赖的 bug fixture（`src/eval/fixtures.ts`）+ 一个成本预算护栏场景（`src/eval/scenarios.ts`）。核心是**客观标准**：`testsPass()` 打分器读 agent 自己调用 `run_tests` 的真实结果（`{ ok, exitCode }`），不是字符串匹配最终答案——`AGENT_EVAL_REGRESS=1` 会换上一个瞎猜、不读文件就改的脚本，`str_replace` 直接报错，`run_tests` 永远不会被叫到，`testsPass()` 如实报 `run_tests was never called`。详见 [docs/observability-trace-and-eval.md](../docs/observability-trace-and-eval.md)（§4.6）。

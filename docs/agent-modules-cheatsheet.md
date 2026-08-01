@@ -89,7 +89,7 @@
 | `model/chat-provider.ts` | `ChatModelProvider.chat(messages, tools) → ChatResponse` + envelope 编解码（durable `callChat`） |
 | `model/provider.ts` / `chat-provider.ts` | 文本 / Chat provider；`Usage.cachedPromptTokens` 来自 provider |
 | `tools/registry.ts` | `ToolDef/ToolRegistry` — 本地工具和 MCP 工具统一接口 |
-| `index.ts` | 库导出：供外部宿主（如 coding-agent）使用 Runtime / harness-adapter / ToolRegistry |
+| `index.ts` | 库导出：供外部宿主（如 coding-agent）使用 Runtime / harness-adapter / ToolRegistry / `FileDeadLetterQueue` / `eval.ts` 全套打分器（`runEval`/`renderReport`/`Scenario`/scorers） |
 
 ### MCP（共享 SDK）
 | 模块 | 一句话 |
