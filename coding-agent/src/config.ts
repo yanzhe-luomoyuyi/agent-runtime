@@ -15,6 +15,7 @@ import {
 } from 'durable-agent-runtime';
 
 import { PACKAGE_ROOT } from './paths.js';
+import { MUTATING_FS_TOOLS } from './tools/fs-tools.js';
 
 export type SkillLoadMode = 'eager' | 'on_demand';
 
@@ -102,6 +103,12 @@ export interface CodingLoopSection {
   windowSize?: number;
   /** Per-tool overrides for `limit`. */
   toolLimits?: Record<string, number>;
+  /**
+   * Sequence repeats (A→B,A→B) only count when at least one call is in this
+   * set. Default: the mutating FS tools — keeps `write→test` edit-verify
+   * cycles detectable without flagging legitimate `grep→read` exploration.
+   */
+  sequenceMutatingTools?: string[];
 }
 
 export interface CodingRunSection {
@@ -282,6 +289,9 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     },
     loop: {
       windowSize: 16,
+      // Sequence detection only fires on cycles involving a mutating tool —
+      // read/verify cycles (grep→read, test→read) repeat legitimately.
+      sequenceMutatingTools: [...MUTATING_FS_TOOLS],
       toolLimits: {
         // Read-only sensing tools repeat legitimately (re-check state after edits).
         read_file: 8,

@@ -24,6 +24,14 @@ export interface LoopDetectorOptions {
   sequenceLengths?: number[];
   /** How many times a sequence must appear to trip. Default 2 (i.e. appears twice). */
   sequenceLimit?: number;
+  /**
+   * When set, a repeating sequence only counts if at least one of its calls
+   * is a tool in this set (typically mutating/write tools). Hosts with
+   * legitimate read/verify cycles (grep→read, edit→test) keep sequence
+   * detection on without false positives. Pass `[]` to disable sequence
+   * detection entirely. Default: unset — every sequence counts.
+   */
+  sequenceMutatingTools?: string[];
 }
 
 interface CallEntry {
@@ -44,6 +52,7 @@ export class LoopDetector {
   private readonly seqDetection: boolean;
   private readonly seqLengths: number[];
   private readonly seqLimit: number;
+  private readonly seqMutating: Set<string> | undefined;
 
   /**
    * @param opts  Either a plain `number` (limit only, backward-compatible) or a
@@ -58,6 +67,9 @@ export class LoopDetector {
     this.seqDetection = resolved.sequenceDetection ?? true;
     this.seqLengths = resolved.sequenceLengths ?? [2];
     this.seqLimit = resolved.sequenceLimit ?? 2;
+    this.seqMutating = resolved.sequenceMutatingTools
+      ? new Set(resolved.sequenceMutatingTools)
+      : undefined;
   }
 
   /** Record one tool call. `name` is the tool name, `sig` is `callSignature(name, args)`. */
@@ -85,7 +97,7 @@ export class LoopDetector {
     if (this.seqDetection && this.window.length >= 2) {
       for (const len of this.seqLengths) {
         if (this.window.length < len * 2) continue;
-        if (sequenceCount(this.window, len) >= this.seqLimit) return true;
+        if (sequenceCount(this.window, len, this.seqMutating) >= this.seqLimit) return true;
       }
     }
 
@@ -104,12 +116,25 @@ export class LoopDetector {
 /**
  * Count how many times the last `len` entries form a sequence that appears
  * (non-overlapping) earlier in the window. Uses string keys for O(n) comparison.
+ * When `mutating` is set, only sequences containing at least one mutating tool
+ * count — read/verify cycles repeat legitimately in coding agents.
  */
-function sequenceCount(window: CallEntry[], len: number): number {
+function sequenceCount(window: CallEntry[], len: number, mutating?: Set<string>): number {
   if (window.length < len * 2) return 0;
 
   // Build the key for the most recent `len` entries.
   const recent = buildSeqKey(window, window.length - len, len);
+
+  if (mutating) {
+    let hasMutating = false;
+    for (let i = window.length - len; i < window.length; i++) {
+      if (mutating.has(window[i]!.name)) {
+        hasMutating = true;
+        break;
+      }
+    }
+    if (!hasMutating) return 0;
+  }
 
   let count = 1; // the recent sequence itself counts as one occurrence
   // Scan backwards from (length - len - 1) to 0, moving by `len` each time

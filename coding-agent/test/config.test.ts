@@ -42,6 +42,12 @@ describe('loadCodingConfig', () => {
     expect(cfg.run.loop.toolLimits?.run_tests).toBe(6);
     expect(cfg.run.loop.toolLimits?.write_file).toBe(3);
     expect(cfg.run.loop.toolLimits?.delete_file).toBe(2);
+    expect(cfg.run.loop.sequenceMutatingTools).toEqual([
+      'write_file',
+      'str_replace',
+      'delete_file',
+      'apply_patch',
+    ]);
     expect(cfg.run.planner.maxReplans).toBe(2);
     expect(cfg.run.reflection.maxReflections).toBe(1);
     expect(cfg.run.toolConcurrency).toBe(8);
@@ -110,6 +116,7 @@ describe('loadCodingConfig', () => {
           loop: {
             windowSize: 24,
             toolLimits: { read_file: 12, run_tests: 4 },
+            sequenceMutatingTools: ['write_file'],
           },
         },
       }),
@@ -126,6 +133,8 @@ describe('loadCodingConfig', () => {
       expect(cfg.run.loop.toolLimits?.delete_file).toBe(
         CODING_CONFIG_DEFAULTS.run.loop.toolLimits?.delete_file,
       );
+      // sequenceMutatingTools replaces wholesale (array, not merged).
+      expect(cfg.run.loop.sequenceMutatingTools).toEqual(['write_file']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -100,4 +100,25 @@ describe('@agent/harness on the durable runtime', () => {
     expect(result.stopReason).toBe('max_turns');
     expect(result.turns).toBe(12);
   });
+
+  it('sequenceMutatingTools excludes non-mutating cycles from sequence detection', async () => {
+    const { tools } = makeCountingTools();
+    const runtime = new Runtime({
+      baseDir,
+      model: new RepeatingAgentModel(),
+      tools,
+      workflow: createHarnessWorkflow({
+        loopOptions: {
+          toolLimits: { getIssue: 100 },
+          // getIssue is NOT in the mutating set — its repeat cycle must not trip.
+          sequenceMutatingTools: ['write_file'],
+        },
+      }),
+    });
+
+    const state = await runtime.run(LOGIN_ISSUE);
+    const result = state.stepOutputs['agent.1'] as { stopReason?: string; turns?: number };
+    expect(result.stopReason).toBe('max_turns');
+    expect(result.turns).toBe(12);
+  });
 });

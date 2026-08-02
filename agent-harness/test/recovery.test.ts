@@ -398,4 +398,62 @@ describe('LoopDetector — sequence detection', () => {
     d.record('grep', sigB);
     expect(d.tripped('grep', sigB)).toBe(false);
   });
+
+  it('ignores sequences without a mutating tool (sequenceMutatingTools)', () => {
+    const d = new LoopDetector({
+      limit: 99,
+      sequenceDetection: true,
+      sequenceLengths: [2],
+      sequenceLimit: 2,
+      sequenceMutatingTools: ['write_file', 'delete_file'],
+      windowSize: 12,
+    });
+    // grep→read exploration cycle — no mutating tool, must NOT trip
+    const sigA = callSignature('grep', { query: 'foo' });
+    const sigB = callSignature('read_file', { path: 'a.ts' });
+    d.record('grep', sigA);
+    d.record('read_file', sigB);
+    d.record('grep', sigA);
+    d.record('read_file', sigB);
+    expect(d.tripped('read_file', sigB)).toBe(false);
+  });
+
+  it('still counts sequences that include a mutating tool', () => {
+    const d = new LoopDetector({
+      limit: 99,
+      sequenceDetection: true,
+      sequenceLengths: [2],
+      sequenceLimit: 2,
+      sequenceMutatingTools: ['write_file', 'delete_file'],
+      windowSize: 12,
+    });
+    // write→test edit-verify cycle — write_file is mutating, must trip
+    const sigW = callSignature('write_file', { path: 'a.ts', content: 'x' });
+    const sigT = callSignature('run_tests', { filter: 'a' });
+    d.record('write_file', sigW);
+    d.record('run_tests', sigT);
+    expect(d.tripped('run_tests', sigT)).toBe(false);
+    d.record('write_file', sigW);
+    d.record('run_tests', sigT);
+    expect(d.tripped('run_tests', sigT)).toBe(true);
+  });
+
+  it('treats an empty sequenceMutatingTools as disable-all', () => {
+    const d = new LoopDetector({
+      limit: 99,
+      sequenceDetection: true,
+      sequenceLengths: [2],
+      sequenceLimit: 2,
+      sequenceMutatingTools: [],
+      windowSize: 12,
+    });
+    // write→test cycle with NO mutating tools configured — nothing counts
+    const sigW = callSignature('write_file', { path: 'a.ts', content: 'x' });
+    const sigT = callSignature('run_tests', { filter: 'a' });
+    d.record('write_file', sigW);
+    d.record('run_tests', sigT);
+    d.record('write_file', sigW);
+    d.record('run_tests', sigT);
+    expect(d.tripped('run_tests', sigT)).toBe(false);
+  });
 });
