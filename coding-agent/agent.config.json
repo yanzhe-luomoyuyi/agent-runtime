@@ -33,7 +33,7 @@
     }
   },
   "run": {
-    "maxTurns": 36,
+    "maxTurns": 64,
     "runsDir": ".coding-agent-runs",
     "autoApproveWrites": true,
     "toolConcurrency": 8,

@@ -14,6 +14,10 @@ const compareContent = document.getElementById('compareContent');
 const viewAnswer = document.getElementById('view-answer');
 /** Live error list for the Errors tab (also rebuilt from traces on done/load). */
 let runErrors = [];
+/** Last harness trace shown in Context tab — kept so the diff-only toggle can re-render. */
+let lastContextHarnessTrace = null;
+/** Context tab: hide unchanged messages (default on — full dumps are hard to scan). */
+let contextDiffOnly = true;
 /** Live token buffers for SSE model_token / thinking_token (final markdown on `done`). */
 const STREAM_LANES = ['planner', 'agent', 'reflection'];
 const STREAM_LANE_LABELS = {
@@ -57,6 +61,8 @@ const resumeDurableBtn = document.getElementById('resumeDurableBtn');
 const pauseBanner = document.getElementById('pauseBanner');
 const crashBanner = document.getElementById('crashBanner');
 const abortBanner = document.getElementById('abortBanner');
+const liveTurnEl = document.getElementById('liveTurn');
+const livePromptEl = document.getElementById('livePrompt');
 const crashResumeBtn = document.getElementById('crashResumeBtn');
 const approvalPanel = document.getElementById('approvalPanel');
 const approvalBody = document.getElementById('approvalBody');
@@ -78,6 +84,12 @@ let pendingApproval = null;
 let pendingApprovalQueue = [];
 let driving = false;
 let hasApiKey = false;
+/** Cached from /api/status — used by live turn / prompt pills. */
+let configuredMaxTurns = null;
+let configuredMaxPromptTokens = null;
+/** Live run progress (updated from SSE model / token / pause events). */
+let liveTurn = null;
+let livePromptTokens = null;
 /** Cached session manifests for rename / compare dropdowns. */
 let cachedSessions = [];
 let renameTargetId = null;
@@ -91,6 +103,60 @@ document.querySelectorAll('.tab').forEach((tab) => {
     document.getElementById(`view-${tab.dataset.tab}`).classList.add('active');
   });
 });
+
+function resetLiveStats() {
+  liveTurn = null;
+  livePromptTokens = null;
+  renderLiveStats();
+}
+
+function renderLiveStats() {
+  if (!liveTurnEl || !livePromptEl) return;
+  const turnLabel =
+    liveTurn != null
+      ? configuredMaxTurns != null
+        ? `turn ${liveTurn}/${configuredMaxTurns}`
+        : `turn ${liveTurn}`
+      : configuredMaxTurns != null
+        ? `turn —/${configuredMaxTurns}`
+        : 'turn —';
+  liveTurnEl.textContent = turnLabel;
+
+  const promptLabel =
+    livePromptTokens != null
+      ? configuredMaxPromptTokens != null
+        ? `prompt ${Number(livePromptTokens).toLocaleString()} / ${Number(configuredMaxPromptTokens).toLocaleString()} tok`
+        : `prompt ${Number(livePromptTokens).toLocaleString()} tok`
+      : configuredMaxPromptTokens != null
+        ? `prompt — / ${Number(configuredMaxPromptTokens).toLocaleString()} tok`
+        : 'prompt —';
+  livePromptEl.textContent = promptLabel;
+
+  const hot =
+    livePromptTokens != null &&
+    configuredMaxPromptTokens != null &&
+    configuredMaxPromptTokens > 0 &&
+    livePromptTokens / configuredMaxPromptTokens >= 0.85;
+  livePromptEl.classList.toggle('hot', hot);
+}
+
+function showTerminalBanner(message) {
+  if (!abortBanner) return;
+  const text = String(message || '').trim();
+  if (!text) {
+    abortBanner.hidden = true;
+    abortBanner.textContent = '';
+    return;
+  }
+  abortBanner.hidden = false;
+  abortBanner.textContent = text;
+}
+
+function hideTerminalBanner() {
+  if (!abortBanner) return;
+  abortBanner.hidden = true;
+  abortBanner.textContent = '';
+}
 
 function syncLoopModeUi() {
   const mode = loopModeEl.value;
@@ -147,7 +213,7 @@ function syncResumeUi() {
 
 function clearTerminalBanners() {
   crashBanner.hidden = true;
-  abortBanner.hidden = true;
+  hideTerminalBanner();
   pauseBanner.hidden = true;
 }
 
@@ -160,10 +226,13 @@ async function refreshStatus() {
   keyPill.textContent = data.hasApiKey ? 'API key ready' : 'API key missing';
   keyPill.className = `pill ${data.hasApiKey ? 'ok' : 'bad'}`;
   modelPill.textContent = data.modelId ? `model ${data.modelId}` : 'model —';
+  configuredMaxTurns = data.maxTurns != null ? Number(data.maxTurns) : null;
+  configuredMaxPromptTokens = data.maxPromptTokens != null ? Number(data.maxPromptTokens) : null;
   budgetPill.textContent =
-    data.maxPromptTokens != null
-      ? `max prompt ${Number(data.maxPromptTokens).toLocaleString()} tok`
+    configuredMaxPromptTokens != null
+      ? `max prompt ${configuredMaxPromptTokens.toLocaleString()} tok`
       : 'max prompt —';
+  renderLiveStats();
   hitlWritesEl.checked = data.autoApproveWrites === false;
   longTermMemoryEl.checked = data.longTermMemory === true;
   if (
@@ -261,6 +330,7 @@ function clearResultViews() {
   viewErrors.innerHTML = '<p class="empty">Tool, model, policy, and run errors appear here.</p>';
   viewContext.innerHTML =
     '<p class="empty">Assemble / compact before·after transcripts appear after a run (or when you load a harness trace).</p>';
+  lastContextHarnessTrace = null;
   traceContent.innerHTML =
     '<p class="empty">Runtime + harness metrics appear after a run. Load a session via Traces, or open a run from Recent runs.</p>';
   if (compareContent) {
@@ -896,20 +966,77 @@ function renderErrors(errors) {
     .join('')}</div>`;
 }
 
-function formatContextMessage(m) {
-  const bits = [m.role || '?'];
-  if (m.name) bits.push(m.name);
-  if (m.kind) bits.push(`kind=${m.kind}`);
-  if (m.toolCallId) bits.push(`toolCallId=${m.toolCallId}`);
-  if (m.toolCalls?.length) {
-    bits.push(`tools=${m.toolCalls.map((t) => t.name).join(',')}`);
+function contextMessageLabel(m) {
+  const role = m.role || '?';
+  const tools = (m.toolCalls || []).map((t) => t.name).filter(Boolean);
+  const parts = [role];
+  if (m.name) parts.push(m.name);
+  if (m.kind) parts.push(m.kind);
+  if (tools.length) parts.push(tools.join(','));
+  return parts.join(' · ');
+}
+
+function contextMessagePreview(m) {
+  const tools = (m.toolCalls || []).map((t) => t.name).filter(Boolean);
+  const content = m.content != null ? String(m.content) : '';
+  if (!content.trim()) {
+    return tools.length ? `(tool call: ${tools.join(', ')})` : '(empty)';
   }
-  const head = bits.join(' · ');
-  const body = m.content != null ? m.content : '(no content)';
-  return `<div class="ctx-msg">
-    <div class="ctx-msg-head">${escapeHtml(head)}</div>
+  return content.replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
+function contextMessageBody(m) {
+  const tools = (m.toolCalls || []).map((t) => t.name).filter(Boolean);
+  const content = m.content != null ? String(m.content) : '';
+  if (!content.trim()) {
+    return tools.length ? `(no text — tool call: ${tools.join(', ')})` : '(no content)';
+  }
+  return content;
+}
+
+/** Stable fingerprint for before/after multiset diff (order-insensitive matching). */
+function contextMessageKey(m) {
+  const tools = (m.toolCalls || []).map((t) => t.name).join(',');
+  const content = m.content != null ? String(m.content) : '';
+  return [m.role || '', m.name || '', m.kind || '', m.toolCallId || '', tools, content].join('\0');
+}
+
+function diffContextMessages(before, after) {
+  const afterKeys = (after || []).map(contextMessageKey);
+  const usedAfter = new Array(afterKeys.length).fill(false);
+  const removed = [];
+  for (const m of before || []) {
+    const k = contextMessageKey(m);
+    const idx = afterKeys.findIndex((ak, i) => !usedAfter[i] && ak === k);
+    if (idx >= 0) usedAfter[idx] = true;
+    else removed.push(m);
+  }
+  const added = (after || []).filter((_, i) => !usedAfter[i]);
+  return {
+    removed,
+    added,
+    kept: (before || []).length - removed.length,
+  };
+}
+
+function formatContextMessage(m, index, mark = '') {
+  const label = contextMessageLabel(m);
+  const preview = contextMessagePreview(m);
+  const body = contextMessageBody(m);
+  const chars = m.content != null ? String(m.content).length : 0;
+  const markHtml = mark
+    ? `<span class="ctx-mark ctx-mark-${escapeHtml(mark)}">${escapeHtml(mark)}</span>`
+    : '';
+  // Keep all collapsed — open 4k bodies kill readability.
+  return `<details class="ctx-msg" data-role="${escapeHtml((m.role || '?').toLowerCase())}"${mark ? ` data-mark="${escapeHtml(mark)}"` : ''}>
+    <summary class="ctx-msg-head">
+      <span class="ctx-idx">${index + 1}</span>
+      ${markHtml}
+      <span class="ctx-role">${escapeHtml((m.role || '?').toLowerCase())}</span>
+      <span class="ctx-line">${escapeHtml(label)} · ${chars.toLocaleString()} chars — ${escapeHtml(preview)}</span>
+    </summary>
     <pre class="ctx-msg-body">${escapeHtml(body)}</pre>
-  </div>`;
+  </details>`;
 }
 
 function renderMessageList(messages, label) {
@@ -918,7 +1045,17 @@ function renderMessageList(messages, label) {
   }
   return `<div class="ctx-panel">
     <h4>${escapeHtml(label)} <span class="meta">(${messages.length})</span></h4>
-    <div class="ctx-msgs">${messages.map(formatContextMessage).join('')}</div>
+    <div class="ctx-msgs">${messages.map((m, i) => formatContextMessage(m, i)).join('')}</div>
+  </div>`;
+}
+
+function renderDiffMessageList(messages, label, mark) {
+  if (!messages?.length) {
+    return `<div class="ctx-panel ctx-panel-${escapeHtml(mark)}"><h4>${escapeHtml(label)}</h4><p class="empty">None</p></div>`;
+  }
+  return `<div class="ctx-panel ctx-panel-${escapeHtml(mark)}">
+    <h4>${escapeHtml(label)} <span class="meta">(${messages.length})</span></h4>
+    <div class="ctx-msgs">${messages.map((m, i) => formatContextMessage(m, i, mark)).join('')}</div>
   </div>`;
 }
 
@@ -937,12 +1074,35 @@ function renderContextDecision(kind, turn, decision) {
         ` · summarized ${decision.summarizedMessages}` +
         (decision.key ? ` · key ${decision.key}` : '');
 
-  const panels = changed
-    ? `<div class="ctx-before-after">
-        ${renderMessageList(decision.beforeMessages, 'Before')}
-        ${renderMessageList(decision.afterMessages, 'After')}
-      </div>`
-    : `<p class="fine">No transcript change (${escapeHtml(decision.outcome)}).</p>`;
+  const before = decision.beforeMessages || [];
+  const after = decision.afterMessages || [];
+  const diff = changed ? diffContextMessages(before, after) : null;
+  const delta =
+    changed && before.length
+      ? `<p class="ctx-delta">${before.length} → ${after.length} messages` +
+        (decision.inputTokens != null
+          ? ` · ${Number(decision.inputTokens).toLocaleString()} → ${Number(decision.outputTokens).toLocaleString()} tok`
+          : '') +
+        (diff
+          ? ` · −${diff.removed.length} +${diff.added.length} · kept ${diff.kept}`
+          : '') +
+        ` · click a row to read full content</p>`
+      : '';
+
+  let panels;
+  if (!changed) {
+    panels = `<p class="fine">No transcript change (${escapeHtml(decision.outcome)}).</p>`;
+  } else if (contextDiffOnly) {
+    panels = `<div class="ctx-before-after ctx-diff-only">
+        ${renderDiffMessageList(diff.removed, 'Removed (in before only)', 'removed')}
+        ${renderDiffMessageList(diff.added, 'Added (in after only)', 'added')}
+      </div>`;
+  } else {
+    panels = `<div class="ctx-before-after">
+        ${renderMessageList(before, 'Before')}
+        ${renderMessageList(after, 'After')}
+      </div>`;
+  }
 
   return `<div class="ctx-card">
     <div class="ctx-card-head">
@@ -950,13 +1110,15 @@ function renderContextDecision(kind, turn, decision) {
       <span class="badge">${escapeHtml(kind)}</span>
     </div>
     <div class="ctx-card-summary">${escapeHtml(summary)}</div>
+    ${delta}
     ${panels}
   </div>`;
 }
 
 function renderContext(harnessTrace) {
   if (!viewContext) return;
-  const turns = harnessTrace?.turns || [];
+  if (harnessTrace !== undefined) lastContextHarnessTrace = harnessTrace;
+  const turns = lastContextHarnessTrace?.turns || [];
   const cards = [];
   let compactNoop = 0;
   let assemblePassthrough = 0;
@@ -978,20 +1140,41 @@ function renderContext(harnessTrace) {
       }
     }
   }
+
+  const toolbar = `<div class="ctx-toolbar">
+    <label class="check ctx-diff-toggle" title="Hide unchanged messages; show only removed / added between Before and After">
+      <input type="checkbox" id="ctxDiffOnly" ${contextDiffOnly ? 'checked' : ''} />
+      Diff only
+    </label>
+  </div>`;
+
   if (!cards.length) {
     const bits = [];
     if (assemblePassthrough) bits.push(`${assemblePassthrough} assemble passthrough`);
     if (compactNoop) bits.push(`${compactNoop} compact noop`);
-    viewContext.innerHTML = bits.length
-      ? `<p class="empty">No assemble / compact changes this run (${escapeHtml(bits.join(', '))}).</p>`
-      : '<p class="empty">No assemble / compact decisions recorded for this run.</p>';
+    viewContext.innerHTML =
+      toolbar +
+      (bits.length
+        ? `<p class="empty">No assemble / compact changes this run (${escapeHtml(bits.join(', '))}).</p>`
+        : '<p class="empty">No assemble / compact decisions recorded for this run.</p>');
+    bindContextToolbar();
     return;
   }
   const footer =
     compactNoop || assemblePassthrough
       ? `<p class="fine">Also: ${assemblePassthrough} assemble passthrough · ${compactNoop} compact noop (unchanged — not expanded).</p>`
       : '';
-  viewContext.innerHTML = `<div class="ctx-list">${cards.join('')}</div>${footer}`;
+  viewContext.innerHTML = `${toolbar}<div class="ctx-list">${cards.join('')}</div>${footer}`;
+  bindContextToolbar();
+}
+
+function bindContextToolbar() {
+  const el = document.getElementById('ctxDiffOnly');
+  if (!el) return;
+  el.addEventListener('change', () => {
+    contextDiffOnly = el.checked;
+    renderContext();
+  });
 }
 
 function escapeHtml(s) {
@@ -1528,6 +1711,9 @@ function handleEvent(event, data) {
     currentRunId = data.runId;
     runErrors = [];
     renderErrors(runErrors);
+    resetLiveStats();
+    hideTerminalBanner();
+    lastContextHarnessTrace = null;
     viewContext.innerHTML =
       '<p class="empty">Assemble / compact before·after transcripts appear after a run (or when you load a harness trace).</p>';
     syncControlLabel();
@@ -1546,15 +1732,34 @@ function handleEvent(event, data) {
     const cost = data.costUsd != null ? ` ${fmtUsd(data.costUsd)}` : '';
     const lat = data.latencyMs != null ? ` ${fmtMs(data.latencyMs)}` : '';
     const cached = data.cachedPromptTokens ? ` cache ${data.cachedPromptTokens}` : '';
+    if (data.promptTokens != null) {
+      livePromptTokens = Number(data.promptTokens);
+      renderLiveStats();
+    }
     logLine(
       `model ${data.callId} ${data.promptTokens ?? '?'}+${data.completionTokens ?? '?'} tok${lat}${cost}${cached}`,
       'model',
     );
   }
+  if (event === 'turn_start') {
+    if (data.turn != null) {
+      liveTurn = Number(data.turn);
+      renderLiveStats();
+    }
+    logLine(`turn ${data.turn}`);
+  }
   if (event === 'model_token') {
+    if (data.turn != null) {
+      liveTurn = Number(data.turn);
+      renderLiveStats();
+    }
     appendAnswerToken(data.token || '', data.lane);
   }
   if (event === 'thinking_token') {
+    if (data.turn != null) {
+      liveTurn = Number(data.turn);
+      renderLiveStats();
+    }
     appendThinkingToken(data.token || '', data.lane);
   }
   if (event === 'policy') {
@@ -1566,6 +1771,10 @@ function handleEvent(event, data) {
   }
   if (event === 'paused') {
     pauseBanner.hidden = false;
+    if (data.turn != null) {
+      liveTurn = Number(data.turn);
+      renderLiveStats();
+    }
     logLine(`paused at turn ${data.turn}`, 'warn');
   }
   if (event === 'intervention') {
@@ -1574,7 +1783,12 @@ function handleEvent(event, data) {
     if (data.action === 'abort') {
       // Abort completes the run — not durable-resumable.
       resumableRunId = null;
-      abortBanner.hidden = false;
+      const reason = data.reason ? String(data.reason).trim() : '';
+      showTerminalBanner(
+        reason
+          ? `${reason} Keep the session selected and click Run for a follow-up turn.`
+          : 'Aborted (terminal — not durable-resumable). Keep the session selected and click Run for a follow-up turn.',
+      );
       crashBanner.hidden = true;
       resumeDurableBtn.hidden = true;
     }
@@ -1588,7 +1802,7 @@ function handleEvent(event, data) {
     resumableRunId = currentRunId;
     // Clear crash-after so a follow-up Resume does not immediately re-crash.
     crashTurnEl.value = '';
-    abortBanner.hidden = true;
+    hideTerminalBanner();
     logLine(`crashed ${data.runId}: ${data.message} — use Resume`, 'err');
     pushError({
       source: 'crash',
@@ -1615,14 +1829,35 @@ function handleEvent(event, data) {
       sessionSelect.value = data.sessionId;
     }
     if (data.runId) currentRunId = data.runId;
-    const aborted = data.status !== 'completed' || (data.error && /abort/i.test(String(data.error)));
-    if (aborted && data.status !== 'completed') {
-      abortBanner.hidden = false;
+    // Prefer the harness/runtime message over the generic abort copy.
+    // Only match terminal stop *answers* by prefix — never scan the whole body
+    // for "abort" (a successful analysis often discusses Abort/steer).
+    const answerText = data.answer != null ? String(data.answer).trim() : '';
+    const errorText = data.error != null ? String(data.error).trim() : '';
+    const isBudgetStop = /Stopped after .+turn budget/i.test(answerText);
+    const isHarnessStop =
+      /^Stopped:/i.test(answerText) || /^Unable to complete\b/i.test(answerText);
+    const isAbortAnswer =
+      /^ui abort\b/i.test(answerText) || /^Stopped: run aborted\b/i.test(answerText);
+    if (data.status !== 'completed' && errorText) {
+      showTerminalBanner(errorText);
+    } else if (isBudgetStop || isHarnessStop) {
+      showTerminalBanner(answerText);
+    } else if (isAbortAnswer) {
+      showTerminalBanner(
+        `${answerText}. Keep the session selected and click Run for a follow-up turn.`,
+      );
+    } else if (data.status === 'completed') {
+      // Successful final answer belongs in the Answer tab — not this banner.
+      hideTerminalBanner();
     }
-    // Harness abort still completes the durable run successfully with an abort answer.
-    if (data.status === 'completed' && data.answer && /abort|stopped/i.test(String(data.answer))) {
-      abortBanner.hidden = false;
-    }
+    const lastTurn = data.harnessTrace?.turns?.length
+      ? data.harnessTrace.turns[data.harnessTrace.turns.length - 1]?.turn
+      : null;
+    if (lastTurn != null) liveTurn = Number(lastTurn);
+    const peak = peakPromptTokens(data.harnessTrace);
+    if (peak > 0) livePromptTokens = peak;
+    renderLiveStats();
     logLine(`done (${data.status})`, data.status === 'completed' ? 'ok' : 'err');
     renderDiffs(data.diffs || []);
     renderTrace(data.runtimeTrace, data.harnessTrace, { runId: data.runId || currentRunId });

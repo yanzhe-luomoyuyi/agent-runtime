@@ -319,10 +319,10 @@ export interface HarnessWorkflowOptions {
    */
   loopOptions?: LoopDetectorOptions;
   /**
-   * When true, drive streamed harness loops and forward `model_token` /
-   * `thinking_token` via `ctx.notifyStream`. When false (default), use batch
-   * `runAgent` / batch planner / reflection wrappers — same durable semantics,
-   * no live token notify. Applies to all `loopMode` values.
+   * When true, drive streamed harness loops and forward `turn_start` /
+   * `model_token` / `thinking_token` via `ctx.notifyStream`. When false (default),
+   * use batch `runAgent` / batch planner / reflection wrappers — same durable
+   * semantics, no live token notify. Applies to all `loopMode` values.
    */
   stream?: boolean;
   /**
@@ -449,6 +449,9 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                 }
                 let planned: Awaited<ReturnType<typeof runPlannedAgent>> | undefined;
                 for await (const ev of runPlannedAgentStreamed(plannedOpts)) {
+                  if (ev.type === 'turn_start' && ctx.notifyStream) {
+                    ctx.notifyStream({ type: 'turn_start', turn: ev.turn, lane: 'agent' });
+                  }
                   if (
                     (ev.type === 'model_token' || ev.type === 'thinking_token') &&
                     ctx.notifyStream
@@ -476,6 +479,9 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                 }
                 let reflective: Awaited<ReturnType<typeof runReflectiveAgent>> | undefined;
                 for await (const ev of runReflectiveAgentStreamed(reflectiveOpts)) {
+                  if (ev.type === 'turn_start' && ctx.notifyStream) {
+                    ctx.notifyStream({ type: 'turn_start', turn: ev.turn, lane: 'agent' });
+                  }
                   if (
                     (ev.type === 'model_token' || ev.type === 'thinking_token') &&
                     ctx.notifyStream
@@ -502,6 +508,9 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
               // the harness still batch-calls and synthesises a single chunk.
               let result: AgentRunResult | undefined;
               for await (const ev of runAgentStreamed(runOpts)) {
+                if (ev.type === 'turn_start' && ctx.notifyStream) {
+                  ctx.notifyStream({ type: 'turn_start', turn: ev.turn, lane: 'agent' });
+                }
                 if (
                   (ev.type === 'model_token' || ev.type === 'thinking_token') &&
                   ctx.notifyStream

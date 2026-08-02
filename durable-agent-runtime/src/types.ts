@@ -36,12 +36,13 @@ export type AgentEvent =
   | { type: 'RunFailed'; error: string; writeFileMs?: number; durableWrites?: number; ts: string };
 
 /**
- * Live-only model token notify (not persisted in the event log).
+ * Live-only stream notify (not persisted in the event log).
  * Forwarded via RuntimeOptions.onStreamEvent / StepContext.notifyStream.
  */
 export type StreamLane = 'agent' | 'planner' | 'reflection';
 
 export type StreamNotifyEvent =
+  | { type: 'turn_start'; turn: number; lane?: StreamLane }
   | { type: 'model_token'; turn: number; token: string; lane?: StreamLane }
   | { type: 'thinking_token'; turn: number; token: string; lane?: StreamLane };
 

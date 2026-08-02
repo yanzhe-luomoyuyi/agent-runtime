@@ -45,7 +45,7 @@ export interface Critique {
 export type ReflectiveAgentResult = AgentRunResult & { critiques: Critique[] };
 
 export type ReflectiveStreamEvent =
-  | Extract<AgentStreamEvent, { type: 'model_token' | 'thinking_token' }>
+  | Extract<AgentStreamEvent, { type: 'turn_start' | 'model_token' | 'thinking_token' }>
   | { type: 'done'; result: ReflectiveAgentResult };
 
 export type CritiqueOptions = {
@@ -203,7 +203,9 @@ export async function* runReflectiveAgentStreamed(
 
   let result: AgentRunResult | undefined;
   for await (const ev of runAgentStreamed({ ...opts, keyPrefix: scope.attempt(0).toPrefix() })) {
-    if (ev.type === 'model_token' || ev.type === 'thinking_token') {
+    if (ev.type === 'turn_start') {
+      yield ev;
+    } else if (ev.type === 'model_token' || ev.type === 'thinking_token') {
       yield { ...ev, lane: ev.lane ?? 'agent' };
     }
     if (ev.type === 'done') result = ev.result;
@@ -231,7 +233,9 @@ export async function* runReflectiveAgentStreamed(
       goal: revisedGoal,
       keyPrefix: scope.attempt(i + 1).toPrefix(),
     })) {
-      if (ev.type === 'model_token' || ev.type === 'thinking_token') {
+      if (ev.type === 'turn_start') {
+        yield ev;
+      } else if (ev.type === 'model_token' || ev.type === 'thinking_token') {
         yield { ...ev, lane: ev.lane ?? 'agent' };
       }
       if (ev.type === 'done') result = ev.result;

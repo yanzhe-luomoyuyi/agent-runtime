@@ -276,7 +276,7 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     },
   },
   run: {
-    maxTurns: 36,
+    maxTurns: 64,
     runsDir: '.coding-agent-runs',
     autoApproveWrites: true,
     toolConcurrency: 8,

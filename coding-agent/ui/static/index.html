@@ -81,6 +81,10 @@
 
           <div class="control-bar" id="controlBar" hidden>
             <span class="control-label" id="controlLabel">Run controls</span>
+            <span class="live-stats" id="liveStats" title="Live turn budget and last model prompt size vs context window cap">
+              <span class="live-stat" id="liveTurn">turn —</span>
+              <span class="live-stat" id="livePrompt">prompt —</span>
+            </span>
             <button type="button" class="ghost" id="pauseBtn" title="Pause at the next turn boundary">Pause</button>
             <button type="button" class="ghost" id="continueBtn" title="Unblock a paused run (continue without steering)">Continue</button>
             <button type="button" class="ghost" id="steerBtn" title="Inject an instruction and/or rewrite the goal at the turn boundary">Steer</button>
@@ -93,9 +97,7 @@
             Crashed (durable — status still running).
             <button type="button" class="ghost compact" id="crashResumeBtn" title="Durable resume from this crashed runId">Resume</button>
           </div>
-          <div class="banner" id="abortBanner" hidden>
-            Aborted (terminal — not durable-resumable). Keep the session selected and click Run for a follow-up turn.
-          </div>
+          <div class="banner warn" id="abortBanner" hidden></div>
 
           <div class="approval" id="approvalPanel" hidden>
             <h2>Approve tool</h2>

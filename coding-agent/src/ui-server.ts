@@ -137,6 +137,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       longTermMemory: cfg.run.memory.enabled,
       loopMode: cfg.run.loopMode,
       modelId,
+      maxTurns: cfg.run.maxTurns,
       maxPromptTokens: resolveCodingMaxPromptTokens({
         model: modelId,
         softCap: cfg.run.compaction.softCapTokens,
@@ -567,7 +568,9 @@ async function driveSse(
         }
       },
       onStreamEvent: (e) => {
-        if (e.type === 'model_token') {
+        if (e.type === 'turn_start') {
+          send('turn_start', { turn: e.turn, lane: e.lane ?? 'agent' });
+        } else if (e.type === 'model_token') {
           send('model_token', { turn: e.turn, token: e.token, lane: e.lane ?? 'agent' });
         } else if (e.type === 'thinking_token') {
           send('thinking_token', { turn: e.turn, token: e.token, lane: e.lane ?? 'agent' });

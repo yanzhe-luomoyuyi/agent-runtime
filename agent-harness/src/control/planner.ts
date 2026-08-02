@@ -100,7 +100,7 @@ export interface PlannedAgentResult extends AgentRunResult {
 }
 
 export type PlannedStreamEvent =
-  | Extract<AgentStreamEvent, { type: 'model_token' | 'thinking_token' }>
+  | Extract<AgentStreamEvent, { type: 'turn_start' | 'model_token' | 'thinking_token' }>
   | { type: 'done'; result: PlannedAgentResult };
 
 // ── Plan helpers ────────────────────────────────────────────────────
@@ -375,7 +375,9 @@ export async function* runPlannedAgentStreamed(
 
     let result: AgentRunResult | undefined;
     for await (const ev of runAgentStreamed(stepOpts)) {
-      if (ev.type === 'model_token' || ev.type === 'thinking_token') {
+      if (ev.type === 'turn_start') {
+        yield ev;
+      } else if (ev.type === 'model_token' || ev.type === 'thinking_token') {
         yield { ...ev, lane: ev.lane ?? 'agent' };
       }
       if (ev.type === 'done') result = ev.result;

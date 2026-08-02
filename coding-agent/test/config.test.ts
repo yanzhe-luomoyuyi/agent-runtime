@@ -23,7 +23,7 @@ describe('loadCodingConfig', () => {
     expect(cfg.agent.skillLoadMode).toBe('eager');
     expect(cfg.agent.instructions).toContain('sandboxed workspace');
     expect(cfg.model.model).toBe('deepseek-chat');
-    expect(cfg.run.maxTurns).toBe(36);
+    expect(cfg.run.maxTurns).toBe(64);
     expect(cfg.policy.allowedTools).toContain('write_file');
     expect(cfg.pricing?.promptUsdPerToken).toBe(0.00000014);
     expect(cfg.tools.verify.recipes.test?.command).toEqual(['npm', 'test']);
