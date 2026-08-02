@@ -37,6 +37,11 @@ describe('loadCodingConfig', () => {
     expect(cfg.run.memory.enabled).toBe(false);
     expect(cfg.run.memory.storeDir).toBe('.coding-agent-memory');
     expect(cfg.run.loopMode).toBe('agent');
+    expect(cfg.run.loop.windowSize).toBe(16);
+    expect(cfg.run.loop.toolLimits?.read_file).toBe(8);
+    expect(cfg.run.loop.toolLimits?.run_tests).toBe(6);
+    expect(cfg.run.loop.toolLimits?.write_file).toBe(3);
+    expect(cfg.run.loop.toolLimits?.delete_file).toBe(2);
     expect(cfg.run.planner.maxReplans).toBe(2);
     expect(cfg.run.reflection.maxReflections).toBe(1);
     expect(cfg.run.toolConcurrency).toBe(8);
@@ -90,6 +95,37 @@ describe('loadCodingConfig', () => {
     try {
       const cfg = loadCodingConfig({ path, skipEnv: true });
       expect(cfg.run.toolRetry).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('merges run.loop overlay over coding defaults', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-cfg-loop-'));
+    const path = join(dir, 'agent.config.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        run: {
+          loop: {
+            windowSize: 24,
+            toolLimits: { read_file: 12, run_tests: 4 },
+          },
+        },
+      }),
+    );
+    try {
+      const cfg = loadCodingConfig({ path, skipEnv: true });
+      expect(cfg.run.loop.windowSize).toBe(24);
+      expect(cfg.run.loop.toolLimits?.read_file).toBe(12);
+      expect(cfg.run.loop.toolLimits?.run_tests).toBe(4);
+      // Untouched entries keep the coding defaults.
+      expect(cfg.run.loop.toolLimits?.write_file).toBe(
+        CODING_CONFIG_DEFAULTS.run.loop.toolLimits?.write_file,
+      );
+      expect(cfg.run.loop.toolLimits?.delete_file).toBe(
+        CODING_CONFIG_DEFAULTS.run.loop.toolLimits?.delete_file,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -9,6 +9,7 @@ import {
   loadSkillFile,
   requireApprovalFor,
   autoApprove,
+  type LoopDetectorOptions,
   type RunInterrupter,
   type TraceCollector,
 } from '@agent/harness';
@@ -102,6 +103,11 @@ export interface CodingRuntimeOptions {
    * Harness control-flow mode. Default: `config.run.loopMode`.
    */
   loopMode?: HarnessLoopMode;
+  /**
+   * Loop-detector tuning override. Default: `config.run.loop`
+   * (coding profile: relaxed read/verify tool limits, strict write limits).
+   */
+  loopOptions?: LoopDetectorOptions;
   /** Mid-run pause / steer / abort gate (Workbench / hosts). */
   interrupter?: RunInterrupter;
   onEvent?: ConstructorParameters<typeof Runtime>[0]['onEvent'];
@@ -233,6 +239,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     trace: opts.harnessTrace,
     stream,
     loopMode,
+    loopOptions: opts.loopOptions ?? cfg.run.loop,
     toolConcurrency: cfg.run.toolConcurrency,
     toolRetry: cfg.run.toolRetry === false ? false : cfg.run.toolRetry,
     // Resilient provider already retries per tier — don't multiply at the loop.

@@ -88,6 +88,22 @@ export interface CodingDeadLetterSection {
   storeDir: string;
 }
 
+/**
+ * Loop-detector tuning (no-progress / repeat detection). Coding defaults
+ * relax the harness defaults: read-only and verify tools repeat legitimately
+ * (re-read to check state, re-run tests after each edit), so they get higher
+ * per-tool limits; write tools keep a strict limit because repeating the same
+ * write is a strong stuck-loop signal. See `@agent/harness`'s `LoopDetector`.
+ */
+export interface CodingLoopSection {
+  /** Identical-call repeats within the window before it trips (harness default 3). */
+  limit?: number;
+  /** Sliding-window size — only the last N calls count (harness default 12). */
+  windowSize?: number;
+  /** Per-tool overrides for `limit`. */
+  toolLimits?: Record<string, number>;
+}
+
 export interface CodingRunSection {
   maxTurns: number;
   runsDir: string;
@@ -131,6 +147,8 @@ export interface CodingRunSection {
   };
   /** `FileDeadLetterQueue` wiring — see `RuntimeOptions.deadLetterQueue`. */
   deadLetter: CodingDeadLetterSection;
+  /** Loop-detector tuning — see `CodingLoopSection`. */
+  loop: CodingLoopSection;
   /** Default harness control-flow mode (`agent` | `planner` | `reflection`). */
   loopMode: HarnessLoopMode;
   planner: {
@@ -163,7 +181,7 @@ export interface CodingConfigFile {
   run?: Partial<
     Omit<
       CodingRunSection,
-      'compaction' | 'scratchpad' | 'memory' | 'planner' | 'reflection' | 'toolRetry' | 'deadLetter'
+      'compaction' | 'scratchpad' | 'memory' | 'planner' | 'reflection' | 'toolRetry' | 'deadLetter' | 'loop'
     >
   > & {
     compaction?: Partial<CodingRunSection['compaction']>;
@@ -173,6 +191,7 @@ export interface CodingConfigFile {
     reflection?: Partial<CodingRunSection['reflection']>;
     toolRetry?: CodingToolRetrySection | false;
     deadLetter?: Partial<CodingDeadLetterSection>;
+    loop?: Partial<CodingLoopSection>;
   };
   policy?: {
     allowedTools?: string[];
@@ -260,6 +279,25 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
     deadLetter: {
       enabled: true,
       storeDir: '.coding-agent-dead-letters',
+    },
+    loop: {
+      windowSize: 16,
+      toolLimits: {
+        // Read-only sensing tools repeat legitimately (re-check state after edits).
+        read_file: 8,
+        grep: 8,
+        list_dir: 8,
+        list_tree: 8,
+        extract_top_comments: 8,
+        // Verify tools repeat after every edit — the core edit-verify cycle.
+        run_tests: 6,
+        run_check: 6,
+        // Write tools: repeating the same write is a strong stuck-loop signal.
+        write_file: 3,
+        str_replace: 3,
+        apply_patch: 3,
+        delete_file: 2,
+      },
     },
     loopMode: 'agent',
     planner: {
@@ -364,6 +402,11 @@ function deepMergeConfig(base: CodingConfig, overlay: CodingConfigFile): CodingC
       planner: { ...base.run.planner, ...overlay.run?.planner },
       reflection: { ...base.run.reflection, ...overlay.run?.reflection },
       deadLetter: { ...base.run.deadLetter, ...overlay.run?.deadLetter },
+      loop: {
+        ...base.run.loop,
+        ...overlay.run?.loop,
+        toolLimits: { ...base.run.loop.toolLimits, ...overlay.run?.loop?.toolLimits },
+      },
     },
     policy: {
       allowedTools: overlay.policy?.allowedTools ?? base.policy.allowedTools,

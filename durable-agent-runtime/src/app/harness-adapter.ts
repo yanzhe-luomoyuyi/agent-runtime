@@ -50,6 +50,7 @@ import {
   type AgentConfig,
   type AgentRunResult,
   type Critique,
+  type LoopDetectorOptions,
   type PlanState,
   type RetryOptions,
   type RunAgentOptions,
@@ -311,6 +312,13 @@ export interface HarnessWorkflowOptions {
    */
   modelRetry?: RetryOptions;
   /**
+   * Loop-detector tuning (no-progress / identical-call / sequence repeats).
+   * Defaults to the harness defaults (limit 3 / window 12 / sequence on),
+   * which are tuned for generic agents — coding hosts should relax the
+   * read-only and verify tools via `toolLimits` (they repeat legitimately).
+   */
+  loopOptions?: LoopDetectorOptions;
+  /**
    * When true, drive streamed harness loops and forward `model_token` /
    * `thinking_token` via `ctx.notifyStream`. When false (default), use batch
    * `runAgent` / batch planner / reflection wrappers — same durable semantics,
@@ -416,6 +424,7 @@ export function createHarnessWorkflow(opts: HarnessWorkflowOptions = {}): Workfl
                 trace: opts.trace,
                 toolConcurrency: opts.toolConcurrency,
                 retry: opts.modelRetry,
+                loopOptions: opts.loopOptions,
                 retrieval: retrievalHits
                   ? {
                       hits: retrievalHits,
