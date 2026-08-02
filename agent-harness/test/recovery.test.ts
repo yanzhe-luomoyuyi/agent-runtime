@@ -340,6 +340,52 @@ describe('LoopDetector — single-call repeat', () => {
 });
 
 // ---------------------------------------------------------------------------
+// LoopDetector — progress-aware success resets
+// ---------------------------------------------------------------------------
+describe('LoopDetector — success resets', () => {
+  it('a successful call of a successResets tool clears older same-signature repeats', () => {
+    const d = new LoopDetector({
+      limit: 3,
+      windowSize: 12,
+      successResets: ['run_tests'],
+    });
+    const sig = callSignature('run_tests', { filter: 'a' });
+    d.record('run_tests', sig);
+    d.record('run_tests', sig);
+    expect(d.tripped('run_tests', sig)).toBe(false);
+    d.markSuccess(sig); // green run → progress, repeat count starts fresh
+    d.record('run_tests', sig);
+    expect(d.tripped('run_tests', sig)).toBe(false); // only 2 in window now
+    d.record('run_tests', sig);
+    expect(d.tripped('run_tests', sig)).toBe(true); // 3 since the success
+  });
+
+  it('only clears for tools listed in successResets', () => {
+    const d = new LoopDetector({
+      limit: 3,
+      windowSize: 12,
+      successResets: ['run_tests'],
+    });
+    const sig = callSignature('write_file', { path: 'a.ts', content: 'x' });
+    d.record('write_file', sig);
+    d.record('write_file', sig);
+    d.markSuccess(sig); // write_file not in successResets → no clear
+    d.record('write_file', sig);
+    expect(d.tripped('write_file', sig)).toBe(true);
+  });
+
+  it('markSuccess is a no-op when successResets is unset', () => {
+    const d = new LoopDetector({ limit: 3 });
+    const sig = callSignature('run_tests', { filter: 'a' });
+    d.record('run_tests', sig);
+    d.record('run_tests', sig);
+    d.markSuccess(sig);
+    d.record('run_tests', sig);
+    expect(d.tripped('run_tests', sig)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LoopDetector — sequence detection (A→B→A→B cycles)
 // ---------------------------------------------------------------------------
 describe('LoopDetector — sequence detection', () => {

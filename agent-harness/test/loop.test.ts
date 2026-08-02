@@ -174,6 +174,53 @@ describe('agent loop', () => {
     expect(res.stopReason).toBe('loop_detected');
     expect(res.turns).toBe(2);
   });
+
+  it('does not trip when repeated verify calls keep passing (successResets)', async () => {
+    const runTests = makeTool(
+      'run_tests',
+      'Run the test suite.',
+      { type: 'object', properties: { filter: { type: 'string' } }, required: ['filter'] },
+      () => ({ ok: true, recipe: 'test', exitCode: 0 }),
+    );
+    const tools = new MockToolInvoker([runTests]);
+    // 5 identical green runs would exceed limit 3 — success resets keep it fresh.
+    const model = new ScriptedChatModel([
+      toolCallResponse([toolCall('c1', 'run_tests', { filter: 'a' })]),
+      toolCallResponse([toolCall('c2', 'run_tests', { filter: 'a' })]),
+      toolCallResponse([toolCall('c3', 'run_tests', { filter: 'a' })]),
+      toolCallResponse([toolCall('c4', 'run_tests', { filter: 'a' })]),
+      toolCallResponse([toolCall('c5', 'run_tests', { filter: 'a' })]),
+      finalResponse('done'),
+    ]);
+    const res = await runAgent({
+      goal: 'x', model, tools, maxTurns: 10,
+      loopOptions: { toolLimits: { run_tests: 3 }, successResets: ['run_tests'] },
+    });
+    expect(res.finished).toBe(true);
+    expect(res.turns).toBe(6);
+  });
+
+  it('still trips when repeated verify calls keep failing', async () => {
+    const runTests = makeTool(
+      'run_tests',
+      'Run the test suite.',
+      { type: 'object', properties: { filter: { type: 'string' } }, required: ['filter'] },
+      () => ({ ok: false, recipe: 'test', exitCode: 1 }),
+    );
+    const tools = new MockToolInvoker([runTests]);
+    const model = new ScriptedChatModel([
+      toolCallResponse([toolCall('c1', 'run_tests', { filter: 'a' })]),
+      toolCallResponse([toolCall('c2', 'run_tests', { filter: 'a' })]),
+      toolCallResponse([toolCall('c3', 'run_tests', { filter: 'a' })]),
+      finalResponse('unreachable'),
+    ]);
+    const res = await runAgent({
+      goal: 'x', model, tools, maxTurns: 10,
+      loopOptions: { toolLimits: { run_tests: 3 }, successResets: ['run_tests'] },
+    });
+    expect(res.stopReason).toBe('loop_detected');
+    expect(res.turns).toBe(3);
+  });
 });
 
 describe('loop termination & error handling', () => {

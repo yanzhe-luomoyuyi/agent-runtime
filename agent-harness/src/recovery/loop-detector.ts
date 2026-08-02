@@ -32,6 +32,13 @@ export interface LoopDetectorOptions {
    * detection entirely. Default: unset — every sequence counts.
    */
   sequenceMutatingTools?: string[];
+  /**
+   * Tool names whose SUCCESSFUL call resets that signature's repeat count.
+   * A green verify run (run_tests exit 0) is progress, so identical re-runs
+   * stop accumulating suspicion; only repeated FAILURES keep piling up.
+   * Default: unset — every call counts regardless of outcome.
+   */
+  successResets?: string[];
 }
 
 interface CallEntry {
@@ -53,6 +60,7 @@ export class LoopDetector {
   private readonly seqLengths: number[];
   private readonly seqLimit: number;
   private readonly seqMutating: Set<string> | undefined;
+  private readonly successResets: Set<string> | undefined;
 
   /**
    * @param opts  Either a plain `number` (limit only, backward-compatible) or a
@@ -70,6 +78,7 @@ export class LoopDetector {
     this.seqMutating = resolved.sequenceMutatingTools
       ? new Set(resolved.sequenceMutatingTools)
       : undefined;
+    this.successResets = resolved.successResets ? new Set(resolved.successResets) : undefined;
   }
 
   /** Record one tool call. `name` is the tool name, `sig` is `callSignature(name, args)`. */
@@ -106,6 +115,26 @@ export class LoopDetector {
 
   reset(): void {
     this.window.length = 0;
+  }
+
+  /**
+   * Record that the most recent call with `sig` succeeded (progress). When the
+   * call's tool is in `successResets`, older same-signature entries are cleared
+   * so the repeat count starts fresh — a green verify run is progress, not a
+   * stuck loop. No-op when the tool is not in `successResets`.
+   */
+  markSuccess(sig: string): void {
+    // Find the most recent recorded entry with this signature (works even
+    // under concurrent tool execution, where the latest window entry may be
+    // another call's).
+    for (let i = this.window.length - 1; i >= 0; i--) {
+      if (this.window[i]!.sig !== sig) continue;
+      if (!this.successResets?.has(this.window[i]!.name)) return;
+      for (let j = i - 1; j >= 0; j--) {
+        if (this.window[j]!.sig === sig) this.window.splice(j, 1);
+      }
+      return;
+    }
   }
 }
 

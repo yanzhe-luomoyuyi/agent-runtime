@@ -560,12 +560,28 @@ async function _execOne(prepared: PreparedCall, st: LoopState, turn: number, opt
   try {
     const raw = await st.tools.call(call.name, effectiveArgs, { key: keyScope(st.prefix).turnTool(turn, call.id) });
     opts.trace?.endToolCall(call.name, true, effectiveArgs);
+    // A non-throwing call may still be a semantic failure (run_tests exit≠0);
+    // only a real success counts as progress for successResets tools.
+    if (isToolResultOk(raw)) st.detector.markSuccess(sig);
     return { text: typeof raw === 'string' ? raw : JSON.stringify(raw), ok: true, tripped: false, stopOnUse: prepared.stopOnUse };
   } catch (e) {
     const errMsg = `ERROR: tool "${call.name}" failed: ${e instanceof Error ? e.message : String(e)}`;
     opts.trace?.endToolCall(call.name, false, effectiveArgs, errMsg);
     return { text: errMsg, ok: false, tripped: false };
   }
+}
+
+/**
+ * Semantic success of a tool result. Tools that report an `ok` field
+ * (e.g. verify recipes) decide their own outcome; tools without one are
+ * treated as successful when they didn't throw — erring on the side of
+ * progress so the loop detector does not false-positive.
+ */
+function isToolResultOk(raw: unknown): boolean {
+  if (raw !== null && typeof raw === 'object' && 'ok' in (raw as Record<string, unknown>)) {
+    return (raw as Record<string, unknown>).ok === true;
+  }
+  return true;
 }
 
 // ── Public entry points ──────────────────────────────────────────────

@@ -109,6 +109,12 @@ export interface CodingLoopSection {
    * cycles detectable without flagging legitimate `grep→read` exploration.
    */
   sequenceMutatingTools?: string[];
+  /**
+   * Tool names whose SUCCESSFUL call resets that signature's repeat count.
+   * A green verify run is progress — identical re-runs stop accumulating
+   * suspicion, while repeated FAILURES still pile up and trip.
+   */
+  successResets?: string[];
 }
 
 export interface CodingRunSection {
@@ -292,6 +298,9 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       // Sequence detection only fires on cycles involving a mutating tool —
       // read/verify cycles (grep→read, test→read) repeat legitimately.
       sequenceMutatingTools: [...MUTATING_FS_TOOLS],
+      // A green verify run is progress, so it resets that call's repeat count;
+      // only repeated failures accumulate and trip the detector.
+      successResets: ['run_tests', 'run_check'],
       toolLimits: {
         // Read-only sensing tools repeat legitimately (re-check state after edits).
         read_file: 8,

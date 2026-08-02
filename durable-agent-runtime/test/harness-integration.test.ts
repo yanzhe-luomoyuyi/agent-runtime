@@ -121,4 +121,27 @@ describe('@agent/harness on the durable runtime', () => {
     expect(result.stopReason).toBe('max_turns');
     expect(result.turns).toBe(12);
   });
+
+  it('successResets flows through: successful repeats do not trip', async () => {
+    const { tools } = makeCountingTools();
+    const runtime = new Runtime({
+      baseDir,
+      model: new RepeatingAgentModel(),
+      tools,
+      workflow: createHarnessWorkflow({
+        loopOptions: {
+          // getIssue returns no ok field → treated as success → resets each run.
+          successResets: ['getIssue'],
+          sequenceMutatingTools: [], // isolate the single-call rule
+        },
+      }),
+    });
+
+    const state = await runtime.run(LOGIN_ISSUE);
+    const result = state.stepOutputs['agent.1'] as { stopReason?: string; turns?: number };
+    // Default limit 3 would trip identical getIssue calls; the success reset
+    // keeps the count fresh, so the run reaches the turn budget instead.
+    expect(result.stopReason).toBe('max_turns');
+    expect(result.turns).toBe(12);
+  });
 });
