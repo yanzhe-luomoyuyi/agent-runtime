@@ -97,7 +97,7 @@ flowchart LR
 
 ### Demo 工作负载 — Agent (`src/app/`)
 
-- **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。有 `callChat` 时走 native tool-calling（直接返回结构化 `ChatResponse`）；否则走文本 `callModel` + `parseTextToolCall`。`createHarnessWorkflow({ agent?, approver?, interrupter?, trace?, … })` 把 `runAgent` 封装为单个 durable step（可选挂 `TraceCollector`）。启用方式：`HARNESS=1`。
+- **Harness 适配器** ([src/app/harness-adapter.ts](src/app/harness-adapter.ts)) — ★ **关键集成**。在 `StepContext` 上实现 `ChatModel` + `ToolInvoker`，转发 harness 的 `key`。有 `callChat` 时走 native tool-calling（直接返回结构化 `ChatResponse`）；否则走文本 `callModel` + `parseTextToolCall`。`createHarnessWorkflow({ agent?, approver?, interrupter?, trace?, loopOptions?, … })` 把 `runAgent` 封装为单个 durable step（`loopOptions` 透传到 harness `LoopDetector` 调优——planner/reflection 经 spread 自动继承；可选挂 `TraceCollector`）。启用方式：`HARNESS=1`。
 - **Demo 工厂** ([src/app/demo-fixtures.ts](src/app/demo-fixtures.ts) · [src/app/demo-runtime.ts](src/app/demo-runtime.ts)) — 共享 canned 答案 / 工具注册，以及 CLI `run`/`eval` 共用的 `createDemoRuntime`。
 - **工作流** ([src/app/issue-workflow.ts](src/app/issue-workflow.ts)) — `issue → fix` Agent，声明为 `analyze → locate → propose` 三个阶段。
 - **工具** ([src/app/tools.ts](src/app/tools.ts)) — 确定性的 mock 工具 `getIssue` / `searchCode`。设置 `AGENT_MCP=1` 可通过 MCP base SDK 提供同一批工具——运行时完全无法区分。

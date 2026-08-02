@@ -144,4 +144,26 @@ describe('@agent/harness on the durable runtime', () => {
     expect(result.stopReason).toBe('max_turns');
     expect(result.turns).toBe(12);
   });
+
+  it('advisoryTools downgrades a trip to a nudge (run continues)', async () => {
+    const { tools } = makeCountingTools();
+    const runtime = new Runtime({
+      baseDir,
+      model: new RepeatingAgentModel(),
+      tools,
+      workflow: createHarnessWorkflow({
+        loopOptions: {
+          advisoryTools: ['getIssue'],
+          sequenceMutatingTools: [], // isolate the single-call rule
+        },
+      }),
+    });
+
+    const state = await runtime.run(LOGIN_ISSUE);
+    const result = state.stepOutputs['agent.1'] as { stopReason?: string; turns?: number };
+    // Default limit 3 would hard-abort identical getIssue calls; advisory keeps
+    // the run alive with a nudge until the turn budget.
+    expect(result.stopReason).toBe('max_turns');
+    expect(result.turns).toBe(12);
+  });
 });

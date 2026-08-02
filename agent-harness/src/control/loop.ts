@@ -550,10 +550,18 @@ async function _execOne(prepared: PreparedCall, st: LoopState, turn: number, opt
   const effectiveArgs = decision.modifiedArgs ?? call.arguments;
   const sig = callSignature(call.name, effectiveArgs);
   st.detector.record(call.name, sig);
-  if (st.detector.tripped(call.name, sig)) {
+  const trip = st.detector.tripMode(call.name, sig);
+  if (trip === 'hard') {
     const reason = `ERROR: refusing to repeat "${call.name}" — possible loop detected.`;
     opts.trace?.endToolCall(call.name, false, effectiveArgs, reason);
     return { text: reason, ok: false, tripped: true };
+  }
+  if (trip === 'advisory') {
+    // Read-only / verify tools repeat legitimately — nudge instead of aborting
+    // the run: the repeated call is not executed, but the model keeps control.
+    const nudge = `NOTE: "${call.name}" has been called repeatedly with identical arguments. If you are stuck, summarize what you've learned and try a different action.`;
+    opts.trace?.endToolCall(call.name, false, effectiveArgs, nudge);
+    return { text: nudge, ok: false, tripped: false };
   }
   st.toolsUsed.push(call.name);
   opts.trace?.startToolCall();

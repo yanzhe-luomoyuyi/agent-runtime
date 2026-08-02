@@ -386,6 +386,45 @@ describe('LoopDetector — success resets', () => {
 });
 
 // ---------------------------------------------------------------------------
+// LoopDetector — advisory vs hard trips
+// ---------------------------------------------------------------------------
+describe('LoopDetector — advisory vs hard trips', () => {
+  it('returns hard for tools not in advisoryTools', () => {
+    const d = new LoopDetector({ limit: 2, advisoryTools: ['read_file'] });
+    const sig = callSignature('write_file', { path: 'a.ts', content: 'x' });
+    d.record('write_file', sig);
+    expect(d.tripped('write_file', sig)).toBe(false);
+    d.record('write_file', sig);
+    expect(d.tripped('write_file', sig)).toBe(true);
+    expect(d.tripMode('write_file', sig)).toBe('hard');
+  });
+
+  it('returns advisory for listed tools', () => {
+    const d = new LoopDetector({ limit: 2, advisoryTools: ['read_file'] });
+    const sig = callSignature('read_file', { path: 'a.ts' });
+    d.record('read_file', sig);
+    d.record('read_file', sig);
+    expect(d.tripped('read_file', sig)).toBe(true); // still "trips"…
+    expect(d.tripMode('read_file', sig)).toBe('advisory'); // …but as a nudge
+  });
+
+  it('returns none when not tripped', () => {
+    const d = new LoopDetector({ limit: 3, advisoryTools: ['read_file'] });
+    const sig = callSignature('read_file', { path: 'a.ts' });
+    d.record('read_file', sig);
+    expect(d.tripMode('read_file', sig)).toBe('none');
+  });
+
+  it('trips stay hard by default (backward compat)', () => {
+    const d = new LoopDetector({ limit: 2 });
+    const sig = callSignature('read_file', { path: 'a.ts' });
+    d.record('read_file', sig);
+    d.record('read_file', sig);
+    expect(d.tripMode('read_file', sig)).toBe('hard');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LoopDetector — sequence detection (A→B→A→B cycles)
 // ---------------------------------------------------------------------------
 describe('LoopDetector — sequence detection', () => {

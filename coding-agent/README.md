@@ -43,6 +43,7 @@ npm run ui -w @agent/coding-agent
 
 - **死信队列**（`run.deadLetter`，默认 `enabled: true`）——工具调用耗尽重试后仍失败，内容寻址记录到 `run.deadLetter.storeDir`（默认 `.coding-agent-dead-letters/queue.json`），供人工复盘/`retryDeadLetter()` 重放；只记录不阻断，`CodingRuntimeOptions.deadLetter` 可按次覆盖。
 - **按工具限流**（`policy.rateLimits`，默认空/不限）——token-bucket，格式同 `durable-agent-runtime` 的 `RateLimitRule`（`{ capacity, refillPerSec }`），按需在 `agent.config.json` 里显式加。
+- **循环检测调优**（`run.loop`，默认已按编码画像）——透传 harness `LoopDetector`：`windowSize`（默认 16）、`toolLimits`（读/验证工具 6–8、写工具 2–3）、`sequenceMutatingTools`（默认写工具集合——`write→test` 仍检测、`grep→read` 不误报）、`successResets`（默认 `run_tests`/`run_check`——绿测=进展重置计数，连红才累积）、`advisoryTools`（默认只读/验证工具——触发时轻推模型换思路、run 继续，写工具保持硬中止）。`CodingRuntimeOptions.loopOptions` 可按次覆盖。
 
 ## CLI
 

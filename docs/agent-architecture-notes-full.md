@@ -58,7 +58,7 @@ ProtocolDecision =
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 瞬时重试 | `retry.ts` | 指数退避 + full-jitter，分层错误分类（HTTP status→type→regex），`Retry-After` 优先。✅ `retryBudget` 运行级熔断。✅ `RetryingToolInvoker`：`ToolInvoker` 装饰器，把同一套重试逻辑用到工具调用（不只是模型调用） |
-| 循环检测 | `loop-detector.ts` | 滑动窗口 + 序列模式（A→B→A→B）+ per-tool limits |
+| 循环检测 | `loop-detector.ts` | 滑动窗口 + 序列模式（A→B→A→B）+ per-tool limits + 编码防误报三件套：`sequenceMutatingTools`（序列限定写工具）/ `successResets`（成功重置计数）/ `advisoryTools`（只读/验证降级轻推） |
 | 熔断器 | `circuit-breaker.ts` | closed→open→half_open 三态；仅 transient error 跳闸 |
 | 分级模型链 | `fallback.ts` | 按 tier 尝试（每 tier 独立 retry+breaker）+ escalation ladder，零侵入 `ChatModel` |
 | Saga 补偿 | `compensation.ts` | opt-in 装饰器，LIFO 回滚，best-effort / stopOnError |
@@ -72,7 +72,7 @@ ProtocolDecision =
 | Circuit Breaker | ✅ | Nygard 经典三态 |
 | Provider/Model Fallback | ✅ `createResilientModel` | 多 tier + escalation ladder |
 | Saga / Compensation | ✅ | LIFO 回滚（业界罕见） |
-| Loop 检测（序列模式） | ✅ 强于多数框架 | A→B→A→B 序列检测 |
+| Loop 检测（序列模式） | ✅ 强于多数框架 | A→B→A→B 序列检测；编码场景：序列限定写工具、绿测=进展重置、只读/验证工具 trip 降级为 advisory 轻推不中止 run |
 | Dead-Letter Queue | ✅ `DeadLetterToolInvoker` + `retryDeadLetter` | 组合在 `RetryingToolInvoker` 外层，只有耗尽重试的调用才入队；持久化版本见 runtime 的 `FileDeadLetterQueue` |
 | Hedged Requests | ❌ | 慢尾延迟并发请求 |
 | Token-bucket 限流（按工具） | ✅ runtime `policy.ts` | 经典 token bucket（`capacity` + `refillPerSec`）；超限拒绝并返回 `retryAfterMs`。故意进程内、不事件源化（重放不应再扣令牌）。harness 层无独立 ToolInvoker 装饰器——限流挂在 runtime 统一 `callTool` 漏斗上（见 runtime-caching-and-policy.md） |
@@ -84,6 +84,7 @@ ProtocolDecision =
 - "Escalation ladder = retry → degrade → ... → HITL"
 - "Saga 不能进核心 loop：loop 的哲学是'错误→observation→自愈'，回滚是 opt-in 装饰器"
 - "Event Sourcing + Snapshot → 快速恢复 + 幂等重放"
+- "Loop 检测要分工具语义：只读/验证工具的重复≠卡死（grep→read、write→test 是编码的正常节奏）——序列检测限定到写工具、成功调用重置计数、只读/验证工具触发时降级为 advisory 轻推；只有写工具重复才硬停"
 
 ---
 

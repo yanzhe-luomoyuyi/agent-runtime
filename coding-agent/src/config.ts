@@ -115,6 +115,13 @@ export interface CodingLoopSection {
    * suspicion, while repeated FAILURES still pile up and trip.
    */
   successResets?: string[];
+  /**
+   * Tools whose trip is ADVISORY: the repeated call is not executed, but the
+   * run continues and the model gets a "change approach" note instead of a
+   * hard abort. Read-only / verify tools repeat legitimately, so they are
+   * nudged; write tools keep the hard refusal.
+   */
+  advisoryTools?: string[];
 }
 
 export interface CodingRunSection {
@@ -301,6 +308,17 @@ export const CODING_CONFIG_DEFAULTS: CodingConfig = {
       // A green verify run is progress, so it resets that call's repeat count;
       // only repeated failures accumulate and trip the detector.
       successResets: ['run_tests', 'run_check'],
+      // Read-only / verify tools get nudged on a trip instead of aborting the
+      // run — they repeat legitimately; write tools below keep the hard stop.
+      advisoryTools: [
+        'read_file',
+        'grep',
+        'list_dir',
+        'list_tree',
+        'extract_top_comments',
+        'run_tests',
+        'run_check',
+      ],
       toolLimits: {
         // Read-only sensing tools repeat legitimately (re-check state after edits).
         read_file: 8,

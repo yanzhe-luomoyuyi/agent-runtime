@@ -39,7 +39,18 @@ export interface LoopDetectorOptions {
    * Default: unset — every call counts regardless of outcome.
    */
   successResets?: string[];
+  /**
+   * Tools whose trip is ADVISORY rather than a hard refusal: the repeated
+   * call is not executed, but instead of aborting the run the host feeds a
+   * "you may be stuck — change approach" note back to the model. Read-only /
+   * verify tools repeat legitimately, so they get nudged; write tools keep
+   * the hard refusal + run abort. Default: unset — every trip is hard.
+   */
+  advisoryTools?: string[];
 }
+
+/** Severity of a loop-detector trip for the call being attempted. */
+export type TripSeverity = 'none' | 'advisory' | 'hard';
 
 interface CallEntry {
   name: string;
@@ -61,6 +72,7 @@ export class LoopDetector {
   private readonly seqLimit: number;
   private readonly seqMutating: Set<string> | undefined;
   private readonly successResets: Set<string> | undefined;
+  private readonly advisoryTools: Set<string> | undefined;
 
   /**
    * @param opts  Either a plain `number` (limit only, backward-compatible) or a
@@ -79,6 +91,7 @@ export class LoopDetector {
       ? new Set(resolved.sequenceMutatingTools)
       : undefined;
     this.successResets = resolved.successResets ? new Set(resolved.successResets) : undefined;
+    this.advisoryTools = resolved.advisoryTools ? new Set(resolved.advisoryTools) : undefined;
   }
 
   /** Record one tool call. `name` is the tool name, `sig` is `callSignature(name, args)`. */
@@ -89,10 +102,26 @@ export class LoopDetector {
   }
 
   /**
-   * True when either (a) the exact call signature has appeared `limit` times
-   * within the sliding window, or (b) a sequence pattern is repeating.
+   * True when recording this call would trip — either an identical call has
+   * appeared `limit` times within the sliding window, or a sequence pattern is
+   * repeating. Backward-compatible alias of `tripMode(...) !== 'none'`.
    */
   tripped(name: string, sig: string): boolean {
+    return this.wouldTrip(name, sig);
+  }
+
+  /**
+   * Severity of tripping for the call being attempted:
+   * - `'hard'` — refuse the call and stop the run (default; write tools)
+   * - `'advisory'` — do not execute the call, but let the host nudge the model
+   *   and continue the run (read-only / verify tools)
+   * - `'none'` — no trip
+   */
+  tripMode(name: string, sig: string): TripSeverity {
+    return this.wouldTrip(name, sig) ? (this.advisoryTools?.has(name) ? 'advisory' : 'hard') : 'none';
+  }
+
+  private wouldTrip(name: string, sig: string): boolean {
     const limit = this.toolLimits[name] ?? this.defaultLimit;
 
     // (a) Single-call repeat within the sliding window

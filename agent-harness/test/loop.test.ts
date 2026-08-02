@@ -221,6 +221,20 @@ describe('agent loop', () => {
     expect(res.stopReason).toBe('loop_detected');
     expect(res.turns).toBe(3);
   });
+
+  it('nudges advisory tools instead of aborting the run', async () => {
+    const tools = new MockToolInvoker([getIssue]);
+    const model = new RuleChatModel(() => toolCallResponse([toolCall('c', 'getIssue', { issue: 'same' })]));
+    const res = await runAgent({
+      goal: 'x', model, tools, maxTurns: 8,
+      loopOptions: { limit: 3, advisoryTools: ['getIssue'] },
+    });
+    // Never hard-aborts: repeated getIssue becomes a nudge observation and the
+    // run continues to the turn budget.
+    expect(res.stopReason).toBe('max_turns');
+    expect(res.turns).toBe(8);
+    expect(res.messages.some((m) => m.role === 'tool' && m.content?.includes('repeatedly'))).toBe(true);
+  });
 });
 
 describe('loop termination & error handling', () => {

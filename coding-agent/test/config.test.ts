@@ -49,6 +49,9 @@ describe('loadCodingConfig', () => {
       'apply_patch',
     ]);
     expect(cfg.run.loop.successResets).toEqual(['run_tests', 'run_check']);
+    expect(cfg.run.loop.advisoryTools).toContain('read_file');
+    expect(cfg.run.loop.advisoryTools).toContain('run_tests');
+    expect(cfg.run.loop.advisoryTools).not.toContain('write_file');
     expect(cfg.run.planner.maxReplans).toBe(2);
     expect(cfg.run.reflection.maxReflections).toBe(1);
     expect(cfg.run.toolConcurrency).toBe(8);
@@ -119,6 +122,7 @@ describe('loadCodingConfig', () => {
             toolLimits: { read_file: 12, run_tests: 4 },
             sequenceMutatingTools: ['write_file'],
             successResets: ['run_check'],
+            advisoryTools: ['read_file'],
           },        },
       }),
     );
@@ -138,6 +142,8 @@ describe('loadCodingConfig', () => {
       expect(cfg.run.loop.sequenceMutatingTools).toEqual(['write_file']);
       // successResets replaces wholesale too.
       expect(cfg.run.loop.successResets).toEqual(['run_check']);
+      // advisoryTools replaces wholesale too.
+      expect(cfg.run.loop.advisoryTools).toEqual(['read_file']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

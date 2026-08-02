@@ -26,7 +26,7 @@
 | 模块 | 一句话 |
 |------|--------|
 | `recovery/retry.ts` | Full-jitter 指数退避 + HTTP 状态分类 + Retry-After；per-run retryBudget 熔断；`RetryingToolInvoker`（`ToolInvoker` 装饰器） |
-| `recovery/loop-detector.ts` | 滑动窗口 + A→B→A→B 序列检测 + per-tool 调用上限 |
+| `recovery/loop-detector.ts` | 滑动窗口 + A→B→A→B 序列检测 + per-tool 调用上限；`sequenceMutatingTools`（序列限定写工具）· `successResets`（成功重置计数）· `advisoryTools`（只读/验证 trip 降级轻推） |
 | `recovery/circuit-breaker.ts` | closed→open→half_open 三态熔断器 |
 | `recovery/fallback.ts` | 多 tier 分级模型链 + escalation ladder，零侵入 ChatModel |
 | `recovery/compensation.ts` | Saga 补偿：LIFO 回滚已提交副作用（opt-in 装饰器） |
