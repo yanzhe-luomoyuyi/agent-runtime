@@ -558,6 +558,83 @@ describe('ContextManager — cache-friendly ordering', () => {
 // ---------------------------------------------------------------------------
 // Legacy backward compat
 // ---------------------------------------------------------------------------
+// Removed tool-result notice (assemble / compact)
+// ---------------------------------------------------------------------------
+describe('ContextManager — removed tool results notice', () => {
+  it('lists folded tool results and invites re-call in the assemble summary', () => {
+    const cm = new ContextManager({
+      maxPromptTokens: 80,
+      keepRecentMessages: 1,
+      outputReserveTokens: 0,
+      goalProtected: false,
+      importanceScoring: false,
+      tokenizer: {
+        count: (t) => t.length,
+        countMessage: (m) => messageTextLen(m),
+        countMessages: (ms) => ms.reduce((s, m) => s + messageTextLen(m), 0),
+      },
+    });
+    const msgs: Message[] = [
+      { role: 'system', content: 'S' },
+      { role: 'user', content: 'goal' },
+      {
+        role: 'assistant',
+        content: 'reading',
+        toolCalls: [{ id: 'r1', name: 'read_file', arguments: { path: 'src/a.ts' } }],
+      },
+      { role: 'tool', name: 'read_file', toolCallId: 'r1', content: 'FILE BODY '.repeat(20), untrusted: true },
+      { role: 'user', content: 'recent-most' },
+    ];
+    const { messages: out, decision } = cm.assembleDetailed(msgs);
+    expect(decision.outcome).toBe('assembled');
+    expect(decision.removedToolResults).toEqual([
+      { name: 'read_file', args: { path: 'src/a.ts' }, toolCallId: 'r1' },
+    ]);
+    const summary = out.find((m) => m.role === 'system' && m.content?.startsWith('[Context summary'));
+    expect(summary?.content).toContain('Removed tool results');
+    expect(summary?.content).toContain('read_file');
+    expect(summary?.content).toContain('src/a.ts');
+    expect(summary?.content).toContain('call the same tool with the same arguments');
+  });
+
+  it('appends the same notice after model compaction', async () => {
+    const cm = new ContextManager({
+      maxPromptTokens: 200,
+      keepRecentMessages: 1,
+      outputReserveTokens: 0,
+      compactionThreshold: 0.01,
+      goalProtected: false,
+      importanceScoring: false,
+      modelSummarize: async () => 'folded history',
+      tokenizer: {
+        count: (t) => t.length,
+        countMessage: (m) => messageTextLen(m),
+        countMessages: (ms) => ms.reduce((s, m) => s + messageTextLen(m), 0),
+      },
+    });
+    const msgs: Message[] = [
+      { role: 'system', content: 'S' },
+      { role: 'user', content: 'goal' },
+      {
+        role: 'assistant',
+        toolCalls: [{ id: 'g1', name: 'grep', arguments: { pattern: 'TODO' } }],
+      },
+      { role: 'tool', name: 'grep', toolCallId: 'g1', content: 'hit1\nhit2\nhit3', untrusted: true },
+      { role: 'user', content: 'continue' },
+    ];
+    const { messages: out, decision } = await cm.compactIfNeededDetailed(msgs, { turn: 1 });
+    expect(decision.outcome).toBe('compacted');
+    expect(decision.removedToolResults?.some((r) => r.name === 'grep')).toBe(true);
+    const summary = out.find((m) => m.role === 'system' && m.content?.includes('folded history'));
+    expect(summary?.content).toContain('Removed tool results');
+    expect(summary?.content).toContain('grep');
+    expect(summary?.content).toContain('TODO');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Backward compat
+// ---------------------------------------------------------------------------
 describe('ContextManager — backward compat', () => {
   it('still accepts the deprecated estimateTokens option', () => {
     const cm = new ContextManager({

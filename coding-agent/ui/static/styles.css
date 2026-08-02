@@ -1144,6 +1144,52 @@ button.compact.linkish {
   margin-bottom: 0.65rem;
 }
 
+.ctx-section {
+  margin-bottom: 0.85rem;
+}
+
+.ctx-section h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+.ctx-recalled-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+
+.ctx-recalled-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.65rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  font-size: 0.78rem;
+}
+
+.ctx-recalled-tool {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
+.ctx-recalled-args {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 0.35rem 0.45rem;
+  border-radius: 4px;
+  background: #eef2f7;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .ctx-diff-toggle {
   margin: 0;
   font-size: 0.82rem;

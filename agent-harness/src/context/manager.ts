@@ -295,6 +295,19 @@ export function snapshotContextMessages(messages: Message[]): ContextMessageSnap
 }
 
 /**
+ * A tool result whose body was folded out of the prompt (assemble / compact).
+ * Arguments come from the paired assistant `toolCalls` entry when present in
+ * the same folded window — used to tell the model it can re-call, and by the
+ * loop to detect post-eviction re-calls.
+ */
+export interface RemovedToolResult {
+  name: string;
+  /** Parsed args from the originating assistant tool call, when recoverable. */
+  args?: unknown;
+  toolCallId?: string;
+}
+
+/**
  * Auditable outcome of one `assemble` call. Suitable for TraceCollector /
  * ablation fixtures — answers "what was kept, what was folded, why".
  */
@@ -313,6 +326,8 @@ export interface AssembleDecision {
   importanceScoring: boolean;
   /** Machine-readable tags, e.g. `under_budget`, `hard_cap_trim`, `pinned_recent`. */
   reasons: string[];
+  /** Tool results whose bodies were folded into the summary (when assembled). */
+  removedToolResults?: RemovedToolResult[];
   /** Set when `outcome === 'assembled'` — transcript before assemble. */
   beforeMessages?: ContextMessageSnapshot[];
   /** Set when `outcome === 'assembled'` — transcript sent to the model. */
@@ -331,6 +346,8 @@ export interface CompactDecision {
   summarizedMessages: number;
   /** Durable model key when a summary was produced. */
   key?: string;
+  /** Tool results whose bodies were folded into the summary (when compacted). */
+  removedToolResults?: RemovedToolResult[];
   /** Set when `outcome === 'compacted'` — durable transcript before compact. */
   beforeMessages?: ContextMessageSnapshot[];
   /** Set when `outcome === 'compacted'` — durable transcript after compact. */
@@ -361,8 +378,69 @@ const PROTECTED_BUDGET_FRACTION = 0.25;
 /** Marks a message produced by a prior compaction round (see `assemble` / `compactIfNeeded`). */
 const SUMMARY_PREFIX = '[Context summary of';
 
+/** Cap for args JSON in the removed-tool-results notice (keeps the summary small). */
+const REMOVED_TOOL_ARGS_MAX_CHARS = 200;
+
+const REMOVED_TOOL_NOTICE_HEADER =
+  '[Removed tool results — full output was folded out of context. ' +
+  'If you need any of these again, call the same tool with the same arguments:]';
+
 function isSummaryMessage(m: Message): boolean {
   return m.role === 'system' && (m.content ?? '').startsWith(SUMMARY_PREFIX);
+}
+
+/**
+ * Collect tool results from a folded message window, pairing each with the
+ * originating assistant call's arguments when that call is in the same window.
+ */
+export function collectRemovedToolResults(older: Message[]): RemovedToolResult[] {
+  const callById = new Map<string, { name: string; arguments: unknown }>();
+  for (const m of older) {
+    if (m.role !== 'assistant' || !m.toolCalls?.length) continue;
+    for (const tc of m.toolCalls) {
+      callById.set(tc.id, { name: tc.name, arguments: tc.arguments });
+    }
+  }
+
+  const out: RemovedToolResult[] = [];
+  const seen = new Set<string>();
+  for (const m of older) {
+    if (m.role !== 'tool') continue;
+    const name = m.name ?? 'tool';
+    const paired = m.toolCallId ? callById.get(m.toolCallId) : undefined;
+    const args = paired?.arguments;
+    const dedupeKey = m.toolCallId
+      ? `id:${m.toolCallId}`
+      : `name:${name}:${args !== undefined ? JSON.stringify(args) : ''}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const entry: RemovedToolResult = { name };
+    if (args !== undefined) entry.args = args;
+    if (m.toolCallId) entry.toolCallId = m.toolCallId;
+    out.push(entry);
+  }
+  return out;
+}
+
+/** Deterministic footer listing folded tool results so the model can re-fetch. */
+export function formatRemovedToolResultsNotice(removed: RemovedToolResult[]): string {
+  if (removed.length === 0) return '';
+  const lines = removed.map((r) => {
+    let argsStr = '…';
+    if (r.args !== undefined) {
+      const raw = JSON.stringify(r.args);
+      argsStr =
+        raw.length > REMOVED_TOOL_ARGS_MAX_CHARS
+          ? `${raw.slice(0, REMOVED_TOOL_ARGS_MAX_CHARS)}…`
+          : raw;
+    }
+    return `- ${r.name}(${argsStr})`;
+  });
+  return `\n\n${REMOVED_TOOL_NOTICE_HEADER}\n${lines.join('\n')}`;
+}
+
+function buildSummaryContent(olderCount: number, body: string, removed: RemovedToolResult[]): string {
+  return `${SUMMARY_PREFIX} ${olderCount} earlier message(s)]\n${body}${formatRemovedToolResultsNotice(removed)}`;
 }
 
 // ── ContextManager ──────────────────────────────────────────────────
@@ -537,13 +615,14 @@ export class ContextManager {
       : { kept: flattenUnits([...grownUnits, ...pinnedUnits]), evicted: [] as Message[] };
 
     const older = [...olderFromScan, ...evicted];
+    const removedToolResults = collectRemovedToolResults(older);
 
     // Build output: system (cache-friendly prefix) → summary (semi-static) → goal → tail (dynamic)
     const out: Message[] = [...system];
     if (older.length > 0) {
       out.push({
         role: 'system',
-        content: `${SUMMARY_PREFIX} ${older.length} earlier message(s)]\n${this.summarize(older)}`,
+        content: buildSummaryContent(older.length, this.summarize(older), removedToolResults),
       });
     }
     out.push(...goal);
@@ -553,6 +632,7 @@ export class ContextManager {
     if (this.importanceScoring) reasons.push('importance_growth');
     if (hardCapTrimmed) reasons.push('hard_cap_trim');
     if (older.length > 0) reasons.push('heuristic_summary');
+    if (removedToolResults.length > 0) reasons.push('removed_tool_results_notice');
 
     return {
       messages: out,
@@ -569,6 +649,7 @@ export class ContextManager {
         hardCapTrimmed,
         importanceScoring: this.importanceScoring,
         reasons,
+        ...(removedToolResults.length > 0 ? { removedToolResults } : {}),
         beforeMessages: snapshotContextMessages(messages),
         afterMessages: snapshotContextMessages(out),
       },
@@ -705,9 +786,10 @@ export class ContextManager {
 
     const key = keyScope(opts.keyPrefix).compact(opts.turn);
     const summary = await this.modelSummarize!(older, { key });
+    const removedToolResults = collectRemovedToolResults(older);
     const summaryMsg: Message = {
       role: 'system',
-      content: `${SUMMARY_PREFIX} ${older.length} earlier message(s)]\n${summary}`,
+      content: buildSummaryContent(older.length, summary, removedToolResults),
     };
     const out = [...system, summaryMsg, ...goal, ...recent];
     return {
@@ -720,6 +802,7 @@ export class ContextManager {
         protectedUnits: protectedOlderUnits.length,
         summarizedMessages: older.length,
         key,
+        ...(removedToolResults.length > 0 ? { removedToolResults } : {}),
         beforeMessages: snapshotContextMessages(messages),
         afterMessages: snapshotContextMessages(out),
       },

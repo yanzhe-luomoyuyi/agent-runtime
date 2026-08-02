@@ -89,7 +89,9 @@ Loop 在 `_prepareTurn` 里调用 `compactIfNeededDetailed` + `assembleDetailed`
 | `hardCapEvictedMessages` | 因 hard-cap trim 被丢掉的条数（摘要的子集） |
 | `pinnedUnits` / `grownUnitsAdmitted` | 近期 pin 的 unit 数 / 折扣扩窗收进来的 unit 数 |
 | `hardCapTrimmed` / `importanceScoring` | 是否触发硬裁、是否开了重要性 |
-| `reasons` | 标签，如 `under_budget`、`pinned_recent`、`hard_cap_trim`、`heuristic_summary` |
+| `reasons` | 标签，如 `under_budget`、`pinned_recent`、`hard_cap_trim`、`heuristic_summary`、`removed_tool_results_notice` |
+| `removedToolResults?` | 被折进摘要的 tool 结果（`name` / `args?` / `toolCallId?`）；摘要正文会追加确定性 notice，告知模型可按相同参数再调 |
+| `beforeMessages?` / `afterMessages?` | `outcome === 'assembled'` 时的 before/after 快照（Workbench Context 页 diff） |
 
 **`CompactDecision`（可选 LLM 主动压缩）**
 
@@ -100,6 +102,20 @@ Loop 在 `_prepareTurn` 里调用 `compactIfNeededDetailed` + `assembleDetailed`
 | `inputTokens` / `outputTokens` | 压缩前后 |
 | `protectedUnits` / `summarizedMessages` | `protectVerbatimClasses` 名单内留下的 unit 数 / 折进 LLM 摘要的条数 |
 | `key?` | durable 摘要 key（如 `compact-t3`） |
+| `removedToolResults?` | 同 assemble——被 fold 的 tool 结果列表；摘要后追加同一份确定性 re-call notice |
+| `beforeMessages?` / `afterMessages?` | `outcome === 'compacted'` 时的 before/after 快照 |
+
+### 2.4.1 压缩后同签名再调（`TurnTrace.recalledTools`）
+
+Loop 在 `_prepareTurn` 把 `removedToolResults` 记入签名表（`callSignature(name, args)`）；之后工具执行若命中，则 `recordRecalledTool`：
+
+| 字段 | 含义 |
+|------|------|
+| `tool` / `signature` / `args` | 再调的工具与签名 |
+| `turn` | 再调发生的 turn |
+| `evictedAtTurn` / `evictedBy` | 上次被 `assemble` / `compact` 折掉的 turn |
+
+Workbench **Context** 页展示「Re-called after compression」区块；`formatTraceReport` 也会打出 `recalled …` 行。
 
 ### 2.5 Harness trace **没有**什么
 
@@ -339,6 +355,7 @@ process.exit(report.allPassed ? 0 : 1);
 |------|--------|
 | 这 turn 为什么裁掉了旧消息？最新 user 还在吗？ | Harness `turn.context.assemble` |
 | 有没有做 LLM compact？key 是什么？ | Harness `turn.context.compact` |
+| 哪些 tool 结果被折掉了？模型有没有同签名再拉？ | Harness `removedToolResults` / `turn.recalledTools`（Workbench Context 页） |
 | 模型这次调了哪个工具、参数是什么？ | Harness `turn.tools[].args` |
 | Resume 省了多少次真实调用？ | Runtime `totals.replayHitRate` |
 | Policy 拦了几次？内容缓存省了多少钱？ | Runtime `policyDenials` / `costSavedUsd` |

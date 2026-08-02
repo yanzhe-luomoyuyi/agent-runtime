@@ -99,6 +99,28 @@ describe('TraceCollector', () => {
     expect(trace.turns[0]!.tools[0]!.args).toEqual({ query: 'login bug', path: 'src/' });
   });
 
+  it('records post-compression tool re-calls on the turn', () => {
+    const t = new TraceCollector(FALLBACK_PRICING);
+    t.startTurn(2);
+    t.startModelCall();
+    t.endModelCall({ promptTokens: 10, completionTokens: 5 });
+    t.recordRecalledTool({
+      tool: 'read_file',
+      signature: 'read_file:{"path":"a.ts"}',
+      args: { path: 'a.ts' },
+      turn: 2,
+      evictedAtTurn: 1,
+      evictedBy: 'assemble',
+    });
+    t.startToolCall();
+    t.endToolCall('read_file', true, { path: 'a.ts' });
+
+    const trace = t.snapshot(1000);
+    expect(trace.turns[0]!.recalledTools).toHaveLength(1);
+    expect(trace.turns[0]!.recalledTools![0]!.evictedBy).toBe('assemble');
+    expect(formatTraceReport(trace)).toContain('recalled read_file');
+  });
+
   it('works without usage data (backward compat)', () => {
     const t = new TraceCollector(FALLBACK_PRICING);
     t.startTurn(1);

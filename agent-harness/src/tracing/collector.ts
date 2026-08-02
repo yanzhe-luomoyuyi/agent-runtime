@@ -99,12 +99,30 @@ export interface ContextTurnTrace {
   compact?: CompactDecision;
 }
 
+/**
+ * A tool call that matches a signature previously folded out of context by
+ * assemble/compact — the model re-fetched after eviction.
+ */
+export interface RecalledToolTrace {
+  tool: string;
+  /** `callSignature(name, args)` — same form as the loop detector. */
+  signature: string;
+  args: unknown;
+  /** Turn where this re-call executed. */
+  turn: number;
+  /** Turn where compact/assemble last removed a matching tool result. */
+  evictedAtTurn: number;
+  evictedBy: 'compact' | 'assemble';
+}
+
 export interface TurnTrace {
   turn: number;
   model: ModelCallTrace;
   tools: ToolCallTrace[];
   /** Present when the loop recorded assemble / compact decisions this turn. */
   context?: ContextTurnTrace;
+  /** Tool calls that re-fetched results previously removed by compression. */
+  recalledTools?: RecalledToolTrace[];
 }
 
 export interface AgentTrace {
@@ -245,6 +263,17 @@ export class TraceCollector {
     }
   }
 
+  /**
+   * Record a tool call whose signature matches one previously folded out by
+   * assemble/compact (model re-fetched after eviction).
+   */
+  recordRecalledTool(entry: RecalledToolTrace): void {
+    const current = this.turns[this.turns.length - 1];
+    if (!current) return;
+    if (!current.recalledTools) current.recalledTools = [];
+    current.recalledTools.push(entry);
+  }
+
   // ── Snapshot ────────────────────────────────────────────────────
 
   snapshot(runDurationMs: number): AgentTrace {
@@ -328,6 +357,13 @@ export function formatTraceReport(trace: AgentTrace): string {
         ? JSON.stringify(tc.args).slice(0, 80)
         : '';
       lines.push(`         tool ${status} ${tc.tool}(${argsSummary})  ${tc.durationMs}ms${tc.error ? `  ${tc.error}` : ''}`);
+    }
+
+    for (const r of turn.recalledTools ?? []) {
+      lines.push(
+        `         recalled ${r.tool}  after ${r.evictedBy}@turn${r.evictedAtTurn}` +
+          `  sig=${r.signature.slice(0, 80)}`,
+      );
     }
   }
 

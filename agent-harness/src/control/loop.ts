@@ -39,7 +39,7 @@ import type { ChatModel, ChatResponse, JSONSchema, Message, StopReason, ToolCall
 import { goalMessage, isGoalMessage, keyScope, systemMessage, toolResultMessage, userMessage } from '@agent/contracts';
 
 import type { AgentConfig } from '../agent.js';
-import { ContextManager } from '../context/manager.js';
+import { ContextManager, type RemovedToolResult } from '../context/manager.js';
 import {
   buildRetrievalMessages,
   type RetrievalHit,
@@ -311,6 +311,11 @@ interface LoopState {
   outputRetriesLeft: number;
   concurrency: number;
   startTime: number;
+  /**
+   * Tool-call signatures whose results were folded out by assemble/compact.
+   * Used to flag when the model re-calls with the same signature.
+   */
+  evictedToolSigs: Map<string, { turn: number; by: 'compact' | 'assemble'; name: string; args?: unknown }>;
 }
 
 function initLoopState(opts: RunAgentOptions): LoopState {
@@ -351,6 +356,7 @@ function initLoopState(opts: RunAgentOptions): LoopState {
     outputRetriesLeft: opts.outputRetries ?? DEFAULT_OUTPUT_RETRIES,
     concurrency: opts.toolConcurrency ?? 1,
     startTime: Date.now(),
+    evictedToolSigs: new Map(),
   };
 }
 
@@ -414,10 +420,30 @@ async function checkInterrupt(
 async function _prepareTurn(st: LoopState, turn: number, trace?: TraceCollector): Promise<Message[]> {
   const compacted = await st.context.compactIfNeededDetailed(st.convo, { keyPrefix: st.prefix, turn });
   st.convo = compacted.messages;
+  if (compacted.decision.outcome === 'compacted') {
+    _noteEvictedTools(st, turn, 'compact', compacted.decision.removedToolResults ?? []);
+  }
   trace?.recordCompact(compacted.decision);
   const assembled = st.context.assembleDetailed(st.convo);
+  if (assembled.decision.outcome === 'assembled') {
+    _noteEvictedTools(st, turn, 'assemble', assembled.decision.removedToolResults ?? []);
+  }
   trace?.recordAssemble(assembled.decision);
   return assembled.messages;
+}
+
+/** Remember tool signatures folded out of context so later identical calls can be flagged. */
+function _noteEvictedTools(
+  st: LoopState,
+  turn: number,
+  by: 'compact' | 'assemble',
+  removed: RemovedToolResult[],
+): void {
+  for (const r of removed) {
+    if (r.args === undefined) continue;
+    const signature = callSignature(r.name, r.args);
+    st.evictedToolSigs.set(signature, { turn, by, name: r.name, args: r.args });
+  }
 }
 
 async function _callModelBatch(st: LoopState, assembled: Message[], turn: number): Promise<ChatResponse> {
@@ -549,6 +575,17 @@ async function _execOne(prepared: PreparedCall, st: LoopState, turn: number, opt
   }
   const effectiveArgs = decision.modifiedArgs ?? call.arguments;
   const sig = callSignature(call.name, effectiveArgs);
+  const priorEviction = st.evictedToolSigs.get(sig);
+  if (priorEviction) {
+    opts.trace?.recordRecalledTool({
+      tool: call.name,
+      signature: sig,
+      args: effectiveArgs,
+      turn,
+      evictedAtTurn: priorEviction.turn,
+      evictedBy: priorEviction.by,
+    });
+  }
   st.detector.record(call.name, sig);
   const trip = st.detector.tripMode(call.name, sig);
   if (trip === 'hard') {

@@ -1074,6 +1074,12 @@ function renderContextDecision(kind, turn, decision) {
         ` · summarized ${decision.summarizedMessages}` +
         (decision.key ? ` · key ${decision.key}` : '');
 
+  const removedTools = decision.removedToolResults || [];
+  const removedNote = removedTools.length
+    ? `<p class="ctx-removed-tools fine">Removed tool results (${removedTools.length}): ${escapeHtml(
+        removedTools.map((r) => r.name).join(', '),
+      )} — model can re-call</p>`
+    : '';
   const before = decision.beforeMessages || [];
   const after = decision.afterMessages || [];
   const diff = changed ? diffContextMessages(before, after) : null;
@@ -1110,6 +1116,7 @@ function renderContextDecision(kind, turn, decision) {
       <span class="badge">${escapeHtml(kind)}</span>
     </div>
     <div class="ctx-card-summary">${escapeHtml(summary)}</div>
+    ${removedNote}
     ${delta}
     ${panels}
   </div>`;
@@ -1141,6 +1148,8 @@ function renderContext(harnessTrace) {
     }
   }
 
+  const recalledSection = renderRecalledTools(turns);
+
   const toolbar = `<div class="ctx-toolbar">
     <label class="check ctx-diff-toggle" title="Hide unchanged messages; show only removed / added between Before and After">
       <input type="checkbox" id="ctxDiffOnly" ${contextDiffOnly ? 'checked' : ''} />
@@ -1148,7 +1157,7 @@ function renderContext(harnessTrace) {
     </label>
   </div>`;
 
-  if (!cards.length) {
+  if (!cards.length && !recalledSection) {
     const bits = [];
     if (assemblePassthrough) bits.push(`${assemblePassthrough} assemble passthrough`);
     if (compactNoop) bits.push(`${compactNoop} compact noop`);
@@ -1164,8 +1173,37 @@ function renderContext(harnessTrace) {
     compactNoop || assemblePassthrough
       ? `<p class="fine">Also: ${assemblePassthrough} assemble passthrough · ${compactNoop} compact noop (unchanged — not expanded).</p>`
       : '';
-  viewContext.innerHTML = `${toolbar}<div class="ctx-list">${cards.join('')}</div>${footer}`;
+  const cardsHtml = cards.length ? `<div class="ctx-list">${cards.join('')}</div>` : '';
+  viewContext.innerHTML = `${toolbar}${recalledSection}${cardsHtml}${footer}`;
   bindContextToolbar();
+}
+
+function renderRecalledTools(turns) {
+  const rows = [];
+  for (const turn of turns || []) {
+    for (const r of turn.recalledTools || []) {
+      const argsPreview =
+        r.args != null
+          ? (() => {
+              const raw = typeof r.args === 'string' ? r.args : JSON.stringify(r.args);
+              return raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
+            })()
+          : '';
+      rows.push(`<div class="ctx-recalled-row">
+        <span class="badge">re-call</span>
+        <strong>Turn ${escapeHtml(String(turn.turn))}</strong>
+        <code class="ctx-recalled-tool">${escapeHtml(r.tool || '?')}</code>
+        <span class="meta">evicted by ${escapeHtml(r.evictedBy || '?')} @ turn ${escapeHtml(String(r.evictedAtTurn ?? '?'))}</span>
+        ${argsPreview ? `<pre class="ctx-recalled-args">${escapeHtml(argsPreview)}</pre>` : ''}
+      </div>`);
+    }
+  }
+  if (!rows.length) return '';
+  return `<div class="ctx-section ctx-recalled">
+    <h3>Re-called after compression <span class="meta">(${rows.length})</span></h3>
+    <p class="fine">Same tool + args as a result that assemble/compact had folded out of context.</p>
+    <div class="ctx-recalled-list">${rows.join('')}</div>
+  </div>`;
 }
 
 function bindContextToolbar() {

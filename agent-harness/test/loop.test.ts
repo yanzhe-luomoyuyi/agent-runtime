@@ -69,6 +69,58 @@ describe('agent loop', () => {
     expect(snap.turns[0]!.context?.compact?.reason).toBe('no_summarizer');
   });
 
+  it('records when the model re-calls a tool whose result was assembled away', async () => {
+    const readFile = makeTool(
+      'read_file',
+      'Read a file.',
+      { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      (a) => ({ content: `body-of-${(a as { path: string }).path}-${'x'.repeat(40)}` }),
+    );
+    const tools = new MockToolInvoker([readFile]);
+    const model = new ScriptedChatModel([
+      toolCallResponse([toolCall('c1', 'read_file', { path: 'a.ts' })]),
+      toolCallResponse([toolCall('c2', 'read_file', { path: 'b.ts' })]),
+      toolCallResponse([toolCall('c3', 'read_file', { path: 'c.ts' })]),
+      // Same signature as c1 — result should have been folded by assemble by now.
+      toolCallResponse([toolCall('c4', 'read_file', { path: 'a.ts' })]),
+      finalResponse('done'),
+    ]);
+    const trace = new TraceCollector(FALLBACK_PRICING);
+    const charTok = {
+      count: (t: string) => t.length,
+      countMessage: (m: { role: string; content?: string; name?: string; toolCalls?: unknown }) => {
+        const parts = [m.role, m.content ?? ''];
+        if (m.toolCalls) parts.push(JSON.stringify(m.toolCalls));
+        if (m.name) parts.push(m.name);
+        return parts.join(' ').length;
+      },
+      countMessages: (ms: Array<{ role: string; content?: string; name?: string; toolCalls?: unknown }>) =>
+        ms.reduce((s, m) => s + charTok.countMessage(m), 0),
+    };
+    await runAgent({
+      goal: 'x',
+      model,
+      tools,
+      trace,
+      maxTurns: 10,
+      loopLimit: 99,
+      context: new ContextManager({
+        maxPromptTokens: 160,
+        outputReserveTokens: 0,
+        keepRecentMessages: 2,
+        goalProtected: true,
+        importanceScoring: true,
+        tokenizer: charTok,
+      }),
+    });
+    const snap = trace.snapshot(1);
+    const recalled = snap.turns.flatMap((t) => t.recalledTools ?? []);
+    expect(recalled.some((r) => r.tool === 'read_file' && (r.args as { path: string }).path === 'a.ts')).toBe(
+      true,
+    );
+    expect(recalled.some((r) => r.evictedBy === 'assemble' || r.evictedBy === 'compact')).toBe(true);
+  });
+
   it('passes deterministic durable keys to the model and tools', async () => {
     const tools = new MockToolInvoker([getIssue]);
     const model = new ScriptedChatModel([

@@ -35,7 +35,7 @@
 ### C — 上下文层
 | 模块 | 一句话 |
 |------|--------|
-| `context/manager.ts` | Token 预算硬顶；atomic tool-call 单元淘汰；近期 pin + `ImportanceClass` 折扣扩窗；`protectVerbatimClasses` 显式保护名单；untrusted 隔离；keyed LLM 主动压缩 |
+| `context/manager.ts` | Token 预算硬顶；atomic tool-call 单元淘汰；近期 pin + `ImportanceClass` 折扣扩窗；`protectVerbatimClasses` 显式保护名单；untrusted 隔离；keyed LLM 主动压缩；折掉的 tool 结果附确定性 re-call notice |
 | `context/retrieval.ts` | Query-time RAG 注入：gate（minScore / maxChunks / char 预算）→ `kind: 'retrieval'` + untrusted 消息；分数低于真人指令；不持有索引 |
 | `context/tokenizer.ts` | 默认 `tiktokenTokenizer`（cl100k_base）；可换 CJK-aware / heuristic / `fromCounter` |
 | `context/scratchpad.ts` | 超大工具输出卸载到外部存储，窗口留指针 |
@@ -108,7 +108,7 @@
 | `memory/embedding.ts` | async-first `EmbeddingProvider`（可选 `embedMany`）+ 默认 `HashingEmbeddingProvider` + `CachingEmbeddingProvider` + `createHttpEmbeddingProvider` + RRF |
 | `retrieval/` | 文档 RAG：`InMemoryDocumentStore` / `FileDocumentStore`；`RetrievalPolicy`（`once` / `once_rewrite` / `capped_agentic`）；`resolveRunCorpusId` / `collectSkillCorpora`；`systemRetrieveOnce` |
 | `app/document-tools.ts` | `document_search` / `document_read`（default + allow-list corpus；走 durable seam） |
-| harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策 / token 估价（非 event-log） |
+| harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策（含 `removedToolResults`）/ 压缩后同签名再调（`recalledTools`）/ token 估价（非 event-log） |
 | `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟/replay/policy/cache 汇总 |
 | `otel.ts` | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出 |
 | `eval.ts` | 可组合打分器（结果性 + 过程性/轨迹 + 人机协同 + 护栏回归）+ runner；读 runtime Trace + RunState；`Scenario.harness`/`approver` 可改路由到 harness 循环 |
