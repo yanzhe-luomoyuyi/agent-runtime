@@ -12,7 +12,7 @@
   "scripts": {
     "build": "npm run build -w @agent/contracts && npm run build -w @agent/harness && npm run build -w durable-agent-runtime && npm run build -w @agent/coding-agent",
     "build:contracts": "npm run build -w @agent/contracts",
-    "typecheck": "npm run build -w @agent/contracts && npm run typecheck -w @agent/harness && npm run typecheck -w durable-agent-runtime && npm run typecheck -w @agent/coding-agent",
+    "typecheck": "npm run build -w @agent/contracts && npm run build -w @agent/harness && npm run typecheck -w @agent/harness && npm run build -w durable-agent-runtime && npm run typecheck -w durable-agent-runtime && npm run typecheck -w @agent/coding-agent",
     "test": "npm run build -w @agent/contracts && npm run test -w @agent/harness && npm run test -w durable-agent-runtime && npm run test -w @agent/coding-agent"
   },
   "engines": {
