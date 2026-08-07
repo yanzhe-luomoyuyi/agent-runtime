@@ -57,9 +57,16 @@ npm run dev -w @agent/coding-agent -- --workspace /path/to/repo "<goal>"
 ## Eval
 
 ```bash
-npm run dev -w @agent/coding-agent -- eval                      # 脚本化模型，无网络，全过
+npm run dev -w @agent/coding-agent -- eval                      # 脚本化模型，无网络，全过 + scorecard
 AGENT_EVAL_REGRESS=1 npm run dev -w @agent/coding-agent -- eval # 演示回归被抓住，退出码 1
 AGENT_EVAL_LIVE=1 npm run dev -w @agent/coding-agent -- eval    # 真实模型（DEEPSEEK_API_KEY），测真实能力，非 CI 默认
+AGENT_EVAL_WRITE_BASELINE=1 npm run dev -w @agent/coding-agent -- eval  # 重写脚本化 scorecard 基线
 ```
 
-两个真实、零依赖的 bug fixture（`src/eval/fixtures.ts`）+ 一个成本预算护栏场景（`src/eval/scenarios.ts`）。核心是**客观标准**：`testsPass()` 打分器读 agent 自己调用 `run_tests` 的真实结果（`{ ok, exitCode }`），不是字符串匹配最终答案——`AGENT_EVAL_REGRESS=1` 会换上一个瞎猜、不读文件就改的脚本，`str_replace` 直接报错，`run_tests` 永远不会被叫到，`testsPass()` 如实报 `run_tests was never called`。`AGENT_EVAL_LIVE=1` 换掉脚本化模型，接真实 DeepSeek 跑同一批 bug fixture（`liveCodingScenarios`，回合/预算阈值放宽），检验的是提示词/skill 真实能力有没有退化，而不只是框架接线有没有断——需要联网 + 花钱 + 结果非确定性，因此从不进默认测试套件。详见 [docs/observability-trace-and-eval.md](../docs/observability-trace-and-eval.md)（§4.6）。
+**金标集**（`src/eval/fixtures.ts`）：9 个真实、零依赖 bug fixture，按难度分层——**easy** 3（单文件直修）/ **medium** 3（goal 不给路径，需 `grep`，带干扰文件）/ **hard** 3（依赖模块藏根因或双文件双 bug）——外加 1 个成本预算护栏场景（`src/eval/scenarios.ts`）。
+
+核心是**客观标准**：`testsPass()` 读 agent 自己调用 `run_tests` 的 `{ ok, exitCode }`，不是字符串匹配最终答案。脚本化好路径会 locate→read→fix→verify；`AGENT_EVAL_REGRESS=1` 换上瞎改、不读文件的脚本，`str_replace` 报错且从不跑测，回归必被抓住。
+
+**Scorecard**（`src/eval/scorecard.ts`）：`eval` 在 pass/fail 报告之外打印 `PASS | DIFF | TURNS | COST | TFAIL | SCENARIO`，并与提交的 `src/eval/baseline.scripted.json` 对比 turns/cost/toolFail 漂移。`runCodingEval` 与平台 `runEval` 读同一套 RunState + Trace，额外投影过程指标。
+
+`AGENT_EVAL_LIVE=1` 换真实 DeepSeek，跑同一批 fixture（`liveCodingScenarios`，回合/成本按难度放宽），验提示词/skill 能力而非接线。需联网 + API key + 花钱，非确定性，不进默认 CI。详见 [docs/observability-trace-and-eval.md](../docs/observability-trace-and-eval.md)（§4.6）。

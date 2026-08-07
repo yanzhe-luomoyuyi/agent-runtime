@@ -53,7 +53,7 @@ export function makeEvalRuntimeBuilder(opts: EvalRuntimeOptions = {}) {
       autoApproveWrites: true,
       policy: scenario.policy,
       config: cfg,
-      maxTurns: opts.live ? 20 : 8,
+      maxTurns: opts.live ? 20 : 12,
     });
   };
 }

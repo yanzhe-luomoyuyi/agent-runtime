@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "mode": "scripted",
+  "generatedAt": "2026-08-07T12:09:16.580Z",
+  "rows": [
+    {
+      "scenario": "greeter null-user crash",
+      "difficulty": "easy",
+      "passed": true,
+      "turns": 4,
+      "costUsd": 0.000015,
+      "toolFail": 0,
+      "toolCalls": 3
+    },
+    {
+      "scenario": "sum off-by-one bug",
+      "difficulty": "easy",
+      "passed": true,
+      "turns": 4,
+      "costUsd": 0.000015,
+      "toolFail": 0,
+      "toolCalls": 3
+    },
+    {
+      "scenario": "clamp upper-bound bug",
+      "difficulty": "easy",
+      "passed": true,
+      "turns": 4,
+      "costUsd": 0.000015,
+      "toolFail": 0,
+      "toolCalls": 3
+    },
+    {
+      "scenario": "titleCase join bug",
+      "difficulty": "medium",
+      "passed": true,
+      "turns": 5,
+      "costUsd": 0.000018,
+      "toolFail": 0,
+      "toolCalls": 4
+    },
+    {
+      "scenario": "parsePort missing default",
+      "difficulty": "medium",
+      "passed": true,
+      "turns": 5,
+      "costUsd": 0.000018,
+      "toolFail": 0,
+      "toolCalls": 4
+    },
+    {
+      "scenario": "applyDiscount percent bug",
+      "difficulty": "medium",
+      "passed": true,
+      "turns": 5,
+      "costUsd": 0.000018,
+      "toolFail": 0,
+      "toolCalls": 4
+    },
+    {
+      "scenario": "displayName empty-middle spaces",
+      "difficulty": "hard",
+      "passed": true,
+      "turns": 5,
+      "costUsd": 0.000018,
+      "toolFail": 0,
+      "toolCalls": 4
+    },
+    {
+      "scenario": "cart tax double-count and rate",
+      "difficulty": "hard",
+      "passed": true,
+      "turns": 7,
+      "costUsd": 0.000024,
+      "toolFail": 0,
+      "toolCalls": 6
+    },
+    {
+      "scenario": "retry attempts off-by-one",
+      "difficulty": "hard",
+      "passed": true,
+      "turns": 5,
+      "costUsd": 0.000018,
+      "toolFail": 0,
+      "toolCalls": 4
+    },
+    {
+      "scenario": "cost-budget guardrail halts a runaway agent",
+      "difficulty": "guardrail",
+      "passed": true,
+      "turns": null,
+      "costUsd": 0.000003,
+      "toolFail": 0,
+      "toolCalls": 1
+    }
+  ]
+}

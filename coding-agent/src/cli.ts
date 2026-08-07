@@ -10,7 +10,7 @@
  */
 
 import type { RunState } from 'durable-agent-runtime';
-import { extractAnswer, renderReport, renderTimeline, runEval } from 'durable-agent-runtime';
+import { extractAnswer, renderReport, renderTimeline } from 'durable-agent-runtime';
 import { join } from 'node:path';
 
 import { parseArgs } from './cli-args.js';
@@ -19,6 +19,15 @@ import { loadCodingConfig, resolvePackagePath } from './config.js';
 import { createCodingRuntime, PACKAGE_ROOT, resolveWorkspaceRoot } from './runtime-factory.js';
 import { codingScenarios, liveCodingScenarios } from './eval/scenarios.js';
 import { makeEvalRuntimeBuilder } from './eval/runtime.js';
+import {
+  defaultBaselinePath,
+  diffAgainstBaseline,
+  loadBaseline,
+  renderBaselineDiff,
+  renderScorecard,
+  runCodingEval,
+  writeBaseline,
+} from './eval/scorecard.js';
 
 loadEnvFile(join(PACKAGE_ROOT, '.env'));
 loadEnvFile(join(PACKAGE_ROOT, '.env.local'));
@@ -35,11 +44,28 @@ async function main(): Promise<void> {
 
   if (cmd === 'eval') {
     const live = process.env.AGENT_EVAL_LIVE === '1';
-    const report = await runEval(
+    const regressed = process.env.AGENT_EVAL_REGRESS === '1';
+    const { report, scorecard } = await runCodingEval(
       live ? liveCodingScenarios : codingScenarios,
-      makeEvalRuntimeBuilder({ regressed: process.env.AGENT_EVAL_REGRESS === '1', live }),
+      makeEvalRuntimeBuilder({ regressed, live }),
     );
     console.log(renderReport(report));
+    console.log('');
+    console.log(renderScorecard(scorecard));
+    if (!live && !regressed) {
+      if (process.env.AGENT_EVAL_WRITE_BASELINE === '1') {
+        const path = writeBaseline(scorecard, { mode: 'scripted' });
+        console.log(`\nwrote baseline → ${path}`);
+      } else {
+        const baseline = loadBaseline();
+        if (baseline) {
+          console.log('');
+          console.log(renderBaselineDiff(diffAgainstBaseline(scorecard, baseline)));
+        } else {
+          console.log(`\n(no baseline at ${defaultBaselinePath()}; set AGENT_EVAL_WRITE_BASELINE=1 to create one)`);
+        }
+      }
+    }
     process.exitCode = report.allPassed ? 0 : 1;
     return;
   }
@@ -176,6 +202,7 @@ Env (override config):
   AGENT_EVAL_REGRESS=1  use the regressed scripted model for \`eval\` (demo a caught regression)
   AGENT_EVAL_LIVE=1     use the real configured model for \`eval\` instead of the scripted one
                         (needs DEEPSEEK_API_KEY, network, costs money, non-deterministic)
+  AGENT_EVAL_WRITE_BASELINE=1  rewrite src/eval/baseline.scripted.json from this scripted run
 `);
 }
 

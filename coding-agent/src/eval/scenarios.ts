@@ -19,7 +19,7 @@ import {
 } from 'durable-agent-runtime';
 
 import { finalTurn, ScriptedChatProvider, toolTurn } from '../model/scripted-chat.js';
-import { bugCases, GREETER_BUG, type BugCase } from './fixtures.js';
+import { bugCases, editPaths, GREETER_BUG, type BugCase, type BugDifficulty } from './fixtures.js';
 
 const EDIT_TOOLS = new Set(['write_file', 'str_replace', 'apply_patch', 'delete_file']);
 
@@ -67,19 +67,37 @@ export const testsPass = (): Scorer => (ctx: ScoreContext) => {
 
 export const GUARDRAIL_SCENARIO_NAME = 'cost-budget guardrail halts a runaway agent';
 
-function scenarioForBug(bug: BugCase, opts: { turnsMax?: number; costMaxUsd?: number } = {}): Scenario {
+export function turnsBudget(difficulty: BugDifficulty, live = false): number {
+  if (live) return difficulty === 'hard' ? 20 : 15;
+  switch (difficulty) {
+    case 'easy':
+      return 6;
+    case 'medium':
+      return 8;
+    case 'hard':
+      return 10;
+  }
+}
+
+function costBudget(difficulty: BugDifficulty, live = false): number {
+  if (live) return difficulty === 'hard' ? 0.08 : 0.05;
+  return 0.01;
+}
+
+function scenarioForBug(bug: BugCase, opts: { live?: boolean } = {}): Scenario {
+  const live = opts.live ?? false;
   return {
     name: bug.name,
     issue: bug.goal,
     checks: [
       runCompleted(),
-      editedFile(bug.srcPath),
+      ...editPaths(bug).map((p) => editedFile(p)),
       testsPass(),
       noToolFailures(),
       toolSuccessRate(1),
-      costUnderUsd(opts.costMaxUsd ?? 0.01),
+      costUnderUsd(costBudget(bug.difficulty, live)),
       noPolicyViolations(),
-      turnsUnder(opts.turnsMax ?? 6),
+      turnsUnder(turnsBudget(bug.difficulty, live)),
     ],
   };
 }
@@ -103,26 +121,47 @@ export const codingScenarios: Scenario[] = [
  * Opt-in only (`AGENT_EVAL_LIVE=1`): needs network + a configured model API key,
  * and is non-deterministic, so it's never run as part of the default test suite.
  */
-export const liveCodingScenarios: Scenario[] = bugCases.map((b) =>
-  scenarioForBug(b, { turnsMax: 15, costMaxUsd: 0.05 }),
-);
+export const liveCodingScenarios: Scenario[] = bugCases.map((b) => scenarioForBug(b, { live: true }));
 
 const bugByScenarioName = new Map(bugCases.map((b) => [b.name, b]));
 
-/** Good script: reads the file first, applies the exact fix, then verifies with run_tests. */
+/** Good script: optional locate → read/fix each target → run_tests. */
 function goodModelFor(bug: BugCase): ChatModelProvider {
-  return new ScriptedChatProvider([
+  const steps = [
+    ...(bug.locateTools ?? []).map((t) => toolTurn([{ name: t.name, arguments: t.arguments }])),
     toolTurn([{ name: 'read_file', arguments: { path: bug.srcPath } }]),
-    toolTurn([{ name: 'str_replace', arguments: { path: bug.srcPath, old_string: bug.fix.oldString, new_string: bug.fix.newString } }]),
-    toolTurn([{ name: 'run_tests', arguments: {} }]),
-    finalTurn(`Fixed ${bug.srcPath} and verified with run_tests.`),
-  ]);
+    toolTurn([
+      {
+        name: 'str_replace',
+        arguments: { path: bug.srcPath, old_string: bug.fix.oldString, new_string: bug.fix.newString },
+      },
+    ]),
+  ];
+  for (const extra of bug.extraFixes ?? []) {
+    steps.push(toolTurn([{ name: 'read_file', arguments: { path: extra.path } }]));
+    steps.push(
+      toolTurn([
+        {
+          name: 'str_replace',
+          arguments: { path: extra.path, old_string: extra.oldString, new_string: extra.newString },
+        },
+      ]),
+    );
+  }
+  steps.push(toolTurn([{ name: 'run_tests', arguments: {} }]));
+  steps.push(finalTurn(`Fixed ${editPaths(bug).join(', ')} and verified with run_tests.`));
+  return new ScriptedChatProvider(steps);
 }
 
 /** Regressed script: guesses a fix without reading the file — old_string never matches, so str_replace throws. */
 function regressedModelFor(bug: BugCase): ChatModelProvider {
   return new ScriptedChatProvider([
-    toolTurn([{ name: 'str_replace', arguments: { path: bug.srcPath, old_string: '__REGRESSED_MISMATCH__', new_string: 'x' } }]),
+    toolTurn([
+      {
+        name: 'str_replace',
+        arguments: { path: bug.srcPath, old_string: '__REGRESSED_MISMATCH__', new_string: 'x' },
+      },
+    ]),
     finalTurn('Fixed it.'),
   ]);
 }
@@ -132,4 +171,3 @@ export function chatModelForEval(scenarioName: string, regressed: boolean): Chat
   const bug = bugByScenarioName.get(scenarioName) ?? GREETER_BUG;
   return regressed ? regressedModelFor(bug) : goodModelFor(bug);
 }
-

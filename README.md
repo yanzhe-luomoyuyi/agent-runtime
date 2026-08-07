@@ -14,7 +14,7 @@ Agent harness，以及让两者在**平台层互不依赖**的前提下协作的
 | [`agent-contracts`](agent-contracts) | **缝 (seam)。** messages / tools / model，加上两侧共享的 DLQ、approval、corpus 绑定与 idempotency keys。 | — |
 | [`agent-harness`](agent-harness) | **Agent 的大脑。** 模型驱动循环 + recovery / context / control。与运行时平台无关。 | `@agent/contracts` |
 | [`durable-agent-runtime`](durable-agent-runtime) | **执行底座。** 事件溯源、可恢复、幂等；`src/` 平台层只依赖 contracts；`src/app/` 适配器可选依赖 harness。 | `@agent/contracts`（平台）；`@agent/harness`（仅 adapter） |
-| [`coding-agent`](coding-agent) | **示例宿主。** 沙箱 coding workbench（CLI + UI），单向依赖 harness + durable-runtime，验证 E2E。 | `@agent/contracts`、`@agent/harness`、`durable-agent-runtime` |
+| [`coding-agent`](coding-agent) | **示例宿主。** 沙箱 coding workbench（CLI + UI），单向依赖 harness + durable-runtime；含分层 bug 金标 + scorecard eval（`testsPass` 红→绿）。 | `@agent/contracts`、`@agent/harness`、`durable-agent-runtime` |
 | [`fabric-shell`](fabric-shell) | 启发整个研究的真实 Copilot-CLI Agent（MCP servers + skills + agent 配置）。 | —（独立工具） |
 
 `agent-harness` 与 `durable-agent-runtime` 各自有详细的 README

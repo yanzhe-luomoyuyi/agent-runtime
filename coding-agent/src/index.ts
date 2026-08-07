@@ -43,14 +43,27 @@ export {
   editedFile,
   testsPass,
   chatModelForEval,
+  turnsBudget,
   GUARDRAIL_SCENARIO_NAME,
 } from './eval/scenarios.js';
 export { makeEvalRuntimeBuilder, type EvalRuntimeOptions } from './eval/runtime.js';
 export {
   createFixtureWorkspace,
+  applyBugFixes,
   bugCases,
+  editPaths,
   GREETER_BUG,
   SUM_BUG,
   type BugCase,
+  type BugDifficulty,
 } from './eval/fixtures.js';
+export {
+  runCodingEval,
+  renderScorecard,
+  loadBaseline,
+  writeBaseline,
+  diffAgainstBaseline,
+  type ScorecardRow,
+  type CodingEvalResult,
+} from './eval/scorecard.js';
 
