@@ -278,6 +278,7 @@ export function createCodingRuntime(opts: CodingRuntimeOptions): Runtime {
     workflow,
     pricing: opts.pricing ?? cfg.pricing,
     policy,
+    sandbox: workspace,
     deadLetterQueue,
     onEvent: opts.onEvent,
     onStreamEvent: opts.onStreamEvent,

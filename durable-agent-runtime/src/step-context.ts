@@ -5,7 +5,7 @@
  * while idempotency + policy + provider I/O for a single step live here.
  */
 
-import type { ChatResponse, ChatStreamOutput } from '@agent/contracts';
+import type { ChatResponse, ChatStreamOutput, ExecutionSandbox } from '@agent/contracts';
 import { runtimeModelCallId, runtimeToolCallId } from '@agent/contracts';
 
 import {
@@ -39,6 +39,7 @@ export interface StepContextDeps {
   chatModel?: ChatModelProvider;
   policy?: PolicyEnforcer;
   pricing?: ModelPricing;
+  sandbox?: ExecutionSandbox;
   record: (event: AgentEvent) => void;
   getState: () => RunState;
   getSpentUsd: () => number;
@@ -263,6 +264,9 @@ async function callTool<R>(
 
   deps.record({ type: 'ToolCallRequested', callId, tool, args, ts: nowIso() });
   try {
+    if (deps.sandbox) {
+      await deps.sandbox.guardToolInvocation(tool, args);
+    }
     const result = await deps.tools.get(tool).run(args);
     deps.record({ type: 'ToolCallSucceeded', callId, tool, result, ts: nowIso() });
     return result as R;

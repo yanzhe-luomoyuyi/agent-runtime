@@ -8,6 +8,8 @@
 import { existsSync, lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, normalize, relative, resolve } from 'node:path';
 
+import type { ExecutionSandbox } from '@agent/contracts';
+
 const MAX_SYMLINK_DEPTH = 64;
 
 export class WorkspaceEscapeError extends Error {
@@ -17,8 +19,9 @@ export class WorkspaceEscapeError extends Error {
   }
 }
 
-export class Workspace {
+export class Workspace implements ExecutionSandbox {
   readonly rootDir: string;
+  readonly kind = 'workspace';
   /** Canonical (symlink-resolved) workspace root — the containment baseline. */
   private readonly rootReal: string;
 
@@ -48,6 +51,16 @@ export class Workspace {
     }
     this.assertNoSymlinkEscape(candidate, userPath, new Set());
     return candidate;
+  }
+
+  resolvePath(path: string): string {
+    return this.resolve(path);
+  }
+
+  async guardToolInvocation(toolName: string, args: unknown): Promise<void> {
+    for (const candidate of collectSandboxPaths(toolName, args)) {
+      this.resolve(candidate);
+    }
   }
 
   /**
@@ -112,4 +125,29 @@ export class Workspace {
     }
     return rel === '' ? '.' : rel;
   }
+}
+
+function collectSandboxPaths(toolName: string, args: unknown): string[] {
+  if (typeof args === 'string') return [args];
+  if (!args || typeof args !== 'object') return [];
+  const record = args as Record<string, unknown>;
+  const keys = ['path', 'filePath', 'targetPath', 'sourcePath', 'oldPath', 'newPath', 'from', 'to'];
+  const candidates: string[] = [];
+
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string') candidates.push(value);
+  }
+
+  if (Array.isArray(record.paths)) {
+    for (const value of record.paths) {
+      if (typeof value === 'string') candidates.push(value);
+    }
+  }
+
+  if (toolName === 'apply_patch' && typeof record.patchText === 'string') {
+    return [];
+  }
+
+  return [...new Set(candidates)];
 }

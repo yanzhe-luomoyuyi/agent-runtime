@@ -11,7 +11,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { deadLetterId, type DeadLetterQueue } from '@agent/contracts';
+import { deadLetterId, type DeadLetterQueue, type ExecutionSandbox } from '@agent/contracts';
 
 import { ConflictError, eventDurability, EventLog, listRunIds, runDir, type EventLogOptions } from './eventlog.js';
 import type { ChatModelProvider } from './model/chat-provider.js';
@@ -54,6 +54,8 @@ export interface RuntimeOptions {
   pricing?: ModelPricing;
   /** Declarative guardrails (tool allow-list / cost budget / rate limits / PII redaction). Optional. */
   policy?: Policy;
+  /** Optional execution boundary applied before tool invocation. */
+  sandbox?: ExecutionSandbox;
   /**
    * Minimum number of NEW events between snapshots. Snapshots are still taken
    * at phase boundaries, but only if at least this many events have accumulated
@@ -305,6 +307,7 @@ export class Runtime {
       chatModel: this.opts.chatModel,
       policy: this.policy,
       pricing: this.opts.pricing,
+      sandbox: this.opts.sandbox,
       record,
       getState,
       getSpentUsd,

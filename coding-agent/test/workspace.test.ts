@@ -30,6 +30,21 @@ describe('Workspace', () => {
     }
   });
 
+  it('guards tool invocations through the shared sandbox interface', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coding-ws-'));
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'safe.txt'), 'ok');
+      const ws = new Workspace(dir);
+      await expect(ws.guardToolInvocation('read_file', { path: '../outside.txt' })).rejects.toThrow(
+        WorkspaceEscapeError,
+      );
+      await expect(ws.guardToolInvocation('read_file', { path: 'src/safe.txt' })).resolves.toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects paths through a symlink pointing outside the workspace', () => {
     const dir = mkdtempSync(join(tmpdir(), 'coding-ws-link-'));
     const outside = mkdtempSync(join(tmpdir(), 'coding-ws-outside-'));
