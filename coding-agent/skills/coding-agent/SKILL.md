@@ -33,10 +33,10 @@ Use when the user asks what something does, where code lives, how it works, or s
 
 1. **Analyze** — Exploration above, then state root cause briefly before editing.
 2. **Edit** —
-   - Before editing a file: `read_file` the exact target slice; copy `old_string` / patch context **verbatim** from that read (do not edit from memory).
-   - Prefer small hunks (one file, short context). Avoid huge multi-region patches or multiple `*** Begin Patch` envelopes in one call.
-   - Prefer `apply_patch` for multi-hunk or multi-file changes (V4A: `*** Begin Patch` … `*** End Patch`).
-   - Prefer `str_replace` for a single exact swap in one file (`replace_all` only when intentional).
+   - Before editing a file for the first time this run: `read_file` the exact target slice; copy `old_string` / patch context **verbatim** from that read (do not edit from memory). If you already read that exact region earlier this run and nothing has since touched it, reuse that content instead of re-reading — tool results only disappear from context when folded, and a folded result comes with an explicit notice telling you to re-fetch it, so silence means it's still there.
+   - **Batch a whole step into one `apply_patch` call.** One call is a single `*** Begin Patch` / `*** End Patch` envelope, but that envelope can hold *multiple* `*** Update File:` / `*** Add File:` / `*** Delete File:` sections — one per file, each with its own small, targeted hunk(s). Whenever a step touches more than one file (e.g. "move a type and fix up every import"), do it as one apply_patch call covering all those files, not one str_replace call per file.
+   - Use `str_replace` only for a single exact swap confined to one file that isn't part of a larger batch of edits in the same step.
+   - Independent edits you do keep as separate calls (different files, unrelated steps) should still go in the same turn together, the same way you already batch independent `read_file` calls — don't spend one turn per file when nothing depends on the previous edit's result.
    - Use `write_file` only for new files or intentional full rewrites; `delete_file` to remove a single file (or Delete File in a patch).
    - If `apply_patch` / `str_replace` fails: `read_file` the failure region first, then retry — never retry from memory.
    - **Verify** (iterate until green):
