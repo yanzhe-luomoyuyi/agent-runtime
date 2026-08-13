@@ -52,3 +52,6 @@ export * from './control/aggregate.js';
 
 // Tracing / observability
 export * from './tracing/collector.js';
+
+// L2 harness-loop eval (AgentTrace scorers; no durable runtime)
+export * from './eval/index.js';

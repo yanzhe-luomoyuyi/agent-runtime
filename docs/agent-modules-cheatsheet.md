@@ -59,6 +59,12 @@
 | `skills/tools.ts` | on_demand：`skill_list` + `skill_read`（静态正文，durable 下也可本地挂） |
 | `skills/resolve.ts` | catalog 注入 instructions；eager 内联正文；subAgents → `delegate_<name>`；**skills 不 inherit 到子 agent** |
 
+### 可观测 · L2 Eval
+| 模块 | 一句话 |
+|------|--------|
+| `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact / `recalledTools` / token 估价 |
+| `eval/` | L2 harness eval：`runHarnessEval` + AgentTrace scorers；`loop` / `assemble` / `compact` 场景；`defaultHarnessScenarios`；不挂 durable runtime |
+
 ---
 
 ## durable-agent-runtime（执行底座 · 事件溯源）
@@ -109,9 +115,10 @@
 | `retrieval/` | 文档 RAG：`InMemoryDocumentStore` / `FileDocumentStore`；`RetrievalPolicy`（`once` / `once_rewrite` / `capped_agentic`）；`resolveRunCorpusId` / `collectSkillCorpora`；`systemRetrieveOnce` |
 | `app/document-tools.ts` | `document_search` / `document_read`（default + allow-list corpus；走 durable seam） |
 | harness `tracing/collector.ts` | 现场埋点：turn / tool args / assemble·compact 决策（含 `removedToolResults`）/ 压缩后同签名再调（`recalledTools`）/ token 估价（非 event-log） |
+| harness `eval/` | L2：单独评 harness（`AgentTrace`）；与 runtime `eval.ts`（L3）分层，见 [`observability-trace-and-eval.md`](./observability-trace-and-eval.md) |
 | `trace.ts` | 从事件日志派生 span 时间线 + token/成本/延迟/replay/policy/cache 汇总 |
 | `otel.ts` | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出 |
-| `eval.ts` | 可组合打分器（结果性 + 过程性/轨迹 + 人机协同 + 护栏回归）+ runner；读 runtime Trace + RunState；`Scenario.harness`/`approver` 可改路由到 harness 循环 |
+| `eval.ts` | L3 可组合打分器（结果性 + 过程性/轨迹 + 人机协同 + 护栏回归）+ runner；读 runtime Trace + RunState；`Scenario.harness`/`approver` 可改路由到 harness 循环。L2（只评大脑）见 harness `eval/` |
 
 ### 桥接
 | 模块 | 一句话 |

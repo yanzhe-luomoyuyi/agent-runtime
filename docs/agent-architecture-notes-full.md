@@ -127,7 +127,7 @@ ProtocolDecision =
 | 自动压缩阈值 | ✅ | 0.85 触发，留一 turn 余量 |
 | 原子 call/response 淘汰 | ✅ | 按 unit，不按单条 message（修 API 拆对风险） |
 | 近期 pin + 重要性 | ✅ | recency 硬约束（pinned window）+ `ImportanceClass` 启发式（grown 段）；compact 保护用显式 class 名单而非分数门槛；不做连续时间衰减 |
-| 压缩/淘汰决策可观测 | ✅ | `assembleDetailed` / `compactIfNeededDetailed` → `TraceCollector`；`removedToolResults` + 摘要内确定性 re-call notice；同签名再调 → `recalledTools`；ablation 见 `test/context-ablation.test.ts`；对照文档 `docs/observability-trace-and-eval.md` |
+| 压缩/淘汰决策可观测 | ✅ | `assembleDetailed` / `compactIfNeededDetailed` → `TraceCollector`；`removedToolResults` + 摘要内确定性 re-call notice；同签名再调 → `recalledTools`；L2 eval（`runHarnessEval` + assemble/compact scenarios）+ 组件 ablation `test/context-ablation.test.ts`；对照 `docs/observability-trace-and-eval.md` |
 | **LLMLingua-2 / LongLLMLingua** | ❌ | 小模型评估每条消息信息贡献度 → 按贡献裁剪，非按位置 |
 | **LLM 自摘要用便宜模型** | 🟡 | 可换 GPT-4o-mini 降成本 |
 | **Cognition 结构化交接** | ❌ | 固定 schema 传递，不摘要（更抗信息丢失） |
@@ -219,6 +219,7 @@ ProtocolDecision =
 - `TraceCollector`：token 用量/成本/每 turn 耗时/retry 次数；`runAgent({ trace })` / `createHarnessWorkflow({ trace })` 挂载
 - 可配置 PricingModel（GPT-4o / Claude 等）
 - `formatTraceReport()` 终端友好输出；`compareTraces()` A/B 对比
+- **L2 harness eval**（`agent-harness/src/eval/`）：`runHarnessEval` 对 `AgentTrace` 打分（脚本化 model/tool；assemble/compact 投影场景）；与 L3 runtime `eval.ts` / coding-agent scorecard 分层——归因大脑 vs 整栈
 - **durable-agent-runtime 侧**：`trace.ts` 从事件日志派生 span 时间线（纯数据模型，不碰 IO）；`otel.ts` 将其桥接成真正的 OpenTelemetry span（`NodeTracerProvider` + `OTLPTraceExporter`）——未配置 collector 时退回 `ConsoleSpanExporter`离线运行，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往 Jaeger/Tempo/Honeycomb 等标准后端。导出层放在 runtime 而非 harness，因为导出是真实网络 IO，harness 保持 host-agnostic。两套 Trace（harness 现场埋点 vs runtime 事件投影）不自动合并。
 
 ### 工业界

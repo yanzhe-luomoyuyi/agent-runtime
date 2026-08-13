@@ -4,23 +4,23 @@
 
 ---
 
-## 1. 可插拔策略的对照评测（ablation / eval cases）
+## 1. 可插拔策略的对照评测（ablation / eval cases） — **部分完成（L2 harness）**
 
-**现状：** Context manager、tokenizer、压缩、retrieval 注入、approver、error handler 等多处已可插拔；部分对照已在 harness 单测（如 `context-ablation.test.ts`），但尚未系统化进 runtime `runEval`。
+**现状（落地后）：** `@agent/harness` 已有 L2 eval（`src/eval/`：`runHarnessEval` + `defaultHarnessScenarios`）。覆盖 assemble importance vs recency、compact protect / noop、retrieval gate、scratchpad offload、loop 序列/advisory、工具级 HITL 等——读 `AgentTrace`，不挂 durable runtime。组件级对照仍保留在 `test/context-ablation.test.ts`。
 
-**目标：** 建一批专门衡量「同一任务、不同策略」差异的 evaluation case，而不是只测 happy path。
+**仍待加强：**
 
-**可先覆盖的维度（示例）：**
+| 维度 | 候选策略 | 关心的指标 | 状态 |
+| --- | --- | --- | --- |
+| 上下文淘汰 / pin | pure-recency vs importance+pin | 是否丢关键指令 / ERROR unit | ✅ L2 assemble scenarios |
+| 主动压缩 | 关 / 开 / `protectVerbatimClasses` | 保护单元、fold、re-call notice | ✅ L2 compact scenarios |
+| Retrieval 注入 | minScore gate / untrusted | 低分丢弃、围栏 | ✅ L2（harness 注入层）；runtime `once`/`capped_agentic` 模式对照仍属 L3 |
+| Approver | counting + requireApprovalFor | 介入率 | ✅ L2 工具级；run 级 interrupter 未进 L2 |
+| Scratchpad | offload / neverOffload | 指针 vs 内联 | ✅ L2 |
+| Tokenizer / 预算 | tiktoken vs CJK vs char | 装配边界 | ❌ 未系统化进 L2 |
+| Runtime retrieval 模式 | `once` / `once_rewrite` / `capped_agentic` | 命中、额外模型调用 | ❌ 仍属 L3 / backlog |
 
-| 维度 | 候选策略 | 关心的指标 |
-| --- | --- | --- |
-| 上下文淘汰 / pin | pure-recency vs importance+pin vs 更激进压缩 | 任务成功率、turns、token、是否丢关键指令 |
-| Tokenizer / 预算 | 默认 tiktoken vs CJK-aware vs 固定 counter | 装配稳定性、截断行为、与 provider usage 偏差 |
-| 主动压缩 | 关 / 开 / 不同频率与 verbatim 保护 | 摘要质量、重放安全、成本 |
-| Retrieval | `once` / `once_rewrite` / `capped_agentic` | 命中相关性、额外模型调用、护栏是否仍成立 |
-| Approver | auto vs pattern gate vs counting | 介入率、误拦、任务是否完成 |
-
-**落地建议：** 场景固定（goal + tools + mock/真模型），只换注入的策略实现；打分用现有 eval scorers（结果 + 过程 + 成本），必要时加「策略标签」字段方便横向对比。
+**落地建议（剩余）：** tokenizer 对照与 runtime retrieval 模式 ablation 可继续用同一 Scenario/Scorer 形状；L3 `runEval` 不必重复 L2 已覆盖的 harness 决策面。
 
 ---
 

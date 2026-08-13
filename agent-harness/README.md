@@ -16,11 +16,12 @@
 | **D** — 控制流 | `src/control` | 核心 `runAgent` 循环 + `runAgentStreamed`（async generator，15 种类型化事件含 `steered`/`aborted`，`chatStream` 可用时实时流式输出，否则透明 fallback batch）。**工具并行执行**（`toolConcurrency` 控制并发度，`Promise.allSettled` 一个失败不影响其他）。**工具使用行为控制**（`ToolSpec.stopOnUse` 工具直接返回输出省一次 LLM 调用）。**Structured output**（`outputSchema` + 自动重试，校验失败反馈给模型自我纠正）。**可插拔错误处理器**（`errorHandlers`：`maxTurns` / `modelRefusal` / `invalidFinalOutput`）。加上 `runPlannedAgent`（先规划后执行，失败时重新规划，每步有 ✓/→/○ 进度标记；可选 `PlanReviewer` 在 makePlan / replan 后人工 approve·edit·reject）、`runReflectiveAgent`（自我批评并修订，每次尝试有独立 key 命名空间 `a0:` / `a1:` …）、`makeSubagentTool`（把子任务委派封装成一个工具，嵌套 key 全局唯一；`AsyncLocalStorage` 追踪实际嵌套深度，`maxDepth`（默认 5）超限拒绝并转成普通 ERROR 观测，不需要在 loop 里特殊处理），以及两层 HITL：**工具级** `Approver`（glob 门控 `deploy*`/`write*`、可改 args、审批缓存 + 审计时间戳；`countingApprover` 统计介入率供 eval），**run 级** `RunInterrupter`（turn 边界 pause / steer / abort+salvage，默认 `autoContinue` 不挡；`createInterruptHandle` 供外部随时插手）。 |
 | **Skills** | `src/skills` | Playbook 注册：`SkillSpec`（可选 `corpusId` 绑定文档库）+ markdown loader；`createAgent` 物化到 instructions / 工具。默认 **on_demand**（catalog 注入 + `skill_list` / `skill_read`）；短 playbook 可 **eager** 全文内联。与 sub-agent **正交**——skills 不自动 inherit 到子 agent。 |
 
-### 可观测性
+### 可观测性 · L2 Eval
 
 | 模块 | 做什么 |
 | --- | --- |
 | [tracing/collector.ts](src/tracing/collector.ts) | 结构化的 per-run 指标：token 用量统计、成本估算、每 turn 耗时、retry 次数、assemble/compact 决策（含被折掉的 tool 结果）、压缩后同签名再调（`recalledTools`）、A/B 对比。`TraceCollector` 经 `runAgent({ trace })` 挂到 loop 埋点；durable 宿主也可 `createHarnessWorkflow({ trace })`。可配置定价模型。 |
+| [eval/](src/eval/) | **L2 harness eval**：`runHarnessEval` + 可组合 AgentTrace scorers；三种 Scenario（`loop` / `assemble` / `compact`）；`defaultHarnessScenarios` 覆盖轨迹、loop 画像、assemble/compact ablation、retrieval gate、scratchpad、HITL。**不挂** durable runtime——host 是 testkit。导出 `@agent/harness` 与 `@agent/harness/eval`。对照文档 [`docs/observability-trace-and-eval.md`](../docs/observability-trace-and-eval.md) §2.6。 |
 
 #### Trace 数据结构
 
@@ -88,6 +89,7 @@ src/
   control/human.ts          # D: 工具级审批接入点（Approver）
   control/interrupt.ts      # D: run 级 mid-run interrupt / steer
   tracing/collector.ts      # 结构化 trace：token / 成本 / 决策
+  eval/                     # L2：runHarnessEval + AgentTrace scorers + default suite
   testkit/index.ts          # 确定性的 ChatModel / ToolInvoker 替身
   demo.ts                   # 3 场景离线 demo：happy path + resilient model + saga compensation
 ```
@@ -233,6 +235,22 @@ console.log(formatTraceReport(agentTrace));
 ```
 
 Durable 宿主可把同一个 collector 传给 `createHarnessWorkflow({ trace: collector })`，与 runtime `buildTrace(eventLog)` 并排使用（两套不自动合并）。
+
+### L2 harness eval（单独评大脑）
+
+```ts
+import {
+  runHarnessEval,
+  renderHarnessReport,
+  defaultHarnessScenarios,
+} from '@agent/harness';
+// 或：import { … } from '@agent/harness/eval';
+
+const report = await runHarnessEval(defaultHarnessScenarios());
+console.log(renderHarnessReport(report));
+```
+
+默认 suite 用脚本化 model + `MockToolInvoker`（及 assemble/compact 投影场景）回归上下文策略、loop、scratchpad、retrieval、工具级 HITL——**不**需要 durable runtime 或 coding 沙箱。系统级任务评测仍走 runtime `runEval` / coding-agent scorecard（L3）。
 
 ### Structured output
 

@@ -1,12 +1,15 @@
 # Observability：Harness Trace · Runtime Trace · Eval
 
-本文说明仓库里**两套 trace**和 **eval 模块**各自包含什么、从哪来、怎么用。它们不是同一条管道，也不互相替代。
+本文说明仓库里**两套 trace**和 **分层 eval**各自包含什么、从哪来、怎么用。它们不是同一条管道，也不互相替代。
 
 | 层 | 模块 | 一句话 |
 |----|------|--------|
-| Harness | `@agent/harness` → `tracing/collector.ts` | 跑 agent loop 时**现场写入**内存：turn / tool args / 上下文装配决策 |
-| Runtime | `durable-agent-runtime` → `trace.ts` (+ `otel.ts`) | 从 **event log 事后派生** span 时间线：phase/step、replay、policy、缓存省钱 |
-| Eval | `durable-agent-runtime` → `eval.ts` | 对真实 run 的 `RunState` + **runtime** `Trace` 做可组合打分，出 pass/fail 报告 |
+| Harness Trace | `@agent/harness` → `tracing/collector.ts` | 跑 agent loop 时**现场写入**内存：turn / tool args / 上下文装配决策 |
+| Runtime Trace | `durable-agent-runtime` → `trace.ts` (+ `otel.ts`) | 从 **event log 事后派生** span 时间线：phase/step、replay、policy、缓存省钱 |
+| L2 Harness Eval | `@agent/harness` → `eval/` | 对 `AgentTrace` + `AgentRunResult` 打分（脚本化 model/tool；**不挂** durable runtime） |
+| L3 System Eval | `durable-agent-runtime` → `eval.ts`（+ coding-agent scorecard） | 对真实 run 的 `RunState` + **runtime** `Trace` 打分；宿主可加任务金标 |
+
+**分层意图：** L1 = harness 组件单测；L2 = 单独归因大脑决策；L3 = 整栈（大脑 + 执行底座 [+ 沙箱宿主]）。
 
 ---
 
@@ -122,6 +125,31 @@ Workbench **Context** 页展示「Re-called after compression」区块；`format
 - 不感知 phase / step / event log / resume  
 - 不统计 policy denial、replay hit rate、内容缓存省钱（那是 runtime）  
 - 不自动导出 OTel（导出在 runtime `otel.ts`）
+
+### 2.6 L2 harness eval（`eval/`）
+
+**源码：** `agent-harness/src/eval/`（`@agent/harness` / `@agent/harness/eval`）  
+**设计：** 与 runtime `eval.ts` 同构的 Scenario / Scorer，但 **不挂 durable-agent-runtime**。底层是 `runAgent` + testkit（`ScriptedChatModel` / `MockToolInvoker`）或单次 `assembleDetailed` / `compactIfNeededDetailed`。
+
+| Scenario `kind` | 跑什么 | 评什么 |
+|-----------------|--------|--------|
+| `loop`（默认） | 完整 `runAgent` + `TraceCollector` | 轨迹、loop、recall、untrusted、retrieval、scratchpad、HITL… |
+| `assemble` | 一次 `assembleDetailed` 投影进 `ScoreContext` | importance vs recency ablation、budget gate、pin |
+| `compact` | 一次 `compactIfNeededDetailed` 投影进 `ScoreContext` | protectVerbatim、noop without summarizer、fold write |
+
+```ts
+import {
+  runHarnessEval, renderHarnessReport, defaultHarnessScenarios,
+} from '@agent/harness';
+
+const report = await runHarnessEval(defaultHarnessScenarios());
+console.log(renderHarnessReport(report));
+process.exit(report.allPassed ? 0 : 1);
+```
+
+**默认 suite（CI：`agent-harness/test/eval.test.ts`）覆盖：** happy-path 轨迹、同调用 / 序列 loop、assemble budget gate、recall-after-evict、importance vs recency ablation、compact 开/关与 protect、retrieval gate、scratchpad offload / `neverOffload`、advisory nudge、`countingApprover` 敏感工具计数。
+
+**Budget scorer 语义：** `assembleRespectsBudgetGate` 断言「未超 → passthrough、超了 → assembled」，**不**断言 `outputTokens ≤ availableBudget`（mandatory pin + summary notice 可让小 fixture 的 output 变大）。
 
 ---
 
@@ -279,23 +307,21 @@ EvalReport { results[], passed, failed, total, allPassed }
 
 生产可换成真实 `ModelProvider`；文档约定低温度 / 结构化输出 / 多数票缓解非确定性。
 
-### 4.4 与两套 Trace 的关系
+### 4.4 与两套 Trace / 分层 Eval 的关系
 
 ```
-runEval
-  → runtime.run()
-  → runtime.trace(runId)     ← 只用 durable-agent-runtime Trace
-  → Scorer({ state, trace })
+L2  runHarnessEval          ← 读 AgentTrace（assemble/compact/recall…）
+      → runAgent / assemble / compact
+      → TraceCollector.snapshot()
 
-Harness TraceCollector  ← 默认不进 eval
+L3  runEval / runCodingEval ← 读 runtime Trace + RunState
+      → runtime.run()
+      → runtime.trace(runId)
 ```
 
-当前内置 scorer **不读取** harness 的 `AssembleDecision` / `CompactDecision`。适配层**已支持** `createHarnessWorkflow({ trace })` 挂上 `TraceCollector`（coding-agent Workbench Trace 页即 runtime `buildTrace` + harness snapshot 并排展示）。若要对上下文策略做 **eval 回归**，还可以：
-
-1. 把 `AgentTrace` 写入 `state.summary` 或旁路文件，供 scorer 读取；或  
-2. 新增读 summary 字段的 scorer（与现有 `turnsUnder` 模式一致）。
-
-Ablation 级对比（pure-recency vs importance+pin）目前在 harness 单测 `test/context-ablation.test.ts`，尚未并入 `runEval`。
+- **L2** 专门评 harness 决策（上下文策略、loop 画像、scratchpad、工具级 HITL 等），host 是 testkit 内存实现。  
+- **L3** 评 durable 执行产物 +（coding-agent）任务成功；内置 scorer **默认仍不读** `AssembleDecision` / `CompactDecision`。适配层可 `createHarnessWorkflow({ trace })` 把 harness snapshot 并排展示（Workbench）；若要在 L3 里归因上下文，可把 `AgentTrace` 投影进 `state.summary` 再加 scorer。  
+- Assemble / compact **ablation** 已进 L2（`kind: 'assemble' | 'compact'` + `defaultHarnessScenarios`）；组件级对照单测 `test/context-ablation.test.ts` 仍保留。
 
 ### 4.6 外部宿主接入示例：coding-agent 的 eval
 
@@ -362,7 +388,8 @@ process.exit(report.allPassed ? 0 : 1);
 | Resume 省了多少次真实调用？ | Runtime `totals.replayHitRate` |
 | Policy 拦了几次？内容缓存省了多少钱？ | Runtime `policyDenials` / `costSavedUsd` |
 | 哪个 phase 最烧 token？ | Runtime `byPhase` |
-| CI 里提案/轨迹/成本是否回归？ | Eval `runEval` + scorers（读 runtime Trace + RunState） |
+| CI 里 harness 决策（assemble/compact/loop/HITL）是否回归？ | L2 `runHarnessEval` + `defaultHarnessScenarios`（读 `AgentTrace`） |
+| CI 里提案/轨迹/成本是否回归？ | L3 Eval `runEval` + scorers（读 runtime Trace + RunState） |
 | coding-agent 金标 / scorecard 是否漂移？ | `coding-agent eval` → `runCodingEval` + `baseline.scripted.json` |
 | 导出到 Jaeger？ | Runtime `otel.ts`（不经 harness） |
 
@@ -375,11 +402,13 @@ process.exit(report.allPassed ? 0 : 1);
 | `agent-harness/src/tracing/collector.ts` | `TraceCollector`、`AgentTrace`、`formatTraceReport`、`compareTraces` |
 | `agent-harness/src/context/manager.ts` | `AssembleDecision`、`CompactDecision`、`assembleDetailed`、`compactIfNeededDetailed` |
 | `agent-harness/src/control/loop.ts` | `_prepareTurn` 写入 assemble/compact；model/tool 埋点 |
-| `agent-harness/test/context-ablation.test.ts` | 上下文策略 ablation（非 eval） |
+| `agent-harness/src/eval/` | L2：`runHarnessEval`、AgentTrace scorers、`defaultHarnessScenarios` |
+| `agent-harness/test/eval.test.ts` | L2 默认 suite 回归 |
+| `agent-harness/test/context-ablation.test.ts` | 上下文策略组件级 ablation（与 L2 assemble 场景互补） |
 | `durable-agent-runtime/src/trace.ts` | `buildTrace`、`renderTimeline` |
 | `durable-agent-runtime/src/otel.ts` | OTel 导出 |
-| `durable-agent-runtime/src/eval.ts` | Scenario / Scorer / `runEval` |
-| `durable-agent-runtime/test/eval.test.ts` | Eval 回归测试 |
+| `durable-agent-runtime/src/eval.ts` | L3 Scenario / Scorer / `runEval` |
+| `durable-agent-runtime/test/eval.test.ts` | L3 Eval 回归测试 |
 | `coding-agent/src/eval/fixtures.ts` | 易/中/难 bug fixture + `createFixtureWorkspace` |
 | `coding-agent/src/eval/scenarios.ts` | `testsPass` / `editedFile` / 脚本化好路径与 REGRESS |
 | `coding-agent/src/eval/scorecard.ts` | `runCodingEval`、scorecard 表、基线读写与对比 |

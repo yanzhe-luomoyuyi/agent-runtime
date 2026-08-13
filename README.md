@@ -12,7 +12,7 @@ Agent harness，以及让两者在**平台层互不依赖**的前提下协作的
 | Project | 是什么 | 依赖 |
 | --- | --- | --- |
 | [`agent-contracts`](agent-contracts) | **缝 (seam)。** messages / tools / model，加上两侧共享的 DLQ、approval、corpus 绑定与 idempotency keys。 | — |
-| [`agent-harness`](agent-harness) | **Agent 的大脑。** 模型驱动循环 + recovery / context / control。与运行时平台无关。 | `@agent/contracts` |
+| [`agent-harness`](agent-harness) | **Agent 的大脑。** 模型驱动循环 + recovery / context / control；含 L2 `AgentTrace` eval（不挂 durable runtime）。与运行时平台无关。 | `@agent/contracts` |
 | [`durable-agent-runtime`](durable-agent-runtime) | **执行底座。** 事件溯源、可恢复、幂等；`src/` 平台层只依赖 contracts；`src/app/` 适配器可选依赖 harness。 | `@agent/contracts`（平台）；`@agent/harness`（仅 adapter） |
 | [`coding-agent`](coding-agent) | **示例宿主。** 沙箱 coding workbench（CLI + UI），单向依赖 harness + durable-runtime；含分层 bug 金标 + scorecard eval（`testsPass` 红→绿）。 | `@agent/contracts`、`@agent/harness`、`durable-agent-runtime` |
 | [`fabric-shell`](fabric-shell) | 启发整个研究的真实 Copilot-CLI Agent（MCP servers + skills + agent 配置）。 | —（独立工具） |
@@ -20,7 +20,7 @@ Agent harness，以及让两者在**平台层互不依赖**的前提下协作的
 `agent-harness` 与 `durable-agent-runtime` 各自有详细的 README
 （[harness](agent-harness/README.md) / README + [TESTING](durable-agent-runtime/TESTING.md)）；coding-agent 见 [coding-agent/README.md](coding-agent/README.md)。
 
-待做方向见 [`docs/TODO.md`](docs/TODO.md)（ablation eval、统一配置、UI session/HITL 等）。
+待做方向见 [`docs/TODO.md`](docs/TODO.md)（tokenizer / runtime retrieval 模式 ablation 等剩余项；统一配置与 UI session/HITL 已完成）。分层 eval 见 [`docs/observability-trace-and-eval.md`](docs/observability-trace-and-eval.md)。
 
 ## 总体架构
 
@@ -185,7 +185,7 @@ Turn 开始前另有一道 run 级闸门（与工具审批正交）：`RunInterr
 | [session.ts](durable-agent-runtime/src/session.ts) | 多轮对话会话管理：`SessionManager` 把多个 run 串联成对话线程，后续 run 自动携带完整上文（`conversationHistory`）；JSON manifest 存储，不侵入事件日志。 |
 | [memory/](durable-agent-runtime/src/memory/) | 跨会话短记忆（scope + lexical/semantic/hybrid）；async `EmbeddingProvider` 缝（默认 hashing，可换真模型）。 |
 | [retrieval/](durable-agent-runtime/src/retrieval/) | 文档 RAG：`DocumentStore`（`InMemory` / `FileDocumentStore`）/ `Retriever` / `RetrievalPolicy`（`once` · `once_rewrite` · `capped_agentic`）；skill `corpusId` 解析。 |
-| [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；可组合的打分器（含 LLM 裁判）。 |
+| [trace.ts](durable-agent-runtime/src/trace.ts) · [eval.ts](durable-agent-runtime/src/eval.ts) | phase / step / tool / model 各级 span + token / 成本 / 延迟，含重放命中率统计；**L3** 可组合打分器（含 LLM 裁判）。单独评 harness 决策见 [`agent-harness` L2 eval](agent-harness/README.md)。 |
 | [otel.ts](durable-agent-runtime/src/otel.ts) | 把 `trace.ts` 的 span 桥接成真正的 OpenTelemetry span（父子嵌套 + 历史时间戳），无 collector 时退回 console 导出，配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 就发往标准后端。 |
 | [cli.ts](durable-agent-runtime/src/cli.ts) | 命令行入口：`run` / `resume` / `status` / `recover` / `trace`（含 `--otel`）/ `eval` / `chat`；通过环境变量切换执行模式（默认固定工作流 / `HARNESS=1`）。 |
 

@@ -69,4 +69,4 @@ AGENT_EVAL_WRITE_BASELINE=1 npm run dev -w @agent/coding-agent -- eval  # 重写
 
 **Scorecard**（`src/eval/scorecard.ts`）：`eval` 在 pass/fail 报告之外打印 `PASS | DIFF | TURNS | COST | TFAIL | SCENARIO`，并与提交的 `src/eval/baseline.scripted.json` 对比 turns/cost/toolFail 漂移。`runCodingEval` 与平台 `runEval` 读同一套 RunState + Trace，额外投影过程指标。
 
-`AGENT_EVAL_LIVE=1` 换真实 DeepSeek，跑同一批 fixture（`liveCodingScenarios`，回合/成本按难度放宽），验提示词/skill 能力而非接线。需联网 + API key + 花钱，非确定性，不进默认 CI。详见 [docs/observability-trace-and-eval.md](../docs/observability-trace-and-eval.md)（§4.6）。
+`AGENT_EVAL_LIVE=1` 换真实 DeepSeek，跑同一批 fixture（`liveCodingScenarios`，回合/成本按难度放宽），验提示词/skill 能力而非接线。需联网 + API key + 花钱，非确定性，不进默认 CI。详见 [docs/observability-trace-and-eval.md](../docs/observability-trace-and-eval.md)（§4.6）。单独评 harness 决策（不经本宿主）见同文档 §2.6 / `@agent/harness` L2 eval。
